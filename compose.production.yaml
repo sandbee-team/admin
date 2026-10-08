@@ -1,0 +1,23 @@
+name: sandbee-admin
+services:
+  app:
+    image: sandbee-admin:${RELEASE_TAG:-local}
+    build: .
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 8098
+    ports: ["127.0.0.1:8098:8098"]
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 150
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

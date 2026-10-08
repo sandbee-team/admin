@@ -1,0 +1,432 @@
+[
+    {
+        "path":  "sandbee-admin/backend/app.js",
+        "bytes":  4157,
+        "sha256":  "709b0bbd9bf3c165cfe85d08821eaaaa07d99b8e91955a15ff92dcf0ae88f30f"
+    },
+    {
+        "path":  "sandbee-admin/backend/config.js",
+        "bytes":  2532,
+        "sha256":  "b2c1b8d11310539978e537d0fa70d2d39cf9e47e6ac5c8f9f4646074792f5235"
+    },
+    {
+        "path":  "sandbee-admin/backend/db.js",
+        "bytes":  2642,
+        "sha256":  "04906b3aff5a8a01a8764006ca21a69bab4d555dcd4362d6223b372a5bfa3050"
+    },
+    {
+        "path":  "sandbee-admin/backend/server.js",
+        "bytes":  1373,
+        "sha256":  "e539568640e2edc778bc90e906a4c7c74d8f8e8eca35726c520f704badae09cb"
+    },
+    {
+        "path":  "sandbee-admin/backend/lib/audit.js",
+        "bytes":  435,
+        "sha256":  "16cb533761c9c295f690c3943ce881a04258afec7d4d7f98065aa1a7697421e4"
+    },
+    {
+        "path":  "sandbee-admin/backend/lib/crypto.js",
+        "bytes":  2199,
+        "sha256":  "5eb239b8b760b4eaea051e35985b308d66f9f515b7ea4e62369cdac3e07d880a"
+    },
+    {
+        "path":  "sandbee-admin/backend/lib/errors.js",
+        "bytes":  235,
+        "sha256":  "7c7da8b3923da4253fd7a1dc4e4f6888b06b50dc230bf5d51e90dcac2e7940bc"
+    },
+    {
+        "path":  "sandbee-admin/backend/lib/limiter.js",
+        "bytes":  893,
+        "sha256":  "20520aee3258e3e21c0c2a4de6226a3670e895090d223ec1c077440c056c8fc4"
+    },
+    {
+        "path":  "sandbee-admin/backend/lib/snapshot.js",
+        "bytes":  2124,
+        "sha256":  "4f32cddc5c09843858e66cddf7ab9502c7a4e609d6a8a14479f1a8c63727eadf"
+    },
+    {
+        "path":  "sandbee-admin/backend/lib/vault.js",
+        "bytes":  771,
+        "sha256":  "6c73c117848505c063dab8bbc48bbcb26e7389527a42d5e1b7d159368f7e88e9"
+    },
+    {
+        "path":  "sandbee-admin/backend/modules/auth.js",
+        "bytes":  8676,
+        "sha256":  "b75a15d6349826fbd9e9f10467cfc507598f894ebee87f460c81e8706ad7c135"
+    },
+    {
+        "path":  "sandbee-admin/backend/modules/catalog-seed.js",
+        "bytes":  1862,
+        "sha256":  "231b4cf9df6e0279fa50e8bf7c5d992a4b576e95ecfbfaef3a8cfbc8abec108a"
+    },
+    {
+        "path":  "sandbee-admin/backend/modules/ecom.js",
+        "bytes":  2413,
+        "sha256":  "24f1fc6beaf98519ee9da3de2af0517bf4b3d242d6520dd00e6eaae26c68b8d7"
+    },
+    {
+        "path":  "sandbee-admin/backend/modules/mail.js",
+        "bytes":  1586,
+        "sha256":  "b0dbfd4fc3a47a0932e45ad0ec8f54537649b3ff056b07ca4306d858688aaedd"
+    },
+    {
+        "path":  "sandbee-admin/backend/modules/overview.js",
+        "bytes":  5978,
+        "sha256":  "4047c473c0885707477b7f848b682505fcdbb92b3665484bac3716b0fc487b72"
+    },
+    {
+        "path":  "sandbee-admin/backend/modules/records.js",
+        "bytes":  12474,
+        "sha256":  "93b0dff4d076ba5771419a8a88a09267273e68a0c06928d56e5ffb5a5bc4aaa1"
+    },
+    {
+        "path":  "sandbee-admin/backend/modules/team.js",
+        "bytes":  3192,
+        "sha256":  "e97403a85dd83236f170a2808dc79e4c65b2bb17c24251f3866fb3ddc31aeea2"
+    },
+    {
+        "path":  "sandbee-admin/frontend/index.html",
+        "bytes":  466,
+        "sha256":  "cb8db60309b70759134c24602796848f4095ae568e384b56f53ca7b1bf514f70"
+    },
+    {
+        "path":  "sandbee-admin/frontend/public/mark.svg",
+        "bytes":  320,
+        "sha256":  "4b99ebc530990c185bc0f5d185629812c601fc87e62d248320042dfde0d3a07f"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/main.jsx",
+        "bytes":  4111,
+        "sha256":  "3eb40d802391435b7d3b96602e913bb3d9fc9138e5569e4a09d178ec6f2b8a4e"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/styles.css",
+        "bytes":  415,
+        "sha256":  "8c98277bb4df88d6bdb3026de6bb7ba48a44482c08611758affe1483ec4968b1"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/components/product-catalog.jsx",
+        "bytes":  1852,
+        "sha256":  "0f5000cf6a6e04451d7d6d7dc8e0f8b681a08f01ca5f354606492d8017e1545d"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/components/product-icon.jsx",
+        "bytes":  574,
+        "sha256":  "c24c04a0a62b5ba022dac3336cae38e9aac0e81adbfd437db4095df17f34ca5e"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/components/select.jsx",
+        "bytes":  2465,
+        "sha256":  "fd745e6f46e0a7dbaa2f0b1deca19043e9df136bff9dffd5a76ce3ddb5ecf956"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/components/shell.jsx",
+        "bytes":  7520,
+        "sha256":  "44529af2bea7f76c76ab718a7fc50cecd1d24d21e3b7fa9be4e8b74d14292a23"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/components/ui.jsx",
+        "bytes":  6832,
+        "sha256":  "c0bd3554d6213ea22184b3e0f8b0de154208809b769ca8d340cacdd6143f1029"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/components/dashboard/lifecycle-report.jsx",
+        "bytes":  2603,
+        "sha256":  "2847c60e5ea4dd1857f42780415f4116b356df3d6cae756078b77d3a44217949"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/components/dashboard/workspace-brief.jsx",
+        "bytes":  5924,
+        "sha256":  "019479aea2ea0cf21c2c85065acfccb4d1d09f6bb327148645006b6329bffa2c"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/hooks/use-resource.js",
+        "bytes":  891,
+        "sha256":  "d2a2cfe5029be5fc14193144f7fae48a8a6e6980adc5d583274b95d037a3cf42"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/lib/api.js",
+        "bytes":  1102,
+        "sha256":  "b69eed27a0ef14feed62af2c861c2193d4cf2580c78ee6db805c16448fce4835"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/lib/router.jsx",
+        "bytes":  925,
+        "sha256":  "d499b1649e3b938d6f0ea4b94b6766f2dceaed2d6730fc784b8076a5570b82e3"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/pages/ecom.jsx",
+        "bytes":  8147,
+        "sha256":  "c0f25bb766de6de847b38df768a9d76fe5812f5ed501e052f94f24fb52f253a7"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/pages/governance.jsx",
+        "bytes":  19134,
+        "sha256":  "72382090c2fe2dfa259a8edb021596181e07f39927fbfc8e7207f4e2ea7541a2"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/pages/login.jsx",
+        "bytes":  6950,
+        "sha256":  "39370b0197a56a975d96679ebfbbf68781541c9f11b17c63211564f7b1ec332a"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/pages/overview.jsx",
+        "bytes":  10375,
+        "sha256":  "85136fba0661e32923f9d7c07aac6f593b20d3b2b050ed2341c90bc324e07a72"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/pages/product-workspace.jsx",
+        "bytes":  7183,
+        "sha256":  "a4720c5fdaff8399d01783763baec6cf47570ae299047ace3a33fdb5bf55dc5d"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/pages/record-editor.jsx",
+        "bytes":  10992,
+        "sha256":  "fcdb3bec94c2c1a0cd621661286f4cb5333469538f3a03759a9657a5c56058c9"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/pages/record-fields.jsx",
+        "bytes":  13800,
+        "sha256":  "d533149fd1a2130844924c72f3f6a7591784f7634dec1542a8c9131c28d463eb"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/pages/record-list.jsx",
+        "bytes":  6144,
+        "sha256":  "2645022279e51615e5d705c5012c0d7d69c694c43a95040a0550e508e282b615"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/pages/records-config.js",
+        "bytes":  3369,
+        "sha256":  "99d725c25d44cc297d0f82a6820a3836c01350de3824dea1aa1f10d0c57ac834"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/styles/base.css",
+        "bytes":  2837,
+        "sha256":  "bb1535d9ce0aad1a1b214a9333e7cb6b7ff58015f7acfb0e88fa7b590133ef2c"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/styles/components.css",
+        "bytes":  1896,
+        "sha256":  "a74c2058e0bc0e935edfaeb951bcfd4d8a9131937547f20d86382d410a2dbf2e"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/styles/dashboard.css",
+        "bytes":  14319,
+        "sha256":  "2f8458066e4f2d9d2d431582c51b1a4468a743259b691f50807f6c26f1f84a4e"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/styles/data.css",
+        "bytes":  4414,
+        "sha256":  "4866c2eead87b38053d916f8a168d644773de88b7d3bc0dbc7eb4b9c0779dd66"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/styles/forms.css",
+        "bytes":  4680,
+        "sha256":  "7e5178f488f09947bc86dcda56c86f3e4e3e7c0b6b56bbef2d0157d5c1aade91"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/styles/governance.css",
+        "bytes":  1792,
+        "sha256":  "b28a6fb1dc748722d90f73a13cf3477eb563ba961a87808602fa0e981adbab85"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/styles/login.css",
+        "bytes":  2094,
+        "sha256":  "cfdafc8e3cab9853a2f3c849ade2b8f898ebd15fec6af12fb0679f10028ea423"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/styles/motion.css",
+        "bytes":  618,
+        "sha256":  "9f42a27e6af1e5c4da46e1685eb984d0a38c83ae26fe04a80d9037a27839f77e"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/styles/products.css",
+        "bytes":  4273,
+        "sha256":  "a672f094c1efd5d5c8dcfd0727732a9ed033bded8bb9a43c56e32c47b7b7f865"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/styles/responsive.css",
+        "bytes":  5324,
+        "sha256":  "7e9d2d7a0de679a5c3901a56189547377b5044503212f21737f4c235f4003b69"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/styles/select.css",
+        "bytes":  2242,
+        "sha256":  "6ff40bd3e14e8c9ba31959125f440cb3beea33307c8778897873df185ec676d6"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/styles/shell.css",
+        "bytes":  4735,
+        "sha256":  "9bcf06647aa703a710190de2f886ac07979f24bf3c1cf8020755200a19bd597e"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/styles/tokens.css",
+        "bytes":  1386,
+        "sha256":  "c2515fda9892ec05ee76338f6077a50ba922bca4bcb742627e72bb4c4c32d2bc"
+    },
+    {
+        "path":  "sandbee-admin/shared/policy.js",
+        "bytes":  1224,
+        "sha256":  "4ced476de9cb38a9c4eb19b552a2f5d864706f421f67026296d6e1c7da486499"
+    },
+    {
+        "path":  "sandbee-admin/shared/product-models.js",
+        "bytes":  3684,
+        "sha256":  "a18b87341835ea38e62ccfe2f9bf5910ba60fb49a6c23e2c3d708da103924f68"
+    },
+    {
+        "path":  "sandbee-admin/shared/schemas.js",
+        "bytes":  3257,
+        "sha256":  "3a26586a04cdb21d3676fa38a98187043f9a9d7035ac33d33132ad393e0437b7"
+    },
+    {
+        "path":  "sandbee-admin/scripts/bootstrap.js",
+        "bytes":  1835,
+        "sha256":  "49aca26a5269be1f9905479ce1451bb7057c8cd4109ab9744ee550b52353a3b6"
+    },
+    {
+        "path":  "sandbee-admin/scripts/package-handoff.ps1",
+        "bytes":  3174,
+        "sha256":  "90faf3f67fdc9bdcebde79c68c5e21733e549787c9b5e7bce92575ad43d27c8c"
+    },
+    {
+        "path":  "sandbee-admin/scripts/recovery.js",
+        "bytes":  2676,
+        "sha256":  "50acf302110cb50ec4f41c241a5dc366663b60021a64893e571e40ea308545d1"
+    },
+    {
+        "path":  "sandbee-admin/scripts/setup.js",
+        "bytes":  731,
+        "sha256":  "9c8b0d6e07ddf58f29b51491e6a271333416076955231b84add5939078b2e709"
+    },
+    {
+        "path":  "sandbee-admin/test/additional.test.js",
+        "bytes":  2770,
+        "sha256":  "640bd4a17c3fba2a24d8644fa4a30544fbdf2afe1e129fab0caec0044cea4fd7"
+    },
+    {
+        "path":  "sandbee-admin/test/security.test.js",
+        "bytes":  24472,
+        "sha256":  "504973616d1488cf69ffe8579e05e2f9c3f83d42c704b3b94812e1138d6bcdf8"
+    },
+    {
+        "path":  "sandbee-admin/test/ui-server.js",
+        "bytes":  1581,
+        "sha256":  "e99e8550ba220ae00c9d37873d8fa71fa9ad9f321aed770d55fa92a02f1cf90a"
+    },
+    {
+        "path":  "sandbee-admin/test/ui/admin.spec.js",
+        "bytes":  14959,
+        "sha256":  "101128f6469a466db1d6f3418d3bf5390d851573e6f32f4dbbeb80c1f99028a8"
+    },
+    {
+        "path":  "sandbee-admin/docs/API.md",
+        "bytes":  3659,
+        "sha256":  "33b3a00967f77f509c27c108204dad39f3d072a62449096a013ea08effdd6dc3"
+    },
+    {
+        "path":  "sandbee-admin/docs/DEPLOYMENT.md",
+        "bytes":  6635,
+        "sha256":  "f0d589a7af19940fa44bf231a2b568fc473ecb8a146fea1e58679c1a6150d7a8"
+    },
+    {
+        "path":  "sandbee-admin/docs/LAUNCH-REVIEW-2026-09-28.md",
+        "bytes":  3855,
+        "sha256":  "4e9fe113b5737d1d54c286e01e0ef43b7690548f7ce0de0e43d5a07783df1a1f"
+    },
+    {
+        "path":  "sandbee-admin/docs/LAUNCH-REVIEW-2026-10-02.md",
+        "bytes":  996,
+        "sha256":  "7c9d9a8d224943fc766823be00e2a5a676a1f38f37126b6025168c76520ab4fb"
+    },
+    {
+        "path":  "sandbee-admin/docs/PLAN.md",
+        "bytes":  5330,
+        "sha256":  "b39e97a1c9eb8d3249143be7f1d86ab861e5b22338a04f0b06bd3ac99c2dc915"
+    },
+    {
+        "path":  "sandbee-admin/docs/REFERENCE-DESIGN.md",
+        "bytes":  2996,
+        "sha256":  "9c076e18f552c88d8a5bccf159eac827fcff02c322d7e60df2e625917438cd66"
+    },
+    {
+        "path":  "sandbee-admin/docs/RESEARCH.md",
+        "bytes":  4793,
+        "sha256":  "44e29d1e4b763192dc3d7552a7f2500a36f8a45950fa22e077595d37cafa22e4"
+    },
+    {
+        "path":  "sandbee-admin/docs/review.html",
+        "bytes":  13584,
+        "sha256":  "59d3475dc9d0dde9c15801ad9d45931f38d05f3359cba5d96abb033bd2329990"
+    },
+    {
+        "path":  "sandbee-admin/docs/SECURITY.md",
+        "bytes":  4779,
+        "sha256":  "504e184ef4dfccc4c21f5adaea82dfd9c234da09885c65bc03976dc783eabbb6"
+    },
+    {
+        "path":  "sandbee-admin/docs/STORE-UI-UPDATE.md",
+        "bytes":  4657,
+        "sha256":  "d53cdd9c4a51013ef2de63c0d3d17facce1ebae6892816cdeea6a45d164020b7"
+    },
+    {
+        "path":  "sandbee-admin/docs/VALIDATION.md",
+        "bytes":  3691,
+        "sha256":  "1b2c9bb6a0d0e6d2dff9e3d2b09ad14c76face5f579766cc8bee678f27eb89c3"
+    },
+    {
+        "path":  "sandbee-admin/package.json",
+        "bytes":  1316,
+        "sha256":  "3a8412154e95dffab188ac40bd93eca883da90b04e76b5e1e3ace96dcc8f34c0"
+    },
+    {
+        "path":  "sandbee-admin/package-lock.json",
+        "bytes":  110741,
+        "sha256":  "7fbfcb44d09ebda9cf8ace7899f09b5a891dbd663be6299dbea5dd9420759a4a"
+    },
+    {
+        "path":  "sandbee-admin/README.md",
+        "bytes":  5295,
+        "sha256":  "37c98910a8a2ce15baa22bb029aba5c003fdcc1a449a4eddd409fec5ee8012bc"
+    },
+    {
+        "path":  "sandbee-admin/Dockerfile",
+        "bytes":  798,
+        "sha256":  "569f0d0937efeb9b6e46db52f664159febfe365118411459073559afd64d36a7"
+    },
+    {
+        "path":  "sandbee-admin/compose.yaml",
+        "bytes":  912,
+        "sha256":  "5277b948ecae2c3b1225fe68896254dcd539b58b31d5f20df144e12635ac6b4b"
+    },
+    {
+        "path":  "sandbee-admin/compose.production.yaml",
+        "bytes":  524,
+        "sha256":  "c8061e7e4be2620d5c384a41030190ea73d8d15ee35ea38a8c088a4315e4ea57"
+    },
+    {
+        "path":  "sandbee-admin/.env.example",
+        "bytes":  621,
+        "sha256":  "dca575a1cd7585c2156a07b4bd86def31ad5b60d9f56fa1ecc80f45de70874fe"
+    },
+    {
+        "path":  "sandbee-admin/.gitignore",
+        "bytes":  111,
+        "sha256":  "6a43d22f73138be73160541d643e817f5bccdef19d83cd50753756664bf65926"
+    },
+    {
+        "path":  "sandbee-admin/.dockerignore",
+        "bytes":  89,
+        "sha256":  "97130d9a08839509d09a9176ea484669af0aaa8d4e42d1a04adf6838580c1eea"
+    },
+    {
+        "path":  "sandbee-admin/vite.config.mjs",
+        "bytes":  276,
+        "sha256":  "19c28b3e0b4a4e44fcf19bf6ce37fa220eaebb061300391647f067c73e575e82"
+    },
+    {
+        "path":  "sandbee-admin/playwright.config.mjs",
+        "bytes":  596,
+        "sha256":  "1301fd2887beb255f756290973c4d01cf4f25acade9072b7684e0adf7c4b2c9c"
+    }
+]

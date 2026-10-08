@@ -1,0 +1,267 @@
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 18px;
+  font-size: 12px;
+}
+.field > span,
+.field > label {
+  font-weight: 500;
+}
+.field small {
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.field > input,
+.field textarea,
+.field select {
+  font-size: 12px;
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 18px;
+}
+.detail-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 270px;
+  gap: 24px;
+  align-items: start;
+}
+.detail-aside {
+  display: grid;
+  gap: 18px;
+}
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 20px;
+}
+.edit-form > .error-box,
+.edit-form > .notice {
+  margin: 22px;
+}
+.form-section {
+  padding: 26px;
+  border-bottom: 1px solid var(--line);
+}
+.form-section > h2 {
+  margin-bottom: 22px;
+  font-size: 16px;
+}
+.form-section > .field:last-child {
+  margin-bottom: 0;
+}
+.form-note {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 14px;
+}
+.form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px 26px;
+  background: var(--surface);
+}
+.aside-card {
+  padding: 24px;
+}
+.aside-card > h2 {
+  font-size: 15px;
+  margin: 14px 0 12px;
+}
+.aside-card > p {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 16px;
+}
+.aside-card > .small {
+  font-size: 10px;
+}
+.aside-card > .button {
+  white-space: normal;
+  width: 100%;
+}
+.aside-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 9px;
+  background: var(--surface-selected);
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+}
+.picker {
+  display: grid;
+  gap: 7px;
+}
+.picker input {
+  font-size: 11px;
+  min-height: 32px;
+  padding-block: 7px;
+  background: var(--canvas);
+  border-style: dashed;
+}
+.checklist {
+  display: grid;
+  gap: 0;
+  margin: 13px 0 24px;
+}
+.checklist label {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  cursor: pointer;
+}
+.checklist small {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+.check-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 17px 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.connection-checks > h3 {
+  font-size: 12px;
+  margin: 14px 0;
+}
+.progress-number {
+  font-size: 24px;
+  font-weight: 500;
+  letter-spacing: -1px;
+  display: block;
+  margin: 19px 0 13px;
+}
+.progress-number span {
+  font-size: 17px;
+  color: var(--muted);
+}
+.readiness-bar {
+  height: 6px;
+  background: var(--surface);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 21px;
+}
+.readiness-bar span {
+  display: block;
+  background: var(--accent);
+  height: 100%;
+  transition: width 0.2s;
+}
+.related-list {
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+.related-list a {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.error-box {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 13px 15px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 18px;
+}
+.error-box button {
+  border: 0;
+  background: transparent;
+  text-decoration: underline;
+  margin-left: auto;
+}
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--success-bg);
+  color: var(--success);
+  padding: 15px;
+  font-size: 12px;
+  line-height: 1.6;
+  margin-bottom: 18px;
+}
+.loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 240px;
+  gap: 17px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.loading img {
+  width: 44px;
+  height: 44px;
+  animation: bee-bob 1s ease-in-out 4;
+}
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+.modal {
+  width: min(510px, calc(100vw - 28px));
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 26px;
+  color: var(--ink);
+  box-shadow: 0 25px 70px #20242b30;
+  max-height: 90vh;
+  overflow: auto;
+}
+.modal::backdrop {
+  background: #20242b88;
+  backdrop-filter: blur(3px);
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  margin-bottom: 20px;
+}
+.modal > .subtle {
+  font-size: 12px;
+  margin-bottom: 21px;
+}
+.modal form > .button {
+  margin-top: 5px;
+}
+.danger-zone {
+  margin-top: 26px;
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
+}
+.danger-zone p {
+  font-size: 11px;
+  color: var(--muted);
+}

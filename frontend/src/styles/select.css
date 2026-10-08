@@ -1,0 +1,111 @@
+.select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--canvas);
+  font: inherit;
+  text-align: left;
+  transition:
+    border-color var(--motion-fast),
+    background var(--motion-fast);
+}
+.table-scroll {
+  position: relative;
+}
+.page-title > .pill {
+  align-self: flex-start;
+}
+.select-trigger > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.select-trigger > span:last-child {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.select-trigger:hover {
+  background: var(--surface);
+}
+.select-trigger[data-state="open"] {
+  border-color: var(--accent);
+}
+.select-trigger[data-placeholder] {
+  color: var(--muted);
+}
+.field .select-trigger {
+  width: 100%;
+}
+.select-menu {
+  z-index: 100;
+  min-width: var(--radix-select-trigger-width);
+  max-width: calc(100vw - 24px);
+  max-height: min(320px, var(--radix-select-content-available-height));
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--canvas);
+  box-shadow: 0 8px 30px #20242b29;
+  transform-origin: var(--radix-select-content-transform-origin);
+  animation: menu-reveal 150ms var(--ease);
+}
+.select-options {
+  padding: 5px;
+}
+.select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 34px;
+  padding: 7px 9px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+}
+.select-option[data-highlighted] {
+  background: var(--surface-selected);
+  color: var(--accent);
+}
+.select-option[data-state="checked"] {
+  font-weight: 500;
+}
+.select-option[data-disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.select-scroll {
+  display: flex;
+  justify-content: center;
+  padding: 3px;
+  color: var(--muted);
+}
+
+.select-trigger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.select-trigger {
+  color: var(--ink);
+  font-size: 12px;
+}
+.list-toolbar > .select-trigger {
+  min-width: 150px;
+}
+@keyframes menu-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}

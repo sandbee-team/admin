@@ -1,0 +1,102 @@
+.page-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 22px;
+  margin-bottom: 26px;
+}
+.page-title .eyebrow {
+  margin-bottom: 8px;
+}
+.page-title .subtle {
+  margin-top: 9px;
+  font-size: 13px;
+  max-width: 700px;
+}
+.button {
+  border: 1px solid transparent;
+  border-radius: 12px;
+  min-height: 34px;
+  padding: 6px 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition:
+    background 0.16s,
+    transform 0.16s;
+}
+.button:active {
+  transform: translateY(1px);
+}
+.button.primary {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.button.primary:hover {
+  background: var(--accent-hover);
+}
+.button.secondary {
+  background: var(--canvas);
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+.button.secondary:hover {
+  background: var(--surface-hover);
+}
+.button.danger {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: var(--line);
+}
+.plain-link,
+.text-link {
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.plain-link {
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+.plain-link:hover,
+.text-link:hover {
+  text-decoration: underline;
+}
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  min-width: 0;
+  overflow: hidden;
+}
+.panel-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 22px 23px 17px;
+}
+.panel-title p {
+  font-size: 11px;
+  margin-top: 5px;
+  color: var(--muted);
+}
+.panel-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  border-top: 1px solid var(--line);
+  padding: 14px 23px;
+  font-size: 10px;
+  color: var(--muted);
+}

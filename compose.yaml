@@ -1,0 +1,31 @@
+name: sandbee-admin
+services:
+  mongo:
+    image: mongo:8.0
+    command: [mongod, --replSet, admin-rs, --bind_ip_all]
+    ports: ["127.0.0.1:27028:27017"]
+    volumes: [admin-mongo:/data/db]
+    healthcheck:
+      test: [CMD, mongosh, --quiet, --eval, "try { rs.status() } catch (e) { rs.initiate({_id:'admin-rs',members:[{_id:0,host:'mongo:27017'}]}) }"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports: ["127.0.0.1:1031:1025", "127.0.0.1:8031:8025"]
+  app:
+    build: .
+    env_file: .env
+    environment:
+      NODE_ENV: development
+      MONGODB_URI: mongodb://mongo:27017/?replicaSet=admin-rs
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      PORT: 8098
+    ports: ["127.0.0.1:8098:8098"]
+    depends_on:
+      mongo: {condition: service_healthy}
+      mailpit: {condition: service_started}
+    restart: unless-stopped
+volumes:
+  admin-mongo:
