@@ -6,6 +6,7 @@ import { mailer, notifier } from "./modules/mail.js";
 import { seedCatalog } from "./modules/catalog-seed.js";
 import { verifyVaultKey } from "./lib/vault.js";
 import { createS3 } from "./lib/s3.js";
+import { applyTimeouts } from "./lib/http-timeouts.js";
 const c = config(),
   { db, client } = await connect(c);
 await verifyVaultKey(db, c.VAULT_KEY);
@@ -39,9 +40,7 @@ const app = createApp({
 const server = app.listen(c.PORT, "0.0.0.0", () =>
   console.info(`Sandbee Admin listening on port ${c.PORT}`),
 );
-// 20 MB uploads need more than 15 s on a slow uplink (headersTimeout unchanged).
-server.requestTimeout = 60000;
-server.headersTimeout = 10000;
+applyTimeouts(server);
 let stopping = false;
 async function stop() {
   if (stopping) return;

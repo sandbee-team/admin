@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { ensure } from "../lib/errors.js";
+import { ensure, HttpError } from "../lib/errors.js";
 import { can } from "../../shared/policy.js";
 export function ecomRoutes({ db, c, auth }) {
   const router = Router();
@@ -11,21 +11,46 @@ export function ecomRoutes({ db, c, auth }) {
       503,
       "Ecom bridge is not configured. Set ECOM_SERVICE_URL and ECOM_SERVICE_KEY on the Admin server.",
     );
-    const response = await fetch(new URL(path, c.ECOM_SERVICE_URL), {
-      ...options,
-      redirect: "error",
-      signal: AbortSignal.timeout(10000),
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${c.ECOM_SERVICE_KEY}`,
-      },
-    });
-    const data = await response.json();
-    ensure(
-      response.ok,
-      response.status,
-      data.error || "Ecom service unavailable.",
-    );
+    // Upstream failures are Bad Gateway, never the upstream's own status: a
+    // 401 from Ecom must not look like an expired Admin session (the console
+    // signs the user out on 401). Upstream error text is never forwarded.
+    const upstream = (message, code) => {
+      const error = new HttpError(502, message, true);
+      error.apiCode = code;
+      return error;
+    };
+    let response, data;
+    try {
+      response = await fetch(new URL(path, c.ECOM_SERVICE_URL), {
+        ...options,
+        redirect: "error",
+        signal: AbortSignal.timeout(10000),
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${c.ECOM_SERVICE_KEY}`,
+        },
+      });
+    } catch {
+      throw upstream("The Ecom service is unavailable.", "upstream");
+    }
+    if ([401, 403].includes(response.status))
+      throw upstream(
+        "The Ecom service rejected Admin's service key.",
+        "upstream-auth",
+      );
+    try {
+      data = await response.json();
+    } catch {
+      throw upstream(
+        "The Ecom service sent an unreadable response.",
+        "upstream",
+      );
+    }
+    if (!response.ok)
+      throw upstream(
+        "The Ecom service could not complete the request.",
+        "upstream",
+      );
     return data;
   }
   router.get("/tenants", async (req, res) => {

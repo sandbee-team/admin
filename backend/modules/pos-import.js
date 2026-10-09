@@ -129,6 +129,13 @@ export function posImportRoutes({ db, client, c, auth, cache }) {
           { session, projection: { _id: 1 } },
         );
         ensure(product, 409, "The POS product is missing or retired.");
+        // Serialize with product delivery-model changes, exactly like the
+        // generic installation write (records.js validateReferences).
+        await products.updateOne(
+          { _id: product._id },
+          { $inc: { installationRevision: 1 } },
+          { session },
+        );
 
         // Customer: attach to an existing one or create a new one.
         let customerId, existingAccounts;
@@ -189,9 +196,14 @@ export function posImportRoutes({ db, client, c, auth, cache }) {
             productId: product._id,
             environment: "production",
           },
-          { session, projection: { pos: 1 } },
+          { session, projection: { pos: 1, status: 1 } },
         );
         if (current) {
+          ensure(
+            current.status !== "retired",
+            409,
+            "This customer's production POS installation is retired and cannot be reused. Import into a new customer instead.",
+          );
           ensure(
             !current.pos,
             409,

@@ -4,7 +4,13 @@ import { Badge } from "./ui";
 import { ProductIcon } from "./product-icon";
 import { modelFor } from "../../../shared/product-models";
 export function ProductCatalog({ rows }) {
-  const groups = Map.groupBy(rows, (product) => product.category);
+  // Manual grouping: Map.groupBy would raise the browser baseline.
+  const groups = new Map();
+  for (const product of rows)
+    groups.set(product.category, [
+      ...(groups.get(product.category) || []),
+      product,
+    ]);
   return (
     <div className="catalog-groups">
       {[...groups]

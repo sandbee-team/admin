@@ -48,6 +48,7 @@ expiresAt}`. Backup-code hash = `mac(subkey, "<staffId>:<CODE>")`, `subkey = mac
 from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`, shown `XXXXX-XXXXX`.
 
 Enrolment (`backend/modules/auth.js`, all `requireAuth`):
+
 - `POST /auth/totp/enrol/start` — if already enabled (replace) → `requireStepUp`; else the
   session must be fresh (`session.createdAt` ≥ now−15 min) or 403 "Sign in again to set up the
   authenticator". Writes `totpPending`, returns `{secret, uri, qrSvg}` once.
@@ -63,10 +64,11 @@ TOTP; persistent banner until enrolled; login NOT blocked so bootstrap/reset sti
 roles may enrol; once enrolled, login requires it.
 
 Login order: password → email OTP → TOTP.
+
 - `/auth/verify` (`auth.js:153`) unchanged until the email code is consumed; challenge lookup
   filters `purpose: {$in: ["login","recovery"]}`.
 - If `staff.totp.enabledAt`: no session; insert challenge `{purpose:"totp", staffId, authVersion,
-  attempts:0, expiresAt:+5min, pendingPasswordHash?}` → `200 {totpRequired:true, challengeId}`.
+attempts:0, expiresAt:+5min, pendingPasswordHash?}` → `200 {totpRequired:true, challengeId}`.
   Recovery parks the new scrypt hash in the challenge; applied only after TOTP passes.
 - New `POST /auth/verify-totp {challengeId, code | backupCode}` (exactly one; `.strict()` + refine).
 - Extract session creation (`auth.js:186-258`) into `createSession(row, action, newHash)`.
@@ -74,8 +76,9 @@ Login order: password → email OTP → TOTP.
   `consume("totp:<staffId>", 10, 900000)`.
 
 `checkSecondFactor(staff, input)`:
+
 - TOTP: decrypt, `verify`, then atomic replay guard `staff.updateOne({_id, $or:[{"totp.lastStep":
-  {$lt: step}}, {"totp.lastStep": null}]}, {$set: {"totp.lastStep": step}})`; no match → 400
+{$lt: step}}, {"totp.lastStep": null}]}, {$set: {"totp.lastStep": step}})`; no match → 400
   "This code was already used — wait for the next one." `lastStep` is shared by login and
   step-up.
 - Backup code: `updateOne({_id, totpBackupCodes: h}, {$pull: {totpBackupCodes: h}})`,
@@ -100,9 +103,9 @@ backup-code-used|reset`; `session.created` detail records the factors used.
 
 - `POST /auth/step-up {code | backupCode}`: `requireAuth` → 428 if TOTP not enabled →
   `checkSecondFactor` → `sessions.updateOne({_id: req.session._id}, {$set: {stepUpUntil:
-  now+10min}})` → audit → `{stepUpUntil}`.
+now+10min}})` → audit → `{stepUpUntil}`.
 - `auth.requireStepUp` (next to `permit`, `auth.js:286`): `ensure(req.session.stepUpUntil >
-  new Date(), 428, "Confirm with your authenticator code.")`. 428 because 401 triggers session
+new Date(), 428, "Confirm with your authenticator code.")`. 428 because 401 triggers session
   expiry in `api.js:22`. Bound to the session row (logout/revoke ends it).
 - Order: `requireAuth → permit(...) → requireStepUp → handler`.
 - Step-up required: account reveal + show-code, delete account, remove account secret, file
@@ -130,22 +133,22 @@ customer (filter `"accounts.49": {$exists: false}`).
 Concurrency: per-entry `rev` guarded with `$elemMatch {id, rev}` + `$inc "accounts.$.rev"`; the
 customer `revision` is NOT bumped (fact 0.7).
 
-| Route | Gate | Audit |
-|---|---|---|
-| GET `/customers/:id/accounts` | credentials | — |
-| POST `/customers/:id/accounts` | credentials | `account.created` |
-| PUT `/customers/:id/accounts/:aid` | credentials | `account.updated` |
-| PUT `…/:aid/secret` | credentials | `account.secret-replaced` |
-| DELETE `…/:aid/secret {rev, field}` | secrets + step-up | `account.secret-removed` |
-| DELETE `…/:aid {rev}` | secrets + step-up | `account.deleted` |
-| POST `…/:aid/reveal {field}` | secrets + step-up + `consume("reveal:<staffId>",30,3600000)` | `account.revealed` |
-| POST `…/:aid/code` | secrets + step-up + `consume("totp-code:<staffId>",60,3600000)` | `account.code-shown` |
-| POST `…/:aid/backup-codes/used {rev, index}` | credentials | `account.backup-code-marked` |
+| Route                                        | Gate                                                            | Audit                        |
+| -------------------------------------------- | --------------------------------------------------------------- | ---------------------------- |
+| GET `/customers/:id/accounts`                | credentials                                                     | —                            |
+| POST `/customers/:id/accounts`               | credentials                                                     | `account.created`            |
+| PUT `/customers/:id/accounts/:aid`           | credentials                                                     | `account.updated`            |
+| PUT `…/:aid/secret`                          | credentials                                                     | `account.secret-replaced`    |
+| DELETE `…/:aid/secret {rev, field}`          | secrets + step-up                                               | `account.secret-removed`     |
+| DELETE `…/:aid {rev}`                        | secrets + step-up                                               | `account.deleted`            |
+| POST `…/:aid/reveal {field}`                 | secrets + step-up + `consume("reveal:<staffId>",30,3600000)`    | `account.revealed`           |
+| POST `…/:aid/code`                           | secrets + step-up + `consume("totp-code:<staffId>",60,3600000)` | `account.code-shown`         |
+| POST `…/:aid/backup-codes/used {rev, index}` | credentials                                                     | `account.backup-code-marked` |
 
 - Every mutation: `transaction` + `authorizeWrite(…, permission)` (`records.js:12-28`) +
   `audit(…, req)`.
 - Responses use a whitelist `accountView`: `{id, rev, service, label, login, recoveryContact,
-  notes, hasPassword, hasTotp, codesTotal, codesLeft, changedAt}` — never spread the entry.
+notes, hasPassword, hasTotp, codesTotal, codesLeft, changedAt}` — never spread the entry.
 - Reveal/code are POST (Origin + CSRF checks). Decrypt + audit inside the transaction; respond
   only after commit. Reveal → `{value}` or `{codes: [{index, code, used}]}`; code →
   `{code, expiresIn}` (key never revealed). Audit detail = service, label, field name only.
@@ -157,13 +160,14 @@ S3 client: hand-written SigV4 (~150 lines, `fetch` + `node:crypto`) instead of
 `@aws-sdk/client-s3` (5 operations needed; SDK ≈100 packages, tens of MB RSS). Tested against
 AWS's documented SigV4 examples. `createS3({region, bucket, accessKeyId, secretAccessKey, fetch,
 now})`:
+
 - `put(key, buf)` → `{versionId}`; signed `x-amz-content-sha256`,
   `x-amz-server-side-encryption: AES256`, `If-None-Match: *`; missing `x-amz-version-id` = error.
 - `get(key, versionId, maxBytes)`, `del(key)`, `copy(key, versionId)` → `{versionId}` (parse body:
   CopyObject can return 200 with `<Error>`), `list(prefix, 1)`.
 - Virtual-hosted regional endpoint; bucket names with dots rejected. `redirect: "error"`
   (as `ecom.js:16`); timeouts 30 s put/get, 10 s others. Errors → `HttpError(503, "File storage
-  is unavailable.")` with internal `s3Code` (`NoSuchVersion` → 410); S3 bodies never in messages
+is unavailable.")` with internal `s3Code` (`NoSuchVersion` → 410); S3 bodies never in messages
   or logs. `createApp(deps)` takes `deps.s3`; `server.js` builds it only when configured.
 
 Config (`backend/config.js`): `FILES_S3_REGION` (default `ap-south-1`), `FILES_S3_BUCKET`,
@@ -173,6 +177,7 @@ only (`config.js:33-35,54-73` pattern). `FILES_` prefix so no SDK/CLI picks up a
 credentials.
 
 Upload `POST /api/customers/:id/files` (credentials):
+
 - `app.js` gate allows `application/octet-stream` only for `POST ^/customers/<uuid>/files$`
   (express.json ignores it → body stays a stream).
 - Headers `X-File-Name` (encodeURIComponent), `X-File-Category`; no query strings.
@@ -180,28 +185,28 @@ Upload `POST /api/customers/:id/files` (credentials):
   `consume("file-upload:<staffId>",60,3600000)`; `Content-Length` required (411), 1 B–20 MB (413);
   filename NFC, strip control chars and `/\:*?"<>|`, collapse whitespace, ≤150 chars; extension
   allowlist `pdf png jpg jpeg webp txt csv json zip gz docx xlsx`; category enum `agreement kyc
-  invoice screenshot db-backup other`.
+invoice screenshot db-backup other`.
 - Stream `for await` over `req`: SHA-256 of plaintext + AES-256-GCM chunk by chunk; byte counter
   aborts at limit or length mismatch (~40 MB peak per transfer).
 - Data key 32 random bytes; object = `"SBF1" | iv(12) | ciphertext | tag(16)`, AAD
   `file:<customerId>:<fileId>`; data key boxed `encrypt(hex, VAULT_KEY, "file:<cid>:<fid>")`.
 - Key `files/<cid>/<fid>`; S3 PUT outside the transaction. Transaction: `$pull` entries deleted
-  >31 days ago, `$push` metadata with filter `"files.299": {$exists: false}` (409 at cap), audit
-  `file.uploaded` (detail = category, size, short id — no name). If the transaction fails after
-  S3 succeeded → best-effort `del` (version expires via lifecycle).
+  more than 31 days ago, `$push` metadata with filter `"files.299": {$exists: false}` (409 at cap),
+  audit `file.uploaded` (detail = category, size, short id — no name). If the transaction fails after
+  > S3 succeeded → best-effort `del` (version expires via lifecycle).
 - Metadata `{id, name, category, size, sha256, contentType, s3Key, versionId, dataKey, uploadedBy,
-  uploadedById, uploadedAt, deletedAt: null, deletedBy, restoredAt, purgedAt}`.
+uploadedById, uploadedAt, deletedAt: null, deletedBy, restoredAt, purgedAt}`.
 - `server.requestTimeout` 15 s → 60 s (`server.js:26`) — pending owner OK (open question 2);
   `headersTimeout` stays 10 s; UI maps 408 to "Upload timed out — try a faster connection or a
   smaller file."
 
-| Route | Gate | Behaviour | Audit |
-|---|---|---|---|
-| GET `/customers/:id/files` | credentials | whitelist `{id, name, category, size, sha256, uploadedBy, uploadedAt, deletedAt, restorable}` | — |
-| POST `…/files/:fid/download` | secrets + step-up, slot gate, `consume("file-download",60/h)` | refuse deleted (409); GET stored `versionId`; check magic; decrypt fully; verify GCM tag AND SHA-256 before sending any byte; `application/octet-stream`, `Content-Disposition: attachment; filename*=UTF-8''…` | `file.downloaded` |
-| DELETE `…/files/:fid` | secrets + step-up | S3 `del` first, then transaction sets `deletedAt` (filter `deletedAt: null`); retry converges | `file.deleted` |
-| POST `…/files/:fid/restore` | credentials | only ≤29 days after delete; `copy(key, versionId)`, store NEW versionId, clear `deletedAt`; NoSuchVersion → `purgedAt`, 410 | `file.restored` |
-| POST `/files/self-test` | secrets | put `files/_selftest/<uuid>`, require versionId, get by version, delete, list → `{ok, versioning, listing}` | `files.self-tested` |
+| Route                        | Gate                                                          | Behaviour                                                                                                                                                                                                       | Audit               |
+| ---------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| GET `/customers/:id/files`   | credentials                                                   | whitelist `{id, name, category, size, sha256, uploadedBy, uploadedAt, deletedAt, restorable}`                                                                                                                   | —                   |
+| POST `…/files/:fid/download` | secrets + step-up, slot gate, `consume("file-download",60/h)` | refuse deleted (409); GET stored `versionId`; check magic; decrypt fully; verify GCM tag AND SHA-256 before sending any byte; `application/octet-stream`, `Content-Disposition: attachment; filename*=UTF-8''…` | `file.downloaded`   |
+| DELETE `…/files/:fid`        | secrets + step-up                                             | S3 `del` first, then transaction sets `deletedAt` (filter `deletedAt: null`); retry converges                                                                                                                   | `file.deleted`      |
+| POST `…/files/:fid/restore`  | credentials                                                   | only ≤29 days after delete; `copy(key, versionId)`, store NEW versionId, clear `deletedAt`; NoSuchVersion → `purgedAt`, 410                                                                                     | `file.restored`     |
+| POST `/files/self-test`      | secrets                                                       | put `files/_selftest/<uuid>`, require versionId, get by version, delete, list → `{ok, versioning, listing}`                                                                                                     | `files.self-tested` |
 
 ## 5. Installation `pos` block (U2) — `backend/modules/pos.js`
 
@@ -223,14 +228,14 @@ Validation copied (not imported) from go-live (`F:\lucifer\scripts\go-live\lib.m
 
 Routes (only for installations whose product slug is `pos`):
 
-| Route | Gate | Behaviour | Audit |
-|---|---|---|---|
-| GET `/installations/:id/pos` | credentials | config + `{secrets: {field: {set, changedAt}}}` + deploy nulls + `rev`; `{pos: null}` if absent | — |
-| PUT `/installations/:id/pos {rev, config}` | credentials | `rev: 0` creates (filter `pos: {$exists: false}`, null secrets); else `$set` individual dotted config paths (never whole `pos`) with filter `pos.rev` | `pos.configured` |
-| PUT `…/pos/secret {rev, field, value}` | credentials | replace one secret | `pos.secret-replaced` |
-| DELETE `…/pos/secret` | secrets + step-up | remove one secret | `pos.secret-removed` |
-| POST `…/pos/reveal` | secrets + step-up + shared reveal limit | reveal one secret | `pos.secret-revealed` |
-| DELETE `…/pos {rev}` | secrets + step-up | undo a wrong import | `pos.removed` |
+| Route                                      | Gate                                    | Behaviour                                                                                                                                             | Audit                 |
+| ------------------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| GET `/installations/:id/pos`               | credentials                             | config + `{secrets: {field: {set, changedAt}}}` + deploy nulls + `rev`; `{pos: null}` if absent                                                       | —                     |
+| PUT `/installations/:id/pos {rev, config}` | credentials                             | `rev: 0` creates (filter `pos: {$exists: false}`, null secrets); else `$set` individual dotted config paths (never whole `pos`) with filter `pos.rev` | `pos.configured`      |
+| PUT `…/pos/secret {rev, field, value}`     | credentials                             | replace one secret                                                                                                                                    | `pos.secret-replaced` |
+| DELETE `…/pos/secret`                      | secrets + step-up                       | remove one secret                                                                                                                                     | `pos.secret-removed`  |
+| POST `…/pos/reveal`                        | secrets + step-up + shared reveal limit | reveal one secret                                                                                                                                     | `pos.secret-revealed` |
+| DELETE `…/pos {rev}`                       | secrets + step-up                       | undo a wrong import                                                                                                                                   | `pos.removed`         |
 
 - `db.js`: unique partial index `installations {"pos.slug": 1}` (filter `pos.slug` exists);
   `audit_events {resourceId: 1, createdAt: -1}`.
@@ -240,20 +245,20 @@ Routes (only for installations whose product slug is `pos`):
 ## 6. Import (U4) — `backend/modules/pos-import.js` + pure `backend/lib/pos-import.js`
 
 - Body limit: `app.js:66` becomes a selector — `/pos/import/*` uses `express.json({limit:
-  "128kb"})`, everything else 32 kb.
+"128kb"})`, everything else 32 kb.
 - The browser parses `deploy.profiles.json` locally and sends ONLY the selected entry
   `{name, entry}` (other clients' tokens never leave the PC). `name` `^[A-Za-z0-9_-]{1,64}$`;
   `entry` `.strict()` `{app, orgId, projectId, scope, tokenEnv, token}`.
 - Client schema: top-level `.strict()` with every known key (`_readme, slug, vercel, subdomain,
-  mongodbUri, admin, cafe, tables, menu, image, contact, accounts, notes, deployLock, demo,
-  cloudflare, standbyHosts, generated, lastRun`); imported fields validated strictly; dropped
+mongodbUri, admin, cafe, tables, menu, image, contact, accounts, notes, deployLock, demo,
+cloudflare, standbyHosts, generated, lastRun`); imported fields validated strictly; dropped
   blocks `z.unknown()`; unknown top-level key = error.
 - `POST /pos/import/preview` (secrets) → `{digest = mac(AUTH_SECRET, "pos-import-v1:" +
-  canonical), mapping (non-secret values), secrets: [{target, present}], accounts: [{service,
-  label, login, hasPassword}], dropped: [paths], warnings, existing, customerMatches}`. Mongo URI
+canonical), mapping (non-secret values), secrets: [{target, present}], accounts: [{service,
+label, login, hasPassword}], dropped: [paths], warnings, existing, customerMatches}`. Mongo URI
   shown as host/db only.
 - `POST /pos/import/confirm {client, profile, digest, customer: {mode: "existing", customerId} |
-  {mode: "new", name, email, company, phone}}` (secrets): re-parse, require matching digest; one
+{mode: "new", name, email, company, phone}}` (secrets): re-parse, require matching digest; one
   transaction: `authorizeWrite("secrets")`; create customer (`schemas.customers`) or check it
   exists; POS product by slug, not retired; reuse an existing production POS installation without
   a block (unique index `db.js:57-62`) or insert a new `planned` one with `endpoint https://host`;
@@ -264,30 +269,30 @@ Routes (only for installations whose product slug is `pos`):
   unique `pos.slug` index (11000 → 409, `app.js:95`). Re-import requires `DELETE …/pos`
   (step-up) first; accounts de-duplicated by `importKey`.
 
-| Source (client file) | Target |
-|---|---|
-| `slug`, `subdomain` | `pos.slug`, `pos.subdomain` |
-| `generated.host/tenantId/rootDomain` | `pos.host/tenantId/rootDomain`; installation `endpoint` |
-| `vercel.token` | `pos.vercel.token` (warn if the profile token differs) |
-| `vercel.project` ∥ `generated.projectName` ∥ `slug` | `pos.vercel.projectName` |
-| `generated.projectId/orgId` | `pos.vercel.projectId/orgId`; ERROR if the profile disagrees |
-| `vercel.teamId` ∥ `profile.scope` | `pos.vercel.teamId` |
-| `mongodbUri` | `pos.mongo.uri` |
-| `cloudflare.token/accountId`; `generated.realtime.workerName/url` | `pos.cloudflare.*` |
-| `cloudflare.publishSecret` ∥ `generated.realtime.publishSecret` | `pos.generated.realtimePublishSecret` |
-| `image.*` | non-secret → `pos.image`; key pair → `image.keys` |
-| `generated.authSecret/healthStatsToken` | `pos.generated.*` |
-| `admin.username/password` | `pos.posAdmin.*` |
-| `accounts.vercel/atlas/images` | account entries (images → `image.store` as service, else `other`) |
-| `accounts.other` (≤4000 chars) | account "Other logins (imported)", text stored ENCRYPTED as `password` |
-| `contact.ownerName/phone`; `cafe.name` | new-customer defaults; `cafe.name` → company + installation name |
+| Source (client file)                                              | Target                                                                 |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `slug`, `subdomain`                                               | `pos.slug`, `pos.subdomain`                                            |
+| `generated.host/tenantId/rootDomain`                              | `pos.host/tenantId/rootDomain`; installation `endpoint`                |
+| `vercel.token`                                                    | `pos.vercel.token` (warn if the profile token differs)                 |
+| `vercel.project` ∥ `generated.projectName` ∥ `slug`               | `pos.vercel.projectName`                                               |
+| `generated.projectId/orgId`                                       | `pos.vercel.projectId/orgId`; ERROR if the profile disagrees           |
+| `vercel.teamId` ∥ `profile.scope`                                 | `pos.vercel.teamId`                                                    |
+| `mongodbUri`                                                      | `pos.mongo.uri`                                                        |
+| `cloudflare.token/accountId`; `generated.realtime.workerName/url` | `pos.cloudflare.*`                                                     |
+| `cloudflare.publishSecret` ∥ `generated.realtime.publishSecret`   | `pos.generated.realtimePublishSecret`                                  |
+| `image.*`                                                         | non-secret → `pos.image`; key pair → `image.keys`                      |
+| `generated.authSecret/healthStatsToken`                           | `pos.generated.*`                                                      |
+| `admin.username/password`                                         | `pos.posAdmin.*`                                                       |
+| `accounts.vercel/atlas/images`                                    | account entries (images → `image.store` as service, else `other`)      |
+| `accounts.other` (≤4000 chars)                                    | account "Other logins (imported)", text stored ENCRYPTED as `password` |
+| `contact.ownerName/phone`; `cafe.name`                            | new-customer defaults; `cafe.name` → company + installation name       |
 
 - `pos.deployLock` is always set `true` on import (no admin deploy until the owner unlocks it in
   Stage 2); the local value is shown as information only (different meaning).
 - Dropped and listed in the preview: `notes` (may contain passwords — copy by hand), `cafe.*`
   except name, `tables`, `menu`, `standbyHosts` (Stage 3), `profile.app`, `profile.tokenEnv`
   (warning "token held in env var — enter by hand"), `generated.{seededAt, webAddress,
-  previousHosting, realtime.sourceHash, …}`, `lastRun`, `demo`, `_readme`.
+previousHosting, realtime.sourceHash, …}`, `lastRun`, `demo`, `_readme`.
 
 ## 7. Recovery (U5)
 
@@ -401,13 +406,13 @@ verifies with `npm test`, `npm run build`, `npm run test:ui` (check `package.jso
    `backend/modules/{auth,records,team,overview}.js` (audit `req` only), `shared/policy.js`,
    `package.json`/`package-lock.json` (`uqr`), `scripts/recovery.js` (dispatcher + `reset-totp`),
    `frontend/src/{lib/api.js, components/step-up.jsx, components/shell.jsx, pages/login.jsx,
-   pages/account-security.jsx, pages/governance.jsx, main.jsx}`, `test/{helpers.js,
-   stage1-auth.test.js, ui-server.js, ui/security.spec.js}`, `docs/SECURITY.md` identity section,
+pages/account-security.jsx, pages/governance.jsx, main.jsx}`, `test/{helpers.js,
+stage1-auth.test.js, ui-server.js, ui/security.spec.js}`, `docs/SECURITY.md` identity section,
    `docs/API.md` auth rows.
 2. U2 Client record backend: `backend/{config.js, server.js, app.js (upload gate), db.js}`,
    `backend/lib/{s3,secrets,snapshot}.js`, `backend/modules/{accounts,files,pos,records
-   (scrub/projection),overview (/audit filter)}.js`, `shared/schemas.js`, `test/{fake-s3.js,
-   s3.test.js, stage1-vault.test.js}`, API.md vault rows, SECURITY.md secrets/files,
+(scrub/projection),overview (/audit filter)}.js`, `shared/schemas.js`, `test/{fake-s3.js,
+s3.test.js, stage1-vault.test.js}`, API.md vault rows, SECURITY.md secrets/files,
    DEPLOYMENT.md S3 + Caddy steps.
 3. U3 Client record frontend (parallel with U2 against §3–5 contracts):
    `frontend/src/pages/{customer-workspace,installation-workspace}.jsx`,
@@ -419,11 +424,11 @@ verifies with `npm test`, `npm run build`, `npm run test:ui` (check `package.jso
    `frontend/src/pages/pos-import.jsx`, `main.jsx`/`shell.jsx`/`record-list.jsx` (import link),
    `test/{stage1-import.test.js, fixtures/pos-client.json, ui/import.spec.js}`, API.md rows.
 5. U5 Recovery + release: `backend/config.js` (`BACKUP_KEY`), `backend/lib/{crypto,
-   recovery-tasks}.js`, `backend/modules/overview.js` (recovery), `scripts/recovery.js`
+recovery-tasks}.js`, `backend/modules/overview.js` (recovery), `scripts/recovery.js`
    (`verify-key`), `frontend/src/pages/governance.jsx` (RecoveryPage),
    `test/{stage1-recovery.test.js, ui/recovery.spec.js}`, DEPLOYMENT.md recovery section,
    SECURITY.md keys line, `docs/VALIDATION.md`. Release: after U4, `powershell -File
-   scripts/package-handoff.ps1 -OutputName sandbee-admin-source-2026-10-XX.zip` and copy
+scripts/package-handoff.ps1 -OutputName sandbee-admin-source-2026-10-XX.zip` and copy
    `sandbee-admin/HANDOFF-MANIFEST.json` from the zip to the repo root.
 
 ## 13. Docs and live deployment
@@ -433,17 +438,20 @@ S3 content not in snapshots, rollback re-exposes boxes and drops TOTP); DEPLOYME
 Caddy, verify-key, reset-totp; fix the nginx mention — production uses Caddy).
 
 Server steps:
+
+> **Superseded by D18 / docs/DEPLOYMENT.md:** the server keeps one image `sandbee-admin:local`; never export `RELEASE_TAG`. The text below is historical.
+
 1. Owner takes a `mongodump` of `sandbee_admin` to the PC (D13).
 2. `~/admin/.env`: all four `FILES_S3_*` vars (or none); `BACKUP_KEY` if missing.
 3. `/opt/edge/Caddyfile`: no `request_body max_size` below 21 MB and no proxy timeout below 60 s
    for admin.sandbee.in.
 4. `cd ~/admin && export RELEASE_TAG=2026-10-XX-stage1 && docker compose -f
-   compose.production.yaml build app && docker compose -f compose.production.yaml up -d --no-build`.
+compose.production.yaml build app && docker compose -f compose.production.yaml up -d --no-build`.
 5. `/ready`; log in; enrol at `/account` within 15 minutes; store backup codes offline; log out
    and back in with TOTP.
 6. Files "Test storage"; import demo; enter lucifer by hand; reveal one test secret.
 7. Verify each key copy: `docker compose -f compose.production.yaml exec app node
-   scripts/recovery.js verify-key --kind=vault --copy=password-manager` (repeat per copy).
+scripts/recovery.js verify-key --kind=vault --copy=password-manager` (repeat per copy).
 8. Rollback: `export RELEASE_TAG=<previous> && docker compose … up -d --no-build`. Data is additive,
    but old code returns boxes in generic responses and ignores TOTP — roll back only briefly.
 

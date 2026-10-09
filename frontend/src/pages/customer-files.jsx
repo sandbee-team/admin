@@ -14,7 +14,7 @@ import {
 } from "../components/ui";
 import { ConfirmModal } from "../components/confirm";
 import { withStepUp } from "../components/step-up";
-import { api, upload, download, dateTime } from "../lib/api";
+import { api, upload, download, dateTime, isStale } from "../lib/api";
 import { can } from "../../../shared/policy";
 // Mirror shared/schemas.js (FILE_CATEGORIES, FILE_EXTENSIONS, MAX_FILE_BYTES);
 // the API enforces them again.
@@ -94,6 +94,7 @@ function FileList({ customerId, initial, user }) {
     [busy, setBusy] = useState(""),
     [confirm, setConfirm] = useState(null),
     [probe, setProbe] = useState(null),
+    [warning, setWarning] = useState(""),
     input = useRef(),
     urls = useRef(new Set());
   const base = `/customers/${customerId}/files`,
@@ -106,7 +107,11 @@ function FileList({ customerId, initial, user }) {
   function fail(e) {
     if (e.cancelled) return;
     if (e.code === "not-configured") setStorageOff(true);
-    else
+    else if (isStale(e)) {
+      // Someone else changed the file: show the current list, say so.
+      refresh().catch(() => {});
+      setError(`${e.message} The list was refreshed.`);
+    } else
       setError(
         e.status === 408
           ? "Upload timed out — try a faster connection or a smaller file."
@@ -160,11 +165,21 @@ function FileList({ customerId, initial, user }) {
     }
   }
   async function remove(file) {
-    await withStepUp(() =>
-      api(`${base}/${file.id}`, { method: "DELETE", body: {} }),
-    );
-    await refresh();
-    setConfirm(null);
+    try {
+      const result = await withStepUp(() =>
+        api(`${base}/${file.id}`, { method: "DELETE", body: {} }),
+      );
+      setWarning(
+        result.storageDeleted === false
+          ? `${file.name} is marked deleted, but its stored copy could not be removed from storage just now. It is not downloadable; ask an administrator to check storage.`
+          : "",
+      );
+      await refresh();
+      setConfirm(null);
+    } catch (e) {
+      if (isStale(e)) refresh().catch(() => {});
+      throw e;
+    }
   }
   async function restore(file) {
     setError("");
@@ -206,6 +221,12 @@ function FileList({ customerId, initial, user }) {
         </div>
       )}
       {error && <ErrorBox>{error}</ErrorBox>}
+      {warning && (
+        <div className="notice notice-warning" role="status">
+          <FileText size={16} />
+          <span>{warning}</span>
+        </div>
+      )}
       {probe &&
         (probe.ok && probe.versioning ? (
           <Notice>

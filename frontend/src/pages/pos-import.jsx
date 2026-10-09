@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
   PageTitle,
   Field,
@@ -67,10 +68,13 @@ export function PosImport() {
       clearAll();
       setDone(null);
     };
-    window.addEventListener("pagehide", wipe);
+    // flushSync: the DOM must be empty before the page can be frozen into the
+    // back/forward cache.
+    const hide = () => flushSync(wipe);
+    window.addEventListener("pagehide", hide);
     return () => {
       mounted.current = false;
-      window.removeEventListener("pagehide", wipe);
+      window.removeEventListener("pagehide", hide);
       clearAll();
     };
   }, []);
@@ -240,7 +244,10 @@ export function PosImport() {
             />
           </Field>
         )}
-        {error && <ErrorBox>{error}</ErrorBox>}
+        {/* One alert at a time: the confirm step below shows it once a preview exists. */}
+        {error && !(preview && !preview.existing) && (
+          <ErrorBox>{error}</ErrorBox>
+        )}
         <div className="form-actions">
           <Button variant="secondary" type="button" onClick={clearAll}>
             Clear files

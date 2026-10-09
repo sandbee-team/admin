@@ -13,6 +13,7 @@ import {
   Modal,
   Notice,
   Select,
+  SecretInput,
 } from "../components/ui";
 import { WorkspaceFrame } from "../components/workspace-frame";
 import { ConfirmModal } from "../components/confirm";
@@ -59,7 +60,12 @@ export function InstallationWorkspace({ id, section = "", user }) {
             navLabel="Installation navigation"
           >
             {section === "" ? (
-              <Summary id={id} user={user} product={productResource.data} />
+              <Summary
+                id={id}
+                user={user}
+                product={productResource.data}
+                onSaved={() => resource.refresh().catch(() => {})}
+              />
             ) : section === "pos" && isPos ? (
               can(user.role, "credentials") ? (
                 <PosSetup installation={installation} user={user} />
@@ -81,7 +87,7 @@ export function InstallationWorkspace({ id, section = "", user }) {
     </Resource>
   );
 }
-function Summary({ id, user, product }) {
+function Summary({ id, user, product, onSaved }) {
   // Saving in the editor re-reads the record so the steps below stay current.
   const [saves, setSaves] = useState(0);
   return (
@@ -90,7 +96,10 @@ function Summary({ id, user, product }) {
         kind="installations"
         id={id}
         user={user}
-        onSaved={() => setSaves((n) => n + 1)}
+        onSaved={() => {
+          setSaves((n) => n + 1);
+          onSaved?.();
+        }}
       />
       <SetupSteps key={saves} id={id} product={product} />
     </>
@@ -649,10 +658,8 @@ function PosSecretModal({ base, pos, field, name, onClose, onSaved, onStale }) {
               onChange={(event) => setValue(event.target.value)}
             />
           ) : (
-            <input
-              type="password"
+            <SecretInput
               required
-              autoComplete="off"
               maxLength={4096}
               value={value}
               onChange={(event) => setValue(event.target.value)}

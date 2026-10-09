@@ -25,7 +25,7 @@ import {
   Notice,
   TextLink,
 } from "../components/ui";
-import { api, dateTime } from "../lib/api";
+import { api, dateTime, isStale } from "../lib/api";
 import { can } from "../../../shared/policy";
 export function AuditPage() {
   const [page, setPage] = useState(1),
@@ -224,6 +224,7 @@ function TeamModal({ member, onClose, onSaved }) {
     ),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
+    [stale, setStale] = useState(false),
     [done, setDone] = useState(false);
   async function save(event) {
     event.preventDefault();
@@ -237,6 +238,7 @@ function TeamModal({ member, onClose, onSaved }) {
       if (member) onSaved();
       else setDone(true);
     } catch (e) {
+      setStale(Boolean(member) && isStale(e));
       setError(e.message);
     } finally {
       setBusy(false);
@@ -258,7 +260,14 @@ function TeamModal({ member, onClose, onSaved }) {
         </>
       ) : (
         <form onSubmit={save}>
-          {error && <ErrorBox>{error}</ErrorBox>}
+          {error && (
+            <ErrorBox
+              retry={stale ? onSaved : undefined}
+              retryLabel="Reload team"
+            >
+              {error}
+            </ErrorBox>
+          )}
           {!member && (
             <>
               <Field label="Full name">

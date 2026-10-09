@@ -53,12 +53,17 @@ export function parseSnapshot(value, vaultKey, backupKey) {
   const verifier = snapshot.collections.system_state.find(
     (row) => row._id === "vault-v1",
   );
-  if (
-    verifier &&
-    decrypt(verifier.verifier, vaultKey, "vault-verifier-v1") !==
-      "sandbee-admin-vault"
-  )
-    throw new Error("Vault verification failed.");
+  if (verifier) {
+    let matches = false;
+    try {
+      matches =
+        decrypt(verifier.verifier, vaultKey, "vault-verifier-v1") ===
+        "sandbee-admin-vault";
+    } catch {
+      matches = false;
+    }
+    if (!matches) throw new Error("Vault verification failed.");
+  }
   for (const name of BACKUP_COLLECTIONS)
     for (const row of snapshot.collections[name])
       verifySecretBoxes(name, row, vaultKey);

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect } from "react";
 import { ArrowUpRight, Database, FileUp } from "lucide-react";
 import { definitions } from "./records-config";
 import { useResource } from "../hooks/use-resource";
@@ -11,22 +11,35 @@ import {
   Pagination,
   SearchInput,
   Select,
+  Loading,
 } from "../components/ui";
-import { Link } from "../lib/router";
+import { Link, setQuery, useSearch } from "../lib/router";
 import { dateTime, label } from "../lib/api";
 import { ProductCatalog } from "../components/product-catalog";
 import { PRODUCT_MODELS } from "../../../shared/product-models";
 import { can } from "../../../shared/policy";
+// A page number beyond the last one (a stale link, a shrunk list) moves to the
+// last page instead of claiming the list is empty.
+function LastPage({ to }) {
+  useEffect(() => to(), []);
+  return <Loading />;
+}
 export function RecordList({ kind, user }) {
   const def = definitions[kind],
-    [page, setPage] = useState(1),
-    [search, setSearch] = useState(() =>
-      (new URLSearchParams(location.search).get("search") || "").slice(0, 100),
-    ),
-    [status, setStatus] = useState(""),
-    [model, setModel] = useState("");
+    // The URL is the source of truth, so filters survive reloads and a link to
+    // the same list with another search re-reads it.
+    query = new URLSearchParams(useSearch()),
+    page = Math.min(10000, Math.max(1, parseInt(query.get("page"), 10) || 1)),
+    search = (query.get("search") || "").slice(0, 100),
+    status = query.get("status") || "",
+    model = query.get("model") || "",
+    filters = { search, status, model };
+  const change = (next, replace = false) =>
+      setQuery({ ...filters, page, ...next }, { replace }),
+    setPage = (value) => change({ page: value }),
+    pick = (name) => (event) => change({ [name]: event.target.value, page: 1 });
   const resource = useResource(
-      `/${kind}?page=${page}&search=${encodeURIComponent(search)}&status=${status}&model=${model}`,
+      `/${kind}?page=${page}&search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}&model=${encodeURIComponent(model)}`,
     ),
     writable = can(user.role, def.permission);
   return (
@@ -52,20 +65,14 @@ export function RecordList({ kind, user }) {
       <div className="list-toolbar">
         <SearchInput
           value={search}
-          onChange={(value) => {
-            setSearch(value);
-            setPage(1);
-          }}
+          onChange={(value) => change({ search: value, page: 1 }, true)}
           placeholder={`Search ${def.title.toLowerCase()}…`}
         />
         {kind === "products" && (
           <Select
             aria-label="Filter by delivery model"
             value={model}
-            onChange={(event) => {
-              setModel(event.target.value);
-              setPage(1);
-            }}
+            onChange={pick("model")}
             options={[
               { value: "", label: "All delivery models" },
               ...Object.entries(PRODUCT_MODELS).map(([value, model]) => ({
@@ -78,26 +85,29 @@ export function RecordList({ kind, user }) {
         <Select
           aria-label="Filter by status"
           value={status}
-          onChange={(event) => {
-            setStatus(event.target.value);
-            setPage(1);
-          }}
+          onChange={pick("status")}
           options={[{ value: "", label: "All statuses" }, ...def.statuses]}
         />
       </div>
       <Resource resource={resource}>
         {(data) =>
-          !data.rows.length ? (
+          !data.rows.length && page > 1 && data.total > 0 ? (
+            <LastPage
+              to={() =>
+                change({ page: Math.ceil(data.total / data.pageSize) }, true)
+              }
+            />
+          ) : !data.rows.length ? (
             <div className="panel">
               <Empty
                 icon={Database}
                 title={
-                  search || status
+                  search || status || model
                     ? "No matching records"
                     : `Your ${def.title.toLowerCase()} start here`
                 }
               >
-                {search || status
+                {search || status || model
                   ? "Try another search or status filter."
                   : `Add your first ${def.singular} to start managing it from your operations workspace.`}
               </Empty>

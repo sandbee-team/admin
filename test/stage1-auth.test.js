@@ -963,12 +963,19 @@ describe("TOTP enrolment, login, step-up and recovery", () => {
   it("locks wrong authenticator codes for a day but keeps backup codes working", async () => {
     const who = await enrol();
     const id = (await row(who.email))._id;
-    // 19 wrong codes already recorded today; the next one trips the lock.
-    await ctx.db.collection("rate_limits").insertOne({
-      _id: bucket(`totp-fail-day:${id}`, 86400000),
-      count: 19,
-      expiresAt: new Date(Date.now() + 2 * 86400000),
-    });
+    // 19 wrong codes already recorded in the past 24 h; the next one trips
+    // the rolling lock.
+    await ctx.db.collection("staff").updateOne(
+      { _id: id },
+      {
+        $set: {
+          totpFailures: Array.from(
+            { length: 19 },
+            (_, i) => new Date(Date.now() - (i + 1) * 60000),
+          ),
+        },
+      },
+    );
     const wrong = codeAt(who.key, now() + 9);
     assert.equal((await stepUp(who, { code: wrong })).status, 400);
     await settle();
@@ -1028,12 +1035,9 @@ describe("TOTP enrolment, login, step-up and recovery", () => {
     assert.equal((await stepUp(who, { backupCode: who.codes[1] })).status, 200);
     // A maintenance reset clears the lock.
     await resetTotp({ db: ctx.db, client: ctx.client }, who.email);
-    assert.equal(
-      await ctx.db
-        .collection("rate_limits")
-        .findOne({ _id: bucket(`totp-fail-day:${id}`, 86400000) }),
-      null,
-    );
+    const cleared = await row(who.email);
+    assert.equal(cleared.totpLockedUntil, undefined);
+    assert.equal(cleared.totpFailures, undefined);
   });
   it("applies the authentication gate to case and trailing-slash variants", async () => {
     // Downstream calls are held open so eight requests occupy the gate.

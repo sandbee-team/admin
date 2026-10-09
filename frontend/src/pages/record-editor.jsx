@@ -18,9 +18,10 @@ import {
   ErrorBox,
   Notice,
   Modal,
+  SecretInput,
 } from "../components/ui";
 import { Link, navigate } from "../lib/router";
-import { api, dateTime } from "../lib/api";
+import { api, dateTime, isStale } from "../lib/api";
 import { can } from "../../../shared/policy";
 import { checksFor, providersFor } from "../../../shared/product-models";
 export function RecordEditor({ kind, id, user, onSaved }) {
@@ -29,34 +30,50 @@ export function RecordEditor({ kind, id, user, onSaved }) {
     <Resource resource={resource}>
       {(data) => (
         <Editor
-          key={`${kind}-${id}-${data?.revision || 0}`}
+          // Not keyed by revision: a save or a credential change updates
+          // `initial` in place, so the form and its draft stay mounted.
+          key={`${kind}-${id}`}
           kind={kind}
           initial={data}
           user={user}
-          reload={resource.reload}
+          refresh={resource.refresh}
           onSaved={onSaved}
         />
       )}
     </Resource>
   );
 }
-function Editor({ kind, initial, user, reload, onSaved }) {
+// The editable fields of a record (or the defaults for a new one).
+const draftOf = (def, kind, record) =>
+  Object.fromEntries(
+    Object.keys(def.defaults).map((key) => [
+      key,
+      record?.[key] ??
+        (key === "requiredProviders"
+          ? providersFor(record)
+          : key === "productId" && kind === "installations"
+            ? new URLSearchParams(location.search).get("productId") || ""
+            : def.defaults[key]),
+    ]),
+  );
+const sameFields = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const shown = (value) =>
+  (Array.isArray(value) ? value.join(", ") : String(value ?? "")).slice(0, 200);
+const humanKey = (key) => key.replace(/([A-Z])/g, " $1").toLowerCase();
+function Editor({ kind, initial, user, refresh, onSaved }) {
   const def = definitions[kind],
-    [value, setValue] = useState(() =>
-      Object.fromEntries(
-        Object.keys(def.defaults).map((key) => [
-          key,
-          initial?.[key] ??
-            (key === "requiredProviders"
-              ? providersFor(initial)
-              : key === "productId" && kind === "installations"
-                ? new URLSearchParams(location.search).get("productId") || ""
-                : def.defaults[key]),
-        ]),
-      ),
-    ),
+    [value, setValue] = useState(() => draftOf(def, kind, initial)),
+    // The revision the next save is checked against. It follows `initial`
+    // only when nothing else about the record changed under the draft.
+    [base, setBase] = useState(initial?.revision),
+    // The field values that revision held: what "changed by this user" and
+    // "changed by someone else" are measured against.
+    [baseFields, setBaseFields] = useState(() => draftOf(def, kind, initial)),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
+    [stale, setStale] = useState(false),
+    // The user's own values, kept on screen after loading the latest version.
+    [kept, setKept] = useState([]),
     [saved, setSaved] = useState(false),
     [credentialOpen, setCredentialOpen] = useState(false);
   const writable = can(user.role, def.permission),
@@ -81,18 +98,59 @@ function Editor({ kind, initial, user, reload, onSaved }) {
     try {
       const result = await api(`/${kind}${initial ? `/${initial._id}` : ""}`, {
         method: initial ? "PUT" : "POST",
-        body: { ...value, ...(initial ? { revision: initial.revision } : {}) },
+        body: { ...value, ...(initial ? { revision: base } : {}) },
       });
       if (!initial) navigate(`/${kind}/${result._id}`);
       else {
+        setKept([]);
         setSaved(true);
-        reload();
+        // Re-read in place (no loading screen) so the revision moves on.
+        const fresh = await refresh();
+        setBase(fresh.revision);
+        setBaseFields(draftOf(def, kind, fresh));
+        setValue(draftOf(def, kind, fresh));
         onSaved?.();
       }
+    } catch (err) {
+      setSaved(false);
+      setStale(isStale(err));
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  // Takes the server's current version, remembering what the user had typed.
+  async function loadLatest() {
+    setBusy(true);
+    try {
+      const fresh = await refresh();
+      // Only what this user typed (against the version the draft started from).
+      setKept(
+        Object.entries(value)
+          .filter(([key, v]) => !sameFields(v, baseFields[key]))
+          .map(([key, v]) => [humanKey(key), shown(v)]),
+      );
+      setValue(draftOf(def, kind, fresh));
+      setBase(fresh.revision);
+      setBaseFields(draftOf(def, kind, fresh));
+      setStale(false);
+      setError("");
     } catch (err) {
       setError(err.message);
     } finally {
       setBusy(false);
+    }
+  }
+  // A credential change bumps the revision. Follow it unless another edit to
+  // the record's fields came with it; then the next save reports a conflict.
+  async function credentialSaved() {
+    setCredentialOpen(false);
+    try {
+      const fresh = await refresh();
+      if (sameFields(baseFields, draftOf(def, kind, fresh)))
+        setBase(fresh.revision);
+    } catch (err) {
+      setError(err.message);
     }
   }
   return (
@@ -113,7 +171,37 @@ function Editor({ kind, initial, user, reload, onSaved }) {
       />
       <div className="detail-layout">
         <form className="panel edit-form" onSubmit={save}>
-          {error && <ErrorBox>{error}</ErrorBox>}
+          {error && (
+            <ErrorBox
+              retry={stale ? loadLatest : undefined}
+              retryLabel="Load latest version"
+            >
+              {error}
+              {stale && " Your edits are still in the form."}
+            </ErrorBox>
+          )}
+          {kept.length > 0 && (
+            <div className="notice notice-warning" role="status">
+              <span>
+                Loaded the latest version. Your earlier values, to re-apply if
+                you still want them:
+                <ul className="kept-list">
+                  {kept.map(([name, text]) => (
+                    <li key={name}>
+                      <strong>{name}:</strong> {text || "(empty)"}
+                    </li>
+                  ))}
+                </ul>
+                <button
+                  type="button"
+                  className="plain-link"
+                  onClick={() => setKept([])}
+                >
+                  Dismiss
+                </button>
+              </span>
+            </div>
+          )}
           {productResource.error && (
             <ErrorBox retry={productResource.reload}>
               {productResource.error}
@@ -230,10 +318,7 @@ function Editor({ kind, initial, user, reload, onSaved }) {
         <CredentialModal
           connection={initial}
           onClose={() => setCredentialOpen(false)}
-          onSaved={() => {
-            setCredentialOpen(false);
-            reload();
-          }}
+          onSaved={credentialSaved}
         />
       )}
     </>
@@ -303,9 +388,7 @@ function CredentialModal({ connection, onClose, onSaved }) {
       >
         {error && <ErrorBox>{error}</ErrorBox>}
         <Field label="New credential">
-          <input
-            autoComplete="off"
-            type="password"
+          <SecretInput
             minLength={8}
             maxLength={16000}
             required

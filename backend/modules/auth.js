@@ -264,7 +264,7 @@ export function authModule({ db, client, c, sendCode, notify }) {
     ],
     locked: [
       "Authenticator codes are locked on your Sandbee Admin account",
-      "There were 20 wrong authenticator codes in 24 hours, so authenticator codes are locked. Backup codes still work. If this was not you, change your password and ask your owner to reset your authenticator.",
+      "There were 20 wrong authenticator codes in 24 hours, so authenticator codes are locked for 24 hours. Backup codes still work. If this was not you, change your password and ask your owner to reset your authenticator.",
     ],
     recovered: [
       "Your Sandbee Admin password was reset",
@@ -272,6 +272,8 @@ export function authModule({ db, client, c, sendCode, notify }) {
     ],
   };
   const tellOf = (user, name) => tell(user, ...NOTICES[name]);
+  const LOCK_MS = 86400000,
+    FAILURE_LIMIT = 20;
   const LOCK_MESSAGE =
     "Too many wrong authenticator codes. Use a backup code or ask for a reset.";
   const TOO_MANY = "Too many requests. Please wait before trying again.";
@@ -299,13 +301,72 @@ export function authModule({ db, client, c, sendCode, notify }) {
     }
     if (input.backupCode !== undefined) return;
     try {
-      const count = await consume(
-        db,
-        `totp-fail-day:${user._id}`,
-        20,
-        86400000,
+      // Rolling window: keep the last 20 failure times that fall inside the
+      // past 24 h and lock for 24 h from the failure that fills the list.
+      // One atomic pipeline update, so racing failures cannot skip the lock.
+      const now = new Date(),
+        lockUntil = new Date(now.getTime() + LOCK_MS);
+      const before = await staff.findOneAndUpdate(
+        { _id: user._id },
+        [
+          {
+            $set: {
+              totpFailures: {
+                $slice: [
+                  {
+                    $concatArrays: [
+                      {
+                        $filter: {
+                          input: { $ifNull: ["$totpFailures", []] },
+                          cond: {
+                            $gt: ["$$this", new Date(now.getTime() - LOCK_MS)],
+                          },
+                        },
+                      },
+                      [now],
+                    ],
+                  },
+                  -FAILURE_LIMIT,
+                ],
+              },
+            },
+          },
+          {
+            $set: {
+              totpLockedUntil: {
+                $cond: [
+                  {
+                    $and: [
+                      { $gte: [{ $size: "$totpFailures" }, FAILURE_LIMIT] },
+                      {
+                        $not: [
+                          {
+                            $gt: [{ $ifNull: ["$totpLockedUntil", now] }, now],
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                  lockUntil,
+                  "$totpLockedUntil",
+                ],
+              },
+            },
+          },
+        ],
+        { returnDocument: "before" },
       );
-      if (count === 20) {
+      // Decide from the document as it was BEFORE this update: updates on one
+      // record are serialized, so exactly one request sees the lock absent (or
+      // expired) while the in-window count reaches the limit.
+      const inWindow = (before?.totpFailures ?? []).filter(
+        (at) => at > new Date(now.getTime() - LOCK_MS),
+      ).length;
+      const armed =
+        Boolean(before) &&
+        inWindow + 1 >= FAILURE_LIMIT &&
+        !(before.totpLockedUntil && before.totpLockedUntil > now);
+      if (armed) {
         await audit(
           db,
           undefined,
@@ -318,12 +379,26 @@ export function authModule({ db, client, c, sendCode, notify }) {
         );
         tellOf(user, "locked");
       }
-    } catch {
-      // Over the limit already; the lock is in force.
+    } catch (error) {
+      // The caller still rejects this attempt (fails closed), but a lock that
+      // could not be recorded must be visible: log request id and error type
+      // only, never values.
+      console.error(
+        JSON.stringify({
+          requestId: req?.requestId,
+          event: "totp.lock-record-failed",
+          type: error?.name,
+        }),
+      );
     }
   }
-  const lockedOut = (user) =>
-    exceeded(db, `totp-fail-day:${user._id}`, 20, 86400000);
+  // The lock is a timestamp on the staff record (set at the 20th wrong code
+  // inside a rolling 24 h), checked on every authenticator-code attempt.
+  // Backup codes bypass it, and a successful backup-code use does NOT clear
+  // it: it protects against guessing, and only a maintenance reset-totp or the
+  // 24 h expiry lifts it.
+  const lockedOut = async (user) =>
+    Boolean(user.totpLockedUntil && user.totpLockedUntil > new Date());
   const factorFailure = (message) => {
     const error = new HttpError(400, message);
     error.factorFailure = true;

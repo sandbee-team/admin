@@ -2,7 +2,6 @@
 
 Launch review: [28 September 2026 deployment evidence](docs/LAUNCH-REVIEW-2026-09-28.md).
 
-
 Internal multi-product operations console for **admin.sandbee.in**. Independent React + Node.js project with MongoDB, Docker and customer-owned deployment records. Existing Store, website, GST, OCR and POS projects are unchanged.
 
 ## Start here
@@ -32,7 +31,7 @@ npm start
 
 Open **http://localhost:8098**. Initial owner email/password are written to **.local/owner-access.txt**; they are never hardcoded or printed. Login also requires the email OTP from **http://localhost:8031** (local Mailpit). Use password recovery after initial access to choose your own passphrase. The seeded catalog contains the four real product offerings; no sample customers or fake activity are added.
 
-To run the complete container stack after bootstrap: stop the locally started Node server and run `docker compose up -d --build`. Use the same URL. Local Mongo is an isolated single-member replica set on loopback port 27028; local SMTP uses 1031. This does not change any existing Store Docker services.
+To run the complete container stack after bootstrap: stop the locally started Node server and run `docker compose up -d --build`. Use the same URL. Local Mongo is an isolated single-member replica set on loopback port 27028; local SMTP uses 1031. This does not change any existing Store Docker services. This is the development stack (project `sandbee-admin-dev`); on the server always pass `-f compose.production.yaml`. If you ran the dev stack before this rename, remove the old dev containers once **on your development machine only** with `docker compose -p sandbee-admin down` (never on the server, where `sandbee-admin` is the production project); the old dev Mongo volume is left in place until you remove it yourself.
 
 Frontend development: set `APP_URL=http://localhost:5198` in local `.env`, run `npm start` and `npm run dev`, then use port 5198. Restore APP_URL to 8098 before using the production build locally. Exact-origin checks intentionally reject mismatched origins.
 
@@ -46,7 +45,7 @@ Frontend development: set `APP_URL=http://localhost:5198` in local `.env`, run `
 - Work queue, assignments, due dates and priorities.
 - Real operational overview, paginated searchable tables, read-only audit history and protected team management.
 - Optional Store Mongo **read-only** projection, with no passwords/keys/sessions returned.
-- Recovery drill records, encrypted snapshot tools, restore into a distinct empty DB.
+- Recovery page: vault key fingerprint, `verify-key` for each key copy, restore-drill records. Admin backups are manual `mongodump`s (docs/DEPLOYMENT.md).
 - Reference-led sage workspace, compact icon rail and top navigation, pastel workspace brief with Summary/Activity/Products views, actual-data lifecycle report, customer search, contextual product navigation, accessible dropdowns, self-hosted fonts and reduced-motion support.
 
 ## Explicit integration boundary
@@ -84,4 +83,4 @@ npm run test:ui
 
 Tests use temporary MongoDB replica sets and synthetic staff. Browser tests use installed Microsoft Edge; change `channel` in playwright.config.mjs or install the appropriate browser if needed. They do not send external email or call Vercel/Cloudflare.
 
-Production configuration, off-machine backup scheduling and an actual restore drill are required before putting customer credentials into the live installation. A ZIP of source code alone cannot recover database data or encryption keys.
+Production configuration, your own manual `mongodump`s and an actual restore drill (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md); also [POS integration](docs/POS-INTEGRATION.md), [Stage 1 plan](docs/POS-STAGE1-PLAN.md), [Stage 2 plan](docs/POS-STAGE2-PLAN.md)) are required before putting customer credentials into the live installation. A ZIP of source code alone cannot recover database data or encryption keys.

@@ -23,6 +23,50 @@ import { useResource } from "../hooks/use-resource";
 import { label } from "../lib/api";
 import { Select } from "./select";
 export { Select };
+// Customer secrets must not be offered to the browser's password manager as
+// the admin sign-in. A password-type field invites that on every browser, so
+// where `-webkit-text-security` exists (Chromium, Safari, current Firefox) the
+// field is a plain text input masked by CSS, with the common password-manager
+// opt-outs; elsewhere it falls back to type=password. The value stays hidden
+// on screen either way. Copy and cut are blocked (paste still works) so a typed
+// secret cannot be lifted back out of the field. Remaining trade-offs: screen
+// readers may read the characters of a masked text input aloud (the hint says
+// it is a secret), and mobile keyboards are not put in password mode.
+const MASKS =
+  typeof CSS !== "undefined" && CSS.supports?.("-webkit-text-security", "disc");
+export function SecretInput(props) {
+  const hint = useId(),
+    block = (event) => event.preventDefault();
+  return (
+    <>
+      <input
+        type={MASKS ? "text" : "password"}
+        className="secret-input"
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="off"
+        spellCheck={false}
+        writingsuggestions="false"
+        data-1p-ignore="true"
+        data-lpignore="true"
+        data-bwignore="true"
+        data-form-type="other"
+        data-gramm="false"
+        data-gramm_editor="false"
+        data-enable-grammarly="false"
+        onCopy={block}
+        onCut={block}
+        {...props}
+        aria-describedby={[props["aria-describedby"], hint]
+          .filter(Boolean)
+          .join(" ")}
+      />
+      <span id={hint} className="sr-only">
+        Secret value: it is hidden on screen and cannot be copied.
+      </span>
+    </>
+  );
+}
 export function Brand({ compact = false }) {
   return (
     <span className="brand">
@@ -78,12 +122,12 @@ export function NewLink({ href, children }) {
     </Link>
   );
 }
-export function ErrorBox({ children, retry }) {
+export function ErrorBox({ children, retry, retryLabel = "Try again" }) {
   return (
     <div className="error-box" role="alert">
       <AlertCircle size={18} />
       <span>{children}</span>
-      {retry && <button onClick={retry}>Try again</button>}
+      {retry && <button onClick={retry}>{retryLabel}</button>}
     </div>
   );
 }
@@ -123,7 +167,8 @@ export function Field({ label: title, hint, children, ...props }) {
       {Children.map(children, (child) =>
         isValidElement(child) &&
         (["input", "select", "textarea"].includes(child.type) ||
-          child.type === Select)
+          child.type === Select ||
+          child.type === SecretInput)
           ? cloneElement(child, {
               id,
               ...(hint ? { "aria-describedby": `${id}-hint` } : {}),
@@ -168,6 +213,7 @@ export function Picker({
       <div className="picker">
         <input
           aria-label={`Search ${title.toLowerCase()}`}
+          maxLength={100}
           placeholder="Type to find a record…"
           value={search}
           disabled={disabled}
@@ -229,6 +275,7 @@ export function SearchInput({
         type="search"
         aria-label={placeholder}
         placeholder={placeholder}
+        maxLength={100}
         value={value}
         onChange={(event) => onChange(event.target.value)}
       />
@@ -237,8 +284,16 @@ export function SearchInput({
 }
 export function Modal({ title, onClose, children }) {
   const ref = useRef();
+  // Remember what opened the dialog and give focus back when it goes away
+  // (React removes the element without calling close()).
   useEffect(() => {
-    ref.current.showModal();
+    const dialog = ref.current,
+      opener = document.activeElement;
+    dialog.showModal();
+    return () => {
+      dialog.close();
+      if (opener?.isConnected) opener.focus();
+    };
   }, []);
   return (
     <dialog

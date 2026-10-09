@@ -15,7 +15,16 @@ export async function verifyVaultKey(db, key) {
     if (error.code !== 11000) throw error;
   }
   const row = await db.collection("system_state").findOne({ _id: "vault-v1" });
-  if (decrypt(row.verifier, key, "vault-verifier-v1") !== "sandbee-admin-vault")
+  // A wrong key fails GCM authentication inside decrypt, so that failure is
+  // the "wrong key" signal, not a crash.
+  let matches = false;
+  try {
+    matches =
+      decrypt(row.verifier, key, "vault-verifier-v1") === "sandbee-admin-vault";
+  } catch {
+    matches = false;
+  }
+  if (!matches)
     throw new Error(
       "Vault key does not match this database. Restore the original key.",
     );

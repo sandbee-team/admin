@@ -3,6 +3,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { readFileSync } from "node:fs";
 import { base32Decode, codeAt, stepAt } from "../../backend/lib/totp.js";
 const email = "security-owner@example.test";
+test.use({ extraHTTPHeaders: { "X-Forwarded-For": "10.20.0.3" } });
 const password = "Browser test passphrase 2026!";
 const axe = (page) =>
   new AxeBuilder({ page })
@@ -289,4 +290,71 @@ test("concurrent step-up prompts share one dialog: success completes both action
       "/api/auth/totp/enrol/start 428",
     ].sort(),
   );
+});
+test("leaving the page with unsaved backup codes asks first, then the step-up modal works without a reload", async ({
+  page,
+}) => {
+  test.setTimeout(90000);
+  await emailStep(page, "guard-admin@example.test");
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+  await page.goto("/account");
+  await page
+    .getByRole("button", { name: "Set up authenticator", exact: true })
+    .click();
+  const key = base32Decode(
+    (await page.locator(".setup-key").innerText()).replaceAll(" ", ""),
+  );
+  await page
+    .getByLabel("6-digit code from your app")
+    .fill(codeAt(key, stepAt(Date.now())));
+  await page.getByRole("button", { name: "Turn on authenticator" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Your backup codes" }),
+  ).toBeVisible();
+  // In-app navigation is intercepted while the codes are unconfirmed.
+  const messages = [];
+  page.on("dialog", (dialog) => {
+    messages.push(dialog.message());
+    dialog.dismiss();
+  });
+  await page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("link", { name: "Customers", exact: true })
+    .click();
+  await expect.poll(() => messages.length).toBe(1);
+  expect(messages[0]).toContain("backup codes");
+  await expect(page).toHaveURL(new RegExp("/account$"));
+  // Browser Back and Sign out are guarded too; cancelling changes nothing.
+  await page.evaluate(() => history.back());
+  await expect.poll(() => messages.length).toBe(2);
+  await expect(
+    page.getByRole("heading", { name: "Your backup codes" }),
+  ).toBeVisible();
+  await expect(page).toHaveURL(new RegExp("/account$"));
+  const logouts = [];
+  page.on("request", (request) => {
+    if (request.url().endsWith("/api/auth/logout")) logouts.push(request.url());
+  });
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect.poll(() => messages.length).toBe(3);
+  expect(logouts).toHaveLength(0);
+  await expect(
+    page.getByRole("heading", { name: "Your backup codes" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Your backup codes" }),
+  ).toBeVisible();
+  await expect(page).toHaveURL(/\/account$/);
+  await page
+    .getByRole("checkbox", { name: "I saved these backup codes" })
+    .check();
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(page.getByText("Enabled", { exact: true })).toBeVisible();
+  // Free to leave now, and the app already knows the authenticator exists.
+  await page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("link", { name: "Customers", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/customers$/);
+  expect(messages).toHaveLength(3);
 });

@@ -7,7 +7,7 @@ import "@fontsource/ibm-plex-sans/latin-600.css";
 import "@fontsource/ibm-plex-mono/latin-400.css";
 import "./styles.css";
 import { api, setCsrf } from "./lib/api";
-import { usePath, navigate, Link } from "./lib/router";
+import { usePath, navigate, confirmLeave, Link } from "./lib/router";
 import { Shell } from "./components/shell";
 import { Loading, ErrorBox, Empty } from "./components/ui";
 import { StepUpHost } from "./components/step-up";
@@ -30,30 +30,36 @@ import {
   RecoveryPage,
 } from "./pages/governance";
 import { can } from "../../shared/policy";
+// `resetKey` (the route) clears a caught error, so the next page can render.
 class ErrorBoundary extends React.Component {
   state = { error: false };
   static getDerivedStateFromError() {
     return { error: true };
   }
+  componentDidUpdate(previous) {
+    if (this.state.error && previous.resetKey !== this.props.resetKey)
+      this.setState({ error: false });
+  }
   render() {
-    return this.state.error ? (
-      <div className="fatal-error">
-        <ErrorBox retry={() => location.reload()}>
-          This view could not be loaded. Reload to recover.
-        </ErrorBox>
-      </div>
-    ) : (
-      this.props.children
+    if (!this.state.error) return this.props.children;
+    const box = (
+      <ErrorBox retry={() => location.reload()}>
+        This view could not be loaded. Reload to recover.
+      </ErrorBox>
     );
+    return this.props.inline ? box : <div className="fatal-error">{box}</div>;
   }
 }
 function App() {
   const [user, setUser] = useState(null),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
+    // Failures after sign-in (refresh, logout) show inline, not as a dead end.
+    // {message, retry}: what failed and how to run it again.
+    [problem, setProblem] = useState(null),
     path = usePath();
   useEffect(() => {
-    api("/auth/me")
+    api("/auth/me", { boot: true })
       .then((result) => {
         setUser(result.staff);
         setCsrf(result.csrf);
@@ -71,27 +77,32 @@ function App() {
   }, []);
   useEffect(() => {
     document.title = `${path === "/" ? "Dashboard" : path.split("/")[1].replace(/^./, (c) => c.toUpperCase())} · Sandbee Admin`;
+    setProblem(null);
   }, [path]);
   // Re-reads the signed-in staff member after enrolment changes (banner, step-up).
   async function refreshUser() {
     try {
       setUser((await api("/auth/me")).staff);
     } catch (e) {
-      if (e.status !== 401) setError(e.message);
+      if (e.status !== 401)
+        setProblem({ message: e.message, retry: refreshUser });
     }
   }
   async function logout() {
+    // Ask before anything is sent: leaving may discard one-time data.
+    if (!confirmLeave()) return;
     try {
       await api("/auth/logout", { method: "POST", body: {} });
     } catch (e) {
       if (e.status !== 401) {
-        setError(e.message);
+        setProblem({ message: e.message, retry: logout });
         return;
       }
     }
+    setProblem(null);
     setUser(null);
     setCsrf("");
-    navigate("/");
+    navigate("/", { force: true });
   }
   if (loading) return <Loading />;
   if (error)
@@ -156,9 +167,21 @@ function App() {
             </span>
           </div>
         )}
-        {page}
+        {problem && (
+          <ErrorBox
+            retry={() => {
+              setProblem(null);
+              problem.retry();
+            }}
+          >
+            {problem.message}
+          </ErrorBox>
+        )}
+        <ErrorBoundary inline resetKey={path}>
+          {page}
+        </ErrorBoundary>
       </Shell>
-      <StepUpHost user={user} />
+      <StepUpHost user={user} refresh={refreshUser} />
     </>
   );
 }

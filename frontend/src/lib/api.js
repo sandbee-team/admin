@@ -3,19 +3,22 @@ export function setCsrf(value) {
   csrf = value || "";
 }
 // A 401 ends the session unless it comes from a pre-session auth route (login,
-// verify, verify-totp, recover) or the boot-time /auth/me check.
+// verify, verify-totp, recover) or the boot-time /auth/me check (api option
+// `boot`). Any later /auth/me read belongs to a signed-in page.
 const SESSION_AUTH = [
+  "/auth/me",
   "/auth/step-up",
   "/auth/totp/",
   "/auth/logout",
   "/auth/revoke-sessions",
 ];
-const endsSession = (path) =>
-  !path.startsWith("/auth/") || SESSION_AUTH.some((p) => path.startsWith(p));
+const endsSession = (path, boot) =>
+  !boot &&
+  (!path.startsWith("/auth/") || SESSION_AUTH.some((p) => path.startsWith(p)));
 // Turns a non-2xx response into an Error carrying `status`. 428 means
 // "confirm with your authenticator" (see components/step-up.jsx); only 401 ends
 // the session.
-async function failure(res, path) {
+async function failure(res, path, boot) {
   const value = await res
     .json()
     .catch(() => ({ error: "The server returned an unreadable response." }));
@@ -23,11 +26,16 @@ async function failure(res, path) {
   error.status = res.status;
   // Machine-readable reason when the server sends one ("stale", "not-configured").
   if (typeof value.code === "string") error.code = value.code;
-  if (res.status === 401 && endsSession(path))
+  if (res.status === 401 && endsSession(path, boot))
     window.dispatchEvent(new Event("admin-session-expired"));
   return error;
 }
-export async function api(path, options = {}) {
+// A save lost to someone else's change (the API says code "stale"; older
+// routes only say 409 with "changed"/"reload" in the text).
+export const isStale = (error) =>
+  error?.code === "stale" ||
+  (error?.status === 409 && /changed|reload/i.test(error.message));
+export async function api(path, { boot, ...options } = {}) {
   const res = await fetch(`/api${path}`, {
     credentials: "same-origin",
     ...options,
@@ -38,7 +46,7 @@ export async function api(path, options = {}) {
     },
     ...(options.body ? { body: JSON.stringify(options.body) } : {}),
   });
-  if (!res.ok) throw await failure(res, path);
+  if (!res.ok) throw await failure(res, path, boot);
   return res
     .json()
     .catch(() => ({ error: "The server returned an unreadable response." }));

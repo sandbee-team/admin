@@ -19,7 +19,7 @@ $archive = New-Object IO.Compression.ZipArchive($stream, [IO.Compression.ZipArch
 try {
   foreach ($file in $files) {
     $relative = $file.FullName.Substring($projectRoot.Length + 1).Replace('\','/')
-    if ($relative -match '(^|/)(\.env(?!\.example$)|\.local|node_modules|backups|test-results)(/|$)') { throw 'Private path reached the archive allowlist.' }
+    if ($relative -match '(^|/)(\.env(\.(?!example$)[^/]*)?|\.local|node_modules|backups|test-results)(/|$)') { throw 'Private path reached the archive allowlist.' }
     $entryName = 'sandbee-admin/' + $relative
     [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $file.FullName, $entryName, [IO.Compression.CompressionLevel]::Optimal) | Out-Null
     $manifest += [PSCustomObject]@{ path = $entryName; bytes = $file.Length; sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }

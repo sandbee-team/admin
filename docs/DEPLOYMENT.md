@@ -10,10 +10,10 @@
 6. Build and start only the production definition (the app container is read-only with a tmpfs `/tmp`, published on `127.0.0.1:8098`; `.env` is passed in through `env_file`):
 
    ```sh
-   cd ~/admin && export RELEASE_TAG=<tag> && docker compose -f compose.production.yaml build app && docker compose -f compose.production.yaml up -d --no-build
+   cd ~/admin && unset RELEASE_TAG && docker compose -f compose.production.yaml up -d --build
    ```
 
-   Do not combine it with development compose.yaml. **Upgrade** the same way with a new tag (`git pull` first). **Rollback**: `export RELEASE_TAG=<previous tag> && docker compose -f compose.production.yaml up -d --no-build` (the previous image is still present locally).
+   The server keeps a single image, `sandbee-admin:local`; each release rebuilds and replaces it (owner decision 2026-10-09, no per-release tags). Do not combine it with development compose.yaml. On the server always pass `-f compose.production.yaml`: the development file is a separate project (`sandbee-admin-dev`). **Upgrade**: `git pull`, then the same command, then `docker image prune -f`. **Rollback**: there is no previous image, so check out the previous commit and rebuild (`cd ~/admin && unset RELEASE_TAG && git checkout <previous commit> && docker compose -f compose.production.yaml up -d --build`), then return to `main` once fixed. A rebuild takes a few minutes.
 
 7. Point admin.sandbee.in DNS to the existing proxy server and add a separate HTTPS site block in `/opt/edge/Caddyfile` forwarding to `127.0.0.1:8098`. Set `TRUST_PROXY_HOPS=1` for exactly one trusted reverse proxy; adapt if your topology differs. Forward Host and X-Forwarded-Proto, and correctly replace/sanitize X-Forwarded-For. Do not expose port 8098 or Mongo publicly.
 8. Confirm `/ready` returns 200 through the proxy; sign in with password + OTP; check customer create/edit/audit and sign out. No production deployment was performed during this build.
@@ -39,7 +39,7 @@ Leave all four unset to disable files: file routes answer 503 "File storage is n
 
 Bucket setup: ACLs disabled, Block Public Access on, **versioning on** (uploads are refused when S3 returns no version id), SSE-S3 default encryption, a policy denying non-TLS requests, and a lifecycle rule that permanently deletes noncurrent versions after 30 days, removes expired delete markers and aborts incomplete multipart uploads after 1 day. The IAM user's inline policy is limited to `files/*`: `s3:PutObject`, `s3:GetObject`, `s3:GetObjectVersion`, `s3:DeleteObject` and prefix-limited `s3:ListBucket`; do not grant `s3:DeleteObjectVersion` or any bucket/lifecycle/policy change. After deploying, the owner presses "Test storage" (`POST /api/files/self-test`) to confirm put, versioned get, delete and listing work.
 
-Uploads are limited to 20 MB, so the server's `requestTimeout` is 60 s (it was 15 s; `headersTimeout` stays 10 s). **Check the reverse proxy before enabling files.** Production uses Caddy (`/opt/edge/Caddyfile`): the admin.sandbee.in site must not set `request_body { max_size }` below 21 MB and must not set a proxy/transport timeout below 60 s.
+Uploads are limited to 20 MB, so the server's `requestTimeout` is 60 s (it was 15 s; `headersTimeout` stays 10 s). `keepAliveTimeout` is 125 s, above Caddy's default upstream idle time (about 2 minutes), so Caddy never reuses a connection Node has just closed (which would surface as sporadic 502s on POST/PUT). **Check the reverse proxy before enabling files.** Production uses Caddy (`/opt/edge/Caddyfile`): the admin.sandbee.in site must not set `request_body { max_size }` below 21 MB and must not set a proxy/transport timeout below 60 s.
 
 **Enrol the owner authenticator first.** Every vault reveal, show-code, file download, delete and POS secret reveal needs step-up, and step-up needs an enrolled authenticator. Right after deploying, sign in as the owner and enrol at Account security within 15 minutes of signing in; until then those actions answer 428 and the account is protected by password and email code only. Take a `mongodump` of `sandbee_admin` to your own computer before the first deploy of this feature: the new data is additive, but older code returns the encrypted boxes in generic responses and ignores the authenticator, so roll back only briefly.
 
@@ -48,12 +48,14 @@ Uploads are limited to 20 MB, so the server's `requestTimeout` is 60 s (it was 1
 1. **Dump first.** The owner takes a `mongodump` of `sandbee_admin` to the PC (see "Recovery" below) before anything changes.
 2. **Files settings.** Add `FILES_S3_REGION`, `FILES_S3_BUCKET`, `FILES_S3_ACCESS_KEY_ID` and `FILES_S3_SECRET_ACCESS_KEY` to `~/admin/.env`: all four or none. Never paste them anywhere else.
 3. **Caddy.** In the `admin.sandbee.in` site block of `/opt/edge/Caddyfile`, look for `request_body { max_size ... }` (must be 21MB or more) and any `reverse_proxy` `transport http { ... timeout }` / `response_header_timeout` or similar (must be 60s or more). Caddy's defaults (nothing set) are fine. Reload Caddy only if you changed it.
-4. **Build and start:** `cd ~/admin && export RELEASE_TAG=<tag> && docker compose -f compose.production.yaml build app && docker compose -f compose.production.yaml up -d --no-build`.
+4. **Build and start:** `cd ~/admin && git pull && unset RELEASE_TAG && docker compose -f compose.production.yaml up -d --build`, then `docker image prune -f`.
 5. **Ready check:** `curl -fsS http://127.0.0.1:8098/ready`.
 6. **Authenticator now.** The owner signs in and enrols the authenticator at `/account` immediately (reveals and downloads need step-up), stores the ten backup codes offline, then signs out and back in with the authenticator.
 7. **Files:** open Files and press "Test storage".
 8. **Key copies:** verify each `VAULT_KEY` copy with `verify-key` (see "Verify a key copy"). The Recovery page then shows each copy as verified.
-9. **Rollback notes.** The previous release returns encrypted boxes in generic responses and ignores TOTP, so roll back only briefly and re-deploy the new tag as soon as possible.
+9. **Rollback notes.** The previous release returns encrypted boxes in generic responses and ignores TOTP, so roll back only briefly and rebuild `main` as soon as possible.
+
+Stage 1 went live on 2026-10-09 (commit `8949777`): container healthy, owner authenticator enrolled, demo imported, "Test storage" OK, all three VAULT_KEY copies verified on the server (fingerprint `0797-59de-f1b4-feb5`; the hidden prompt works in a real terminal). The admin-database dump was skipped because the database held no customer data yet.
 
 ## Reverse proxy (Caddy)
 

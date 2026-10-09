@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { flushSync } from "react-dom";
 import { Copy, ShieldAlert, ShieldCheck } from "lucide-react";
 import { useResource } from "../hooks/use-resource";
 import {
@@ -12,6 +13,7 @@ import {
 } from "../components/ui";
 import { withStepUp } from "../components/step-up";
 import { api, dateTime } from "../lib/api";
+import { useNavigationGuard } from "../lib/router";
 const groups = (secret) => secret.match(/.{1,4}/g)?.join(" ") || secret;
 const svgSource = (svg) => `data:image/svg+xml;base64,${btoa(svg)}`;
 export function AccountSecurity({ user, onChange }) {
@@ -28,6 +30,7 @@ export function AccountSecurity({ user, onChange }) {
           <Security
             me={data.staff}
             user={user}
+            onUser={onChange}
             onChange={() => {
               resource.reload();
               onChange?.();
@@ -38,7 +41,7 @@ export function AccountSecurity({ user, onChange }) {
     </>
   );
 }
-function Security({ me, onChange }) {
+function Security({ me, onChange, onUser }) {
   const [phase, setPhase] = useState("idle"),
     [setup, setSetup] = useState(null),
     [codes, setCodes] = useState([]),
@@ -53,26 +56,33 @@ function Security({ me, onChange }) {
   // One-time secrets must not outlive the page: clear them when it is hidden
   // (including entering the back/forward cache) and on unmount.
   useEffect(() => {
-    const clear = () => {
-      setSetup(null);
-      setCodes([]);
-      setCode("");
-      setCurrent("");
-      setPhase("idle");
-    };
+    // flushSync: the DOM must be empty before the page can be frozen into the
+    // back/forward cache. Unmounting needs no cleanup: the state goes with it.
+    const clear = () =>
+      flushSync(() => {
+        setSetup(null);
+        setCodes([]);
+        setCode("");
+        setCurrent("");
+        setPhase("idle");
+      });
     window.addEventListener("pagehide", clear);
-    return () => {
-      window.removeEventListener("pagehide", clear);
-      clear();
-    };
+    return () => window.removeEventListener("pagehide", clear);
   }, []);
-  // Backup codes exist only in this page; warn before a reload throws them away.
+  const unsaved = phase === "codes" && !saved;
+  // Backup codes exist only in this page; ask before leaving, in the app (the
+  // guard) and by reload or closing the tab (beforeunload).
+  useNavigationGuard(
+    unsaved
+      ? "Your backup codes are shown only once and you have not confirmed saving them. Leave this page anyway?"
+      : "",
+  );
   useEffect(() => {
-    if (phase !== "codes") return;
+    if (!unsaved) return;
     const warn = (event) => event.preventDefault();
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [phase]);
+  }, [unsaved]);
   async function run(name, action) {
     setBusy(name);
     setError("");
@@ -112,6 +122,8 @@ function Security({ me, onChange }) {
         }),
       );
       showCodes(result.backupCodes);
+      // Enrolment is complete now: let the app know at once (banner, step-up).
+      onUser?.();
     });
   };
   const regenerate = () =>
@@ -136,7 +148,7 @@ function Security({ me, onChange }) {
     setSaved(false);
     setCopied(false);
     setPhase("codes");
-    // The status (banner, counts) is refreshed once the codes are acknowledged.
+    // The counts on this page are refreshed once the codes are acknowledged.
   }
   function finish() {
     setCodes([]);

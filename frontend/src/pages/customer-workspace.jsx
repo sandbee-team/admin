@@ -47,7 +47,12 @@ export function CustomerWorkspace({ id, section = "", user }) {
           navLabel="Customer navigation"
         >
           {section === "" ? (
-            <RecordEditor kind="customers" id={id} user={user} />
+            <RecordEditor
+              kind="customers"
+              id={id}
+              user={user}
+              onSaved={() => resource.refresh().catch(() => {})}
+            />
           ) : section === "installations" ? (
             <CustomerInstallations customer={customer} user={user} />
           ) : section === "accounts" ? (

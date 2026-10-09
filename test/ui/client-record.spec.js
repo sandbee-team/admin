@@ -56,6 +56,10 @@ async function section(page, name, nav = "Customer navigation") {
     .click();
 }
 test.describe.configure({ mode: "serial" });
+test.use({
+  permissions: ["clipboard-read", "clipboard-write"],
+  extraHTTPHeaders: { "X-Forwarded-For": "10.20.0.2" },
+});
 test("owner keeps accounts, files and POS setup; secrets show only briefly", async ({
   page,
 }) => {
@@ -394,6 +398,27 @@ test("admin sees the vault but no reveal, download, delete or test controls", as
 test("viewer cannot open the vault", async ({ page }) => {
   test.setTimeout(60000);
   await signIn(page, "viewer@example.test");
+  // List filters live in the URL: typing rewrites it, a reload keeps it.
+  await page.goto("/customers");
+  await page
+    .getByRole("searchbox", { name: /Search customers/ })
+    .fill("Record");
+  await expect(page).toHaveURL(/\/customers\?search=Record$/);
+  await page.goto("/customers?page=9");
+  await expect(page).not.toHaveURL(/page=9/);
+  await expect(page.getByText(/start here/)).toHaveCount(0);
+  await page.goto("/customers?search=Record");
+  await page.reload();
+  await expect(
+    page.getByRole("searchbox", { name: /Search customers/ }),
+  ).toHaveValue("Record");
+  await expect(
+    page.getByRole("link", { name: "Record Customer", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("searchbox", { name: /Search customers/ })
+    .fill("zzzz-none");
+  await expect(page.getByText("No matching records")).toBeVisible();
   await page.goto(`${CUSTOMER}/accounts`);
   await expect(page.getByText("Accounts are restricted")).toBeVisible();
   await expect(
@@ -414,4 +439,71 @@ test("viewer cannot open the vault", async ({ page }) => {
   ).toHaveCount(0);
   expect((await axe(page)).violations, "viewer accessibility").toEqual([]);
   await noOverflow(page, "viewer files");
+});
+test("secret fields block copy but accept paste", async ({ page }) => {
+  test.setTimeout(60000);
+  await signIn(page, "client-admin@example.test");
+  await page.goto(`${CUSTOMER}/accounts`);
+  await page
+    .getByRole("button", {
+      name: "Replace password for Shop Gmail",
+      exact: true,
+    })
+    .click();
+  const field = page.getByRole("dialog").getByLabel("New password");
+  await expect(field).toHaveAttribute("writingsuggestions", "false");
+  await expect(field).toHaveAccessibleDescription(/Secret value/);
+  await page.evaluate(() => navigator.clipboard.writeText("sentinel-clip"));
+  await field.fill("typed-secret-1");
+  await field.press("Control+A");
+  await field.press("Control+C");
+  await field.press("Control+X");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+    "sentinel-clip",
+  );
+  await expect(field).toHaveValue("typed-secret-1");
+  await field.fill("");
+  await page.evaluate(() => navigator.clipboard.writeText("pasted-secret-2"));
+  await field.press("Control+V");
+  await expect(field).toHaveValue("pasted-secret-2");
+});
+test("a concurrent edit is never silently overwritten after a credential save", async ({
+  page,
+  browser,
+}) => {
+  test.setTimeout(120000);
+  const route = "/connections/00000000-0000-4000-8000-0000000000b1";
+  await signIn(page, "client-admin@example.test");
+  await page.goto(route);
+  const mine = page.getByLabel("Project / zone / cluster ID");
+  await mine.fill("my-unsaved-resource");
+  // Someone else saves a different field in the meantime.
+  const other = await browser.newPage();
+  await signIn(other, "owner@example.test");
+  await other.goto(route);
+  await other.getByLabel("Account / team ID").fill("team-from-b");
+  await other.getByRole("button", { name: "Save changes" }).click();
+  await expect(other.getByText("Changes saved.")).toBeVisible();
+  // A stores a credential, then saves the form: both must refuse, not absorb.
+  await page.getByRole("button", { name: "Store credential" }).click();
+  await page
+    .getByRole("dialog")
+    .getByLabel("New credential", { exact: true })
+    .fill("synthetic-credential-1");
+  await page.getByRole("button", { name: "Save encrypted credential" }).click();
+  await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
+    /changed|reload/i,
+  );
+  await page.getByRole("button", { name: "Close dialog" }).click();
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: /changed|Reload/i }),
+  ).toBeVisible();
+  await expect(mine).toHaveValue("my-unsaved-resource");
+  // Loading the latest keeps B's change and lists only A's own typing.
+  await page.getByRole("button", { name: "Load latest version" }).click();
+  await expect(page.getByLabel("Account / team ID")).toHaveValue("team-from-b");
+  await expect(page.locator(".kept-list")).toContainText("my-unsaved-resource");
+  await expect(page.locator(".kept-list")).not.toContainText("team-from-b");
+  await other.close();
 });

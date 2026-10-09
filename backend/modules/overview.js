@@ -66,9 +66,11 @@ export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
             },
           ],
         }),
-        db
-          .collection("recovery_checks")
-          .findOne({ type: { $ne: "key-check" } }, { sort: { createdAt: -1 } }),
+        db.collection("recovery_checks").findOne(
+          { type: { $ne: "key-check" } },
+          // Every role reads /overview: expose only the drill date.
+          { sort: { createdAt: -1 }, projection: { _id: 0, restoredAt: 1 } },
+        ),
       ]);
       data = {
         customers,
@@ -146,8 +148,17 @@ export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
         .sort({ createdAt: -1, _id: -1 })
         .skip((page - 1) * 30)
         .limit(30)
+        .maxTimeMS(4000)
         .toArray(),
-      db.collection("audit_events").countDocuments(filter),
+      // The trail only grows: an exact count walks it, so use collection
+      // metadata unless a filter makes the count meaningful.
+      customerId
+        ? db
+            .collection("audit_events")
+            .countDocuments(filter, { maxTimeMS: 4000 })
+        : db
+            .collection("audit_events")
+            .estimatedDocumentCount({ maxTimeMS: 4000 }),
     ]);
     res.json({
       rows: seeNetwork ? rows : rows.map(withoutNetwork),

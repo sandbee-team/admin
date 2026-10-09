@@ -346,7 +346,10 @@ describe("verify-key and the Recovery page", () => {
     });
     await verifyKey(deps(), { kind: "vault", copy: "server", key: VAULT_KEY });
     const overview = await ctx.request("/overview", { session: owner });
-    assert.equal(overview.data.latestRecovery._id, "drill-old");
+    // /overview exposes only the drill date; the key-check row is not it.
+    assert.deepEqual(overview.data.latestRecovery, {
+      restoredAt: "2026-01-01",
+    });
     assertNoSecrets(overview.data, [VAULT_KEY, BACKUP_KEY]);
   });
 

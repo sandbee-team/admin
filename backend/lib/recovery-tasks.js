@@ -23,7 +23,13 @@ export async function resetTotp({ db, client, notify }, email) {
     await db.collection("staff").updateOne(
       { _id: user._id },
       {
-        $unset: { totp: "", totpPending: "", totpBackupCodes: "" },
+        $unset: {
+          totp: "",
+          totpPending: "",
+          totpBackupCodes: "",
+          totpFailures: "",
+          totpLockedUntil: "",
+        },
         $inc: { authVersion: 1, revision: 1 },
       },
       { session },

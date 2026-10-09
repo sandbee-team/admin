@@ -22,7 +22,7 @@ function cancelled() {
   error.cancelled = true;
   return error;
 }
-export function StepUpHost({ user }) {
+export function StepUpHost({ user, refresh }) {
   const waiters = useRef([]),
     [, render] = useState(0);
   const settle = (outcome) => {
@@ -49,16 +49,37 @@ export function StepUpHost({ user }) {
       {user?.totpEnabled ? (
         <StepUpForm onDone={() => settle((waiter) => waiter.resolve())} />
       ) : (
-        <>
-          <p className="subtle">
-            This action needs your authenticator app, and it is not set up yet.
-          </p>
-          <Link href="/account" className="button primary" onClick={cancel}>
-            Set up authenticator
-          </Link>
-        </>
+        <NotEnrolled refresh={refresh} cancel={cancel} />
       )}
     </Modal>
+  );
+}
+// The signed-in user may have enrolled a moment ago, so re-read it before
+// claiming there is no authenticator (a fresh user flips the host to the form).
+function NotEnrolled({ refresh, cancel }) {
+  const [checked, setChecked] = useState(!refresh);
+  useEffect(() => {
+    let live = true;
+    refresh?.().finally(() => live && setChecked(true));
+    return () => {
+      live = false;
+    };
+  }, []);
+  if (!checked)
+    return (
+      <p className="subtle" role="status">
+        Checking your authenticator…
+      </p>
+    );
+  return (
+    <>
+      <p className="subtle">
+        This action needs your authenticator app, and it is not set up yet.
+      </p>
+      <Link href="/account" className="button primary" onClick={cancel}>
+        Set up authenticator
+      </Link>
+    </>
   );
 }
 function StepUpForm({ onDone }) {

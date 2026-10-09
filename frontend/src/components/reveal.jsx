@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { Copy, Eye, EyeOff } from "lucide-react";
 import { Button, ErrorBox } from "./ui";
 // Shows one decrypted value (or code list) on demand. The value lives only in
@@ -27,24 +28,46 @@ export function RevealValue({
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [copied, setCopied] = useState(false),
-    live = useRef(true);
-  const clear = () => {
+    live = useRef(true),
+    group = useRef(),
+    opener = useRef(),
+    hider = useRef(),
+    refocus = useRef(false);
+  const wipe = () => {
     setPayload(null);
     setDeadline(0);
     setCopied(false);
   };
+  // Hiding by hand, or by timer while focus is inside the value, puts focus
+  // back on the Reveal button instead of dropping it to the page.
+  const clear = (inside) => {
+    refocus.current =
+      inside === true ||
+      Boolean(group.current?.contains(document.activeElement));
+    wipe();
+  };
   useEffect(() => {
     live.current = true;
-    window.addEventListener("pagehide", clear);
+    // flushSync: the DOM must be empty before the page can be frozen into the
+    // back/forward cache.
+    const hide = () => flushSync(wipe);
+    window.addEventListener("pagehide", hide);
     return () => {
       live.current = false;
-      window.removeEventListener("pagehide", clear);
+      window.removeEventListener("pagehide", hide);
     };
   }, []);
+  useEffect(() => {
+    if (payload) hider.current?.focus();
+    else if (refocus.current) {
+      refocus.current = false;
+      opener.current?.focus();
+    }
+  }, [Boolean(payload)]);
   // One timer drops the value; a second one only refreshes the countdown text.
   useEffect(() => {
     if (!deadline) return;
-    const drop = setTimeout(clear, Math.max(0, deadline - Date.now()));
+    const drop = setTimeout(() => clear(), Math.max(0, deadline - Date.now()));
     const tick = setInterval(() => setNow(Date.now()), 1000);
     return () => {
       clearTimeout(drop);
@@ -83,6 +106,7 @@ export function RevealValue({
       <>
         {error && <ErrorBox>{error}</ErrorBox>}
         <Button
+          ref={opener}
           type="button"
           variant="secondary"
           busy={busy}
@@ -96,7 +120,7 @@ export function RevealValue({
     );
   const text = copyText?.(payload);
   return (
-    <div className="secret-reveal" role="group" aria-label={label}>
+    <div className="secret-reveal" role="group" aria-label={label} ref={group}>
       {error && <ErrorBox>{error}</ErrorBox>}
       {view(payload, {
         remaining,
@@ -107,10 +131,11 @@ export function RevealValue({
           {countdown} {remaining} s
         </span>
         <Button
+          ref={hider}
           type="button"
           variant="secondary"
           aria-label={`Hide ${label}`}
-          onClick={clear}
+          onClick={() => clear(true)}
         >
           <EyeOff size={15} />
           Hide

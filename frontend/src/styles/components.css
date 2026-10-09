@@ -367,3 +367,12 @@
     padding: var(--space-4);
   }
 }
+/* Secret fields are plain text inputs masked by CSS (see SecretInput). */
+.secret-input {
+  -webkit-text-security: disc;
+}
+.kept-list {
+  margin: var(--space-2) 0;
+  padding-left: var(--space-4);
+  overflow-wrap: anywhere;
+}

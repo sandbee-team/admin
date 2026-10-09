@@ -67,7 +67,7 @@ export function ProductWorkspace({ id, section = "", user }) {
                 kind="products"
                 id={id}
                 user={user}
-                onSaved={resource.reload}
+                onSaved={() => resource.refresh().catch(() => {})}
               />
             ) : section === "installations" ? (
               <ProductInstallations product={product} user={user} />

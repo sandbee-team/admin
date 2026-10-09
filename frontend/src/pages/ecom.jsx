@@ -149,7 +149,7 @@ export function EcomPage({ user }) {
                         <th>Company</th>
                         <th>Plan</th>
                         <th>Access</th>
-                        <th>Expires</th>
+                        <th>Expires (UTC)</th>
                         <th>Action</th>
                       </tr>
                     </thead>
@@ -175,7 +175,10 @@ export function EcomPage({ user }) {
                             {new Date(row.subscription.expiresAt).getTime() > 0
                               ? new Date(
                                   row.subscription.expiresAt,
-                                ).toLocaleDateString()
+                                ).toLocaleDateString("en-IN", {
+                                  dateStyle: "medium",
+                                  timeZone: "UTC",
+                                })
                               : "Not activated"}
                           </td>
                           <td>

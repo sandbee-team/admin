@@ -11,6 +11,7 @@ import {
   Field,
   Modal,
   Select,
+  SecretInput,
 } from "../components/ui";
 import { RevealValue } from "../components/reveal";
 import { withStepUp } from "../components/step-up";
@@ -200,12 +201,16 @@ function AccountCard({
   onChanged,
   onStale,
 }) {
-  const [error, setError] = useState("");
+  const [error, setError] = useState(""),
+    // One "Mark used" at a time: each call moves the entry's rev.
+    [marking, setMarking] = useState(false);
   const canWrite = can(user.role, "credentials"),
     canReveal = can(user.role, "secrets"),
     path = `${base}/${account.id}`;
   const stepped = (request) => withStepUp(request);
   async function markUsed(index, tools) {
+    if (marking) return;
+    setMarking(true);
     setError("");
     try {
       const view = await api(`${path}/backup-codes/used`, {
@@ -222,6 +227,8 @@ function AccountCard({
     } catch (e) {
       if (e.code === "stale") onStale();
       else setError(e.message);
+    } finally {
+      setMarking(false);
     }
   }
   const rows = [
@@ -310,6 +317,7 @@ function AccountCard({
                               ) : (
                                 <Button
                                   variant="secondary"
+                                  disabled={marking}
                                   aria-label={`Mark backup code ${item.index + 1} used`}
                                   onClick={() => markUsed(item.index, tools)}
                                 >
@@ -507,23 +515,13 @@ function AccountModal({
         {!editing && (
           <>
             <Field label="Password (optional)">
-              <input
-                type="password"
-                autoComplete="new-password"
-                maxLength={1024}
-                {...text("password")}
-              />
+              <SecretInput maxLength={1024} {...text("password")} />
             </Field>
             <Field
               label="Authenticator key (optional)"
               hint="The text key or an otpauth:// link."
             >
-              <input
-                type="password"
-                autoComplete="off"
-                maxLength={512}
-                {...text("totpKey")}
-              />
+              <SecretInput maxLength={512} {...text("totpKey")} />
             </Field>
             <Field
               label="Backup codes (optional)"
@@ -650,10 +648,8 @@ function SecretModal({ base, account, field, onClose, onSaved, onStale }) {
                 : undefined
             }
           >
-            <input
-              type="password"
+            <SecretInput
               required
-              autoComplete={field === "password" ? "new-password" : "off"}
               maxLength={field === "password" ? 1024 : 512}
               value={value}
               onChange={(event) => setValue(event.target.value)}

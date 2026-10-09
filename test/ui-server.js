@@ -20,6 +20,9 @@ const c = config({
   MONGODB_DB: "admin_ui_test",
   VAULT_KEY: "a".repeat(64),
   AUTH_SECRET: "b".repeat(64),
+  // Specs give themselves a client address (X-Forwarded-For), so the sign-in
+  // rate limit counts each spec separately instead of the whole run at once.
+  TRUST_PROXY_HOPS: "1",
 });
 const { db, client } = await connect(c);
 await seedCatalog(db);
@@ -53,6 +56,18 @@ await db.collection("staff").insertOne({
   _id: randomUUID(),
   email: "stepup-admin@example.test",
   name: "stepup admin",
+  role: "admin",
+  status: "active",
+  revision: 1,
+  authVersion: 1,
+  passwordHash: await hashPassword("Browser test passphrase 2026!"),
+  createdAt: new Date(),
+});
+// Admin for the unsaved-backup-codes guard case in security.spec.js.
+await db.collection("staff").insertOne({
+  _id: randomUUID(),
+  email: "guard-admin@example.test",
+  name: "guard admin",
   role: "admin",
   status: "active",
   revision: 1,
@@ -105,6 +120,20 @@ await db.collection("installations").insertOne({
   connectionIds: [],
   checks: ["ownership"],
   evidence: "",
+  notes: "",
+  ...stamp,
+});
+// A connection two people can edit at once (lost-update case).
+await db.collection("connections").insertOne({
+  _id: "00000000-0000-4000-8000-0000000000b1",
+  name: "Shared Vercel",
+  customerId: "00000000-0000-4000-8000-0000000000c1",
+  provider: "vercel",
+  ownership: "customer",
+  accountId: "team-original",
+  resourceId: "",
+  expiresAt: "",
+  status: "recorded",
   notes: "",
   ...stamp,
 });
