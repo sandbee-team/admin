@@ -1,0 +1,9 @@
+{
+  "name": "pos-builder-vercel-cli",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned Vercel CLI used by the POS builder and the admin worker. Upgrade deliberately.",
+  "dependencies": {
+    "vercel": "63.1.0"
+  }
+}

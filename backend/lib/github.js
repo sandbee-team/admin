@@ -259,6 +259,10 @@ export function createGitHub({
         displayTitle: clean(json?.display_title, 150),
         runAttempt: int(json?.run_attempt),
         headSha: isSha(json?.head_sha) ? json.head_sha : "",
+        // Provenance the worker checks before it accepts a build.
+        path: clean(json?.path, 150),
+        headBranch: clean(json?.head_branch, 200),
+        event: clean(json?.event, 40),
         htmlUrl: runUrl(id),
         createdAt: dateOf(json?.created_at),
         updatedAt: dateOf(json?.updated_at),

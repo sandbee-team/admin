@@ -57,6 +57,41 @@ Uploads are limited to 20 MB, so the server's `requestTimeout` is 60 s (it was 1
 
 Stage 1 went live on 2026-10-09 (commit `8949777`): container healthy, owner authenticator enrolled, demo imported, "Test storage" OK, all three VAULT_KEY copies verified on the server (fingerprint `0797-59de-f1b4-feb5`; the hidden prompt works in a real terminal). The admin-database dump was skipped because the database held no customer data yet.
 
+## Stage 2 release checklist (deploys from admin)
+
+Stage 2 adds a second container, `worker`, to `compose.production.yaml` (same image, no ports). It executes the deploy jobs the API enqueues: builds through the private pos-builder repository on GitHub Actions, the S3 build cache, prebuilt deploys into the **customer's own** Vercel account with the customer's token, health checks with automatic rollback, verify and purge tasks, and the daily build retention sweep. It decrypts customer tokens, so it runs read-only with one small volume and drops every capability.
+
+1. **Dump first.** `mongodump` of `sandbee_admin` to your PC (see "Recovery"). Stage 2 data is additive (`installations.pos.deploy/task/verify` and the `pos-*` `system_state` rows).
+2. **`.env` additions** (server `.env` only, never anywhere else):
+
+   | Variable                   | Meaning                                                                                                                                                |
+   | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+   | `POS_GITHUB_SOURCE_TOKEN`  | Fine-grained token: only the lucifer repository, Contents read. Used by the **app** (branch list); compose blanks it for the worker.                   |
+   | `POS_GITHUB_BUILDER_TOKEN` | Fine-grained token: only pos-builder, Actions read and write plus Contents read. Used by the **worker**; compose blanks it for the app.                |
+   | `POS_GITHUB_SOURCE_REPO`   | Optional, default `KartikDesai07/lucifer`                                                                                                              |
+   | `POS_GITHUB_BUILDER_REPO`  | Optional, default `KartikDesai07/pos-builder`                                                                                                          |
+   | `POS_BUILD_CACHE`          | Optional `on` or `off`; default `on` when the `FILES_S3_*` variables are set. Off: every deploy builds again and the GitHub artifact is the only copy. |
+
+   Also once: the IAM policy gains `s3:PutObject`, `s3:GetObject` and `s3:DeleteObject` on `builds/*` and `s3:ListBucket` for the `builds/*` prefix, and the bucket lifecycle rule for `builds/` expires objects after **10 days** (noncurrent versions after 1 day). The worker keeps the live build of every installation by copying it onto itself (copy-forward) when it is older than 5 days, and copies the previous build forward once, when it is replaced; every other build expires. The pos-builder secret `LUCIFER_READ_TOKEN` is a third, separate token.
+
+3. **Build and start both services:** `cd ~/admin && git pull && unset RELEASE_TAG && docker compose -f compose.production.yaml up -d --build`, then `docker image prune -f`. This builds the image once (including the pinned Vercel CLI under `/opt/vercel-cli`) and starts `app` and `worker`.
+4. **Volume check:** `docker volume inspect sandbee-admin_pos-work` must exist, and `docker compose -f compose.production.yaml exec worker sh -c 'touch /work/.w && rm /work/.w && id -un'` must succeed as the `node` user (the image creates `/work` owned by `node`, which a fresh named volume inherits). `docker compose -f compose.production.yaml ps` shows both services healthy (the worker's health check is `node backend/worker.js --health`: its heartbeat file under `/work` is younger than 60 s).
+5. **Self-check** (proves the CLI runs under the read-only root with HOME and XDG on `/work`; prints ok/fail lines only):
+
+   ```sh
+   docker compose -f compose.production.yaml exec worker node backend/worker.js --self-check
+   docker compose -f compose.production.yaml exec worker node backend/worker.js --self-check --installation=<demo installation id>
+   ```
+
+   The second form decrypts the demo's Vercel token, runs `vercel whoami` with the token only in the child's environment, and proves the token is absent from the child's `/proc/<pid>/cmdline` and from every file under `/work` afterwards.
+
+6. **First demo deploy.** In the panel, for the demo client: Verify, Unlock (owner), then Deploy `main`. The first deploy **builds** (a GitHub Actions run; the output is sealed into S3). Then press **Redeploy**: it must say **cached** and start no GitHub run. While it uploads, sample memory with `docker stats --no-stream` and adjust the worker's `mem_limit` (it starts at 256m).
+7. **Kill-and-resume drill.** Start another deploy and, while it is building, `docker compose -f compose.production.yaml kill -s SIGKILL worker`, then `docker compose -f compose.production.yaml up -d worker`. When the 60-second lease runs out the new worker takes the job over, continues the same GitHub run (no second dispatch) and finishes. A kill during the upload finds the deployment through its `sandbeeRequest` meta instead of uploading twice.
+8. **Rollback.** Use "Roll back" on the Previous card. On a Hobby Vercel account only the immediately previous deployment can be switched; when Vercel refuses (402) the worker redeploys the previous commit from the build cache.
+9. **Release rollback of the whole stage:** `git checkout <previous commit> && docker compose -f compose.production.yaml up -d --build --remove-orphans` (removes the orphaned `worker`). Stage 2 data stays in the database and is ignored by older code.
+
+Operating notes: the owner's freeze switch stops all deploys (running ones stop before the upload; rollbacks, verify and purge still run). One deploy runs at a time, builds run two at a time, tasks one at a time. `docker compose -f compose.production.yaml logs worker` shows event names, 8-character ids and error codes only: never tokens, URIs or provider text.
+
 ## Reverse proxy (Caddy)
 
 Production terminates TLS in Caddy (`/opt/edge/Caddyfile`) and proxies to Admin on a separate local port, which keeps the other live applications untouched:

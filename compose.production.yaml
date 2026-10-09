@@ -7,6 +7,8 @@ services:
     environment:
       NODE_ENV: production
       PORT: 8098
+      # The app reads the source repository only; the builder token belongs to the worker.
+      POS_GITHUB_BUILDER_TOKEN: ""
     ports: ["127.0.0.1:8098:8098"]
     restart: unless-stopped
     init: true
@@ -21,3 +23,39 @@ services:
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
+  # Stage 2 deploy worker: same image, no ports. It decrypts customer tokens and
+  # runs the pinned Vercel CLI, so it gets the builder token but not the source
+  # token, a read-only root and one small writable volume.
+  worker:
+    image: sandbee-admin:${RELEASE_TAG:-local}
+    build: .
+    command: ["node", "backend/worker.js"]
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      POS_GITHUB_SOURCE_TOKEN: ""
+      POS_WORK_DIR: /work
+      TMPDIR: /work/tmp
+    volumes: ["pos-work:/work"]
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 256m # lower or raise after sampling `docker stats` during the first deploy
+    cpus: 1.0
+    pids_limit: 100
+    # A running CLI gets up to 120 s on SIGTERM; the next start reconciles the rest.
+    stop_grace_period: 150s
+    healthcheck:
+      test: ["CMD", "node", "backend/worker.js", "--health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+volumes:
+  pos-work: {}

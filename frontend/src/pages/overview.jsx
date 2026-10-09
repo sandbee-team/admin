@@ -13,6 +13,7 @@ import {
   Plus,
   RefreshCw,
   PanelRightOpen,
+  Rocket,
 } from "lucide-react";
 import { useResource } from "../hooks/use-resource";
 import { Resource, Badge, Empty, TextLink } from "../components/ui";
@@ -193,6 +194,17 @@ export function Overview({ user }) {
                             : "No overdue tasks"
                         }
                       />
+                      {can(user.role, "credentials") &&
+                        data.pos &&
+                        posAttention(data.pos).map((item) => (
+                          <Attention
+                            key={item.title}
+                            icon={Rocket}
+                            href="/pos-clients"
+                            title={item.title}
+                            text={item.text}
+                          />
+                        ))}
                       {can(user.role, "recovery") && (
                         <Attention
                           icon={ShieldCheck}
@@ -252,6 +264,31 @@ export function Overview({ user }) {
       </Resource>
     </>
   );
+}
+// POS fleet problems worth a look, from the counts in the overview.
+function posAttention(pos) {
+  const items = [];
+  if (pos.failed)
+    items.push({
+      title: "POS deploys failed",
+      text: `${pos.failed} client${pos.failed === 1 ? "" : "s"} with a failed deploy`,
+    });
+  if (pos.unverified)
+    items.push({
+      title: "POS clients unverified",
+      text: `${pos.unverified} need a fresh credential check`,
+    });
+  if (pos.locked)
+    items.push({
+      title: "POS clients locked",
+      text: `${pos.locked} locked against admin deploys`,
+    });
+  if (!pos.workerOnline && (pos.failed || pos.unverified || pos.locked))
+    items.push({
+      title: "POS deploy worker offline",
+      text: "Deploys cannot run until the worker is back",
+    });
+  return items;
 }
 function Metric({ icon: Icon, label, value, detail, href }) {
   return (

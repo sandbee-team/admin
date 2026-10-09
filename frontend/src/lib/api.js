@@ -26,6 +26,9 @@ async function failure(res, path, boot) {
   error.status = res.status;
   // Machine-readable reason when the server sends one ("stale", "not-configured").
   if (typeof value.code === "string") error.code = value.code;
+  // Readiness ids behind a 409 "not-ready".
+  if (Array.isArray(value.items))
+    error.items = value.items.filter((item) => typeof item === "string");
   if (res.status === 401 && endsSession(path, boot))
     window.dispatchEvent(new Event("admin-session-expired"));
   return error;

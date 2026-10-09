@@ -1,7 +1,12 @@
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { assertNoSecrets, startApp, VAULT_KEY } from "./helpers.js";
+import {
+  assertNoSecrets,
+  clearOfWindow,
+  startApp,
+  VAULT_KEY,
+} from "./helpers.js";
 import { digest, encrypt } from "../backend/lib/crypto.js";
 import { createGitHub } from "../backend/lib/github.js";
 import { newPos, aadOf } from "../backend/modules/pos.js";
@@ -1474,6 +1479,7 @@ describe("prepare build", () => {
   });
   it("is limited to 10 per hour per staff member", async () => {
     const { id } = await fresh();
+    await clearOfWindow(3600000);
     let last;
     for (let i = 0; i < 11; i++)
       last = await post(id, "builds", { branch: "main", sha: SHAS.a });

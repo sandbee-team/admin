@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { LayoutDashboard, Rocket, Server } from "lucide-react";
+import { useEffect, useState } from "react";
+import { LayoutDashboard, Lock, LockOpen, Rocket, Server } from "lucide-react";
 import { useResource } from "../hooks/use-resource";
 import {
   Resource,
@@ -23,6 +23,8 @@ import { api, dateTime } from "../lib/api";
 import { can } from "../../../shared/policy";
 import { checksFor } from "../../../shared/product-models";
 import { RecordEditor } from "./record-editor";
+import { InstallationDeploy } from "./installation-deploy";
+import { Link } from "../lib/router";
 export function InstallationWorkspace({ id, section = "", user }) {
   const resource = useResource(`/installations/${id}`),
     productResource = useResource(
@@ -35,7 +37,10 @@ export function InstallationWorkspace({ id, section = "", user }) {
     tabs = [
       ["", "Summary", LayoutDashboard],
       ...(isPos && can(user.role, "credentials")
-        ? [["pos", "POS setup", Server]]
+        ? [
+            ["pos", "POS setup", Server],
+            ["deploy", "Deploy", Rocket],
+          ]
         : []),
     ];
   return (
@@ -73,6 +78,16 @@ export function InstallationWorkspace({ id, section = "", user }) {
                 <div className="panel">
                   <Empty icon={Server} title="POS setup is restricted">
                     Your role cannot open POS settings. Ask an owner or admin.
+                  </Empty>
+                </div>
+              )
+            ) : section === "deploy" && isPos ? (
+              can(user.role, "credentials") ? (
+                <InstallationDeploy installation={installation} user={user} />
+              ) : (
+                <div className="panel">
+                  <Empty icon={Rocket} title="Deploy is restricted">
+                    Your role cannot open deploy status. Ask an owner or admin.
                   </Empty>
                 </div>
               )
@@ -149,12 +164,22 @@ const STALE = "POS settings changed. They were reloaded: review and try again.";
 function PosSetup({ installation, user }) {
   const resource = useResource(`/installations/${installation._id}/pos`),
     [notice, setNotice] = useState("");
+  // Fix links from the Deploy tab end in #vercel, #secrets, #host or #image.
+  const loaded = Boolean(resource.data);
+  useEffect(() => {
+    if (!loaded || !location.hash) return;
+    const target = document.getElementById(location.hash.slice(1));
+    if (target) {
+      target.scrollIntoView();
+      target.querySelector("input,button")?.focus({ preventScroll: true });
+    }
+  }, [loaded]);
   return (
     <>
       <PageTitle
         eyebrow={installation.name}
         title="POS setup"
-        description="Where this customer’s POS lives and the secrets it needs. Nothing is deployed from here yet."
+        description="Where this customer’s POS lives and the secrets it needs. Deploys are run from the Deploy tab."
       />
       {notice && <ErrorBox>{notice}</ErrorBox>}
       <Resource resource={resource}>
@@ -181,7 +206,6 @@ const configOf = (pos) => ({
   host: pos?.host || "",
   tenantId: pos?.tenantId || "",
   rootDomain: pos?.rootDomain || "",
-  deployLock: pos?.deployLock ?? true,
   vercel: {
     projectName: pos?.vercel?.projectName || "",
     projectId: pos?.vercel?.projectId || "",
@@ -222,6 +246,7 @@ function PosBody({ installationId, initial, user, onStale, onFresh, reload }) {
     <>
       <PosForm
         base={base}
+        installationId={installationId}
         pos={pos}
         writable={canWrite}
         onSaved={(view) => {
@@ -231,7 +256,11 @@ function PosBody({ installationId, initial, user, onStale, onFresh, reload }) {
         onStale={onStale}
       />
       {pos && (
-        <section className="panel setup-steps" aria-labelledby="secrets-title">
+        <section
+          id="secrets"
+          className="panel setup-steps"
+          aria-labelledby="secrets-title"
+        >
           <div className="panel-title">
             <div>
               <h2 id="secrets-title">Secrets</h2>
@@ -303,17 +332,6 @@ function PosBody({ installationId, initial, user, onStale, onFresh, reload }) {
           </ul>
         </section>
       )}
-      <section className="panel setup-steps" aria-labelledby="deploys-title">
-        <div className="panel-title">
-          <div>
-            <h2 id="deploys-title">Deploys — coming in Stage 2</h2>
-            <p>
-              Deploy history and release actions will appear here. Nothing is
-              deployed from this panel yet.
-            </p>
-          </div>
-        </div>
-      </section>
       {pos && owner && (
         <section className="danger-zone" aria-labelledby="remove-pos-title">
           <h2 id="remove-pos-title">Remove POS settings</h2>
@@ -401,7 +419,7 @@ function PosBody({ installationId, initial, user, onStale, onFresh, reload }) {
     </>
   );
 }
-function PosForm({ base, pos, writable, onSaved, onStale }) {
+function PosForm({ base, installationId, pos, writable, onSaved, onStale }) {
   const [value, setValue] = useState(() => configOf(pos)),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
@@ -435,7 +453,6 @@ function PosForm({ base, pos, writable, onSaved, onStale }) {
         host: value.host,
         tenantId: value.tenantId,
         rootDomain: value.rootDomain,
-        deployLock: value.deployLock,
         vercel: value.vercel,
         cloudflare: value.cloudflareOn ? value.cloudflare : null,
         image: { ...value.image, store: store || null },
@@ -463,7 +480,7 @@ function PosForm({ base, pos, writable, onSaved, onStale }) {
       {error && <ErrorBox>{error}</ErrorBox>}
       {saved && <Notice>POS settings saved.</Notice>}
       <fieldset disabled={!writable || busy}>
-        <div className="form-section">
+        <div className="form-section" id="host">
           <h2>Where it lives</h2>
           <div className="form-grid">
             <Field label="Slug" hint="Lowercase letters, digits and hyphens.">
@@ -485,22 +502,27 @@ function PosForm({ base, pos, writable, onSaved, onStale }) {
               <input maxLength={32} {...nested("posAdmin", "username")} />
             </Field>
           </div>
-          <label className="check-row">
-            <input
-              type="checkbox"
-              checked={value.deployLock}
-              onChange={(event) => {
-                setValue((old) => ({
-                  ...old,
-                  deployLock: event.target.checked,
-                }));
-                setSaved(false);
-              }}
-            />
-            Deploy lock on
-          </label>
+          <p className="status-line">
+            <span className="field-label">Deploy lock</span>
+            <Badge value={pos?.deployLock === false ? "live" : "paused"}>
+              {pos?.deployLock === false ? (
+                <LockOpen size={11} />
+              ) : (
+                <Lock size={11} />
+              )}
+              {pos?.deployLock === false ? "Unlocked" : "Locked"}
+            </Badge>
+            {pos && (
+              <Link
+                href={`/installations/${installationId}/deploy`}
+                className="text-link"
+              >
+                Change it on the Deploy tab
+              </Link>
+            )}
+          </p>
         </div>
-        <div className="form-section">
+        <div className="form-section" id="vercel">
           <h2>Vercel</h2>
           <div className="form-grid">
             <Field label="Vercel project name">
@@ -551,7 +573,7 @@ function PosForm({ base, pos, writable, onSaved, onStale }) {
             </div>
           )}
         </div>
-        <div className="form-section">
+        <div className="form-section" id="image">
           <h2>Image store</h2>
           <Field label="Image store">
             <Select

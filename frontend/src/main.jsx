@@ -20,6 +20,7 @@ import { ProductWorkspace } from "./pages/product-workspace";
 import { CustomerWorkspace } from "./pages/customer-workspace";
 import { InstallationWorkspace } from "./pages/installation-workspace";
 import { PosImport } from "./pages/pos-import";
+import { PosFleet } from "./pages/pos-fleet";
 import { RecordList } from "./pages/record-list";
 import { RecordEditor } from "./pages/record-editor";
 import { definitions } from "./pages/records-config";
@@ -118,6 +119,8 @@ function App() {
   else if (kind === "ecom") page = <EcomPage user={user} />;
   else if (kind === "pos-import" && can(user.role, "secrets"))
     page = <PosImport />;
+  else if (kind === "pos-clients" && can(user.role, "credentials"))
+    page = <PosFleet user={user} />;
   else if (definitions[kind] && !id)
     page = <RecordList key={kind} kind={kind} user={user} />;
   else if (kind === "products" && id && id !== "new")

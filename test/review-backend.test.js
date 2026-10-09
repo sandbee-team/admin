@@ -4,7 +4,13 @@ import http from "node:http";
 import net from "node:net";
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { startApp, assertNoSecrets, VAULT_KEY, BACKUP_KEY } from "./helpers.js";
+import {
+  startApp,
+  assertNoSecrets,
+  VAULT_KEY,
+  BACKUP_KEY,
+  until,
+} from "./helpers.js";
 import { encrypt } from "../backend/lib/crypto.js";
 import { base32Encode, codeAt, stepAt } from "../backend/lib/totp.js";
 import { verifyVaultKey } from "../backend/lib/vault.js";
@@ -325,7 +331,14 @@ describe("rolling 24 h authenticator lock (L5)", () => {
     } finally {
       mock.timers.reset();
     }
-    await sleep(100);
+    // The notice is sent after the response; wait for it, then count.
+    await until(
+      () =>
+        ctx.notices.filter(
+          (n) => n.email === who.email && /locked/i.test(n.subject),
+        ).length > before,
+      { what: "the lock notice" },
+    );
     assert.equal(await lockedEvents(who), 1);
     const after = ctx.notices.filter(
       (n) => n.email === who.email && /locked/i.test(n.subject),
@@ -671,11 +684,13 @@ describe("HTTP server timeouts (S1)", () => {
   });
   it("an idle keep-alive socket outlives headersTimeout and Node's default keepAliveTimeout only with our setting", async () => {
     // Idle 6.5 s: longer than headersTimeout (300 ms) and longer than Node's
-    // default keepAliveTimeout (5 s + 1 s buffer), shorter than ours (8 s).
+    // default keepAliveTimeout (5 s + 1 s buffer), shorter than ours (20 s).
+    // Real sockets and timers cannot be mocked; the stock arm only needs a
+    // late wake-up (more idle time is fine), and ours has 13.5 s of margin.
     const idle = 6500;
     const [ours, stock] = await Promise.all([
       withServer(
-        { keepAliveTimeout: 8000, headersTimeout: 300, requestTimeout: 2000 },
+        { keepAliveTimeout: 20000, headersTimeout: 300, requestTimeout: 2000 },
         async ({ hit }) => {
           const first = await hit();
           await sleep(idle);

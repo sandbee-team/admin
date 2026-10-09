@@ -4,6 +4,7 @@ import {
   Users,
   Layers3,
   Rocket,
+  Server,
   KeyRound,
   ListTodo,
   ScrollText,
@@ -36,6 +37,7 @@ const groups = [
     "OPERATIONS",
     [
       ["/tasks", "Work queue", ListTodo],
+      ["/pos-clients", "POS clients", Server],
       ["/connections", "Connections", KeyRound],
       ["/store", "Store bridge", Store],
       ["/ecom", "Ecom subscriptions", Layers3],
@@ -137,7 +139,8 @@ export function Shell({ user, onLogout, children }) {
                 .filter(
                   ([href]) =>
                     (href !== "/recovery" || can(user.role, "recovery")) &&
-                    (href !== "/pos-import" || can(user.role, "secrets")),
+                    (href !== "/pos-import" || can(user.role, "secrets")) &&
+                    (href !== "/pos-clients" || can(user.role, "credentials")),
                 )
                 .map(([href, text, Icon]) => (
                   <Link

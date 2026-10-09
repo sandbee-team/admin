@@ -6,6 +6,28 @@ import { connect } from "../backend/db.js";
 import { createApp } from "../backend/app.js";
 import { hashPassword } from "../backend/lib/crypto.js";
 import { seedCatalog } from "../backend/modules/catalog-seed.js";
+export const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Polls an observable condition instead of sleeping a guessed time. Returns
+// the first truthy value of `check`.
+export async function until(
+  check,
+  { timeout = 10000, every = 10, what = "the condition" } = {},
+) {
+  const end = Date.now() + timeout;
+  for (;;) {
+    const value = await check();
+    if (value) return value;
+    if (Date.now() > end) throw new Error(`Timed out waiting for ${what}.`);
+    await delay(every);
+  }
+}
+// Rate limits count per fixed wall-clock window (see backend/lib/limiter.js).
+// A test that expects the Nth request to be refused must not straddle a window
+// boundary, so wait out the end of the current window when it is near.
+export async function clearOfWindow(windowMs, needMs = 30000) {
+  const left = windowMs - (Date.now() % windowMs);
+  if (left < needMs) await delay(left + 50);
+}
 export const PASSWORD = "Testing a long passphrase 123!";
 export const VAULT_KEY = "a".repeat(64);
 export const AUTH_SECRET = "c".repeat(64);

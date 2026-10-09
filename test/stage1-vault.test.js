@@ -3,7 +3,14 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { BSON } from "mongodb";
-import { startApp, assertNoSecrets, VAULT_KEY, BACKUP_KEY } from "./helpers.js";
+import {
+  startApp,
+  assertNoSecrets,
+  VAULT_KEY,
+  BACKUP_KEY,
+  clearOfWindow,
+  until,
+} from "./helpers.js";
 import { createApp } from "../backend/app.js";
 import { createFakeS3 } from "./fake-s3.js";
 import { decrypt, encrypt, digest } from "../backend/lib/crypto.js";
@@ -153,6 +160,12 @@ function upload(
   return { req, promise };
 }
 const up = (session, cid, options) => upload(session, cid, options).promise;
+// A request that passes the transfer-slot gate but fails on its malformed
+// customer id (version/variant nibbles) before any rate limit is consumed:
+// 503 means the slots are full, anything else means one is free.
+const slotsFull = () =>
+  up(admin, "11111111-1111-1111-1111-111111111111", { body: Buffer.from("x") });
+const PROBE = { every: 50, timeout: 15000, what: "the transfer slots" };
 async function download(session, cid, fid, at = base) {
   const res = await fetch(`${at}/api/customers/${cid}/files/${fid}/download`, {
     method: "POST",
@@ -658,6 +671,7 @@ describe("accounts vault", () => {
   });
 
   it("reveal is step-up gated, audited, never trimmed, and rate limited (31st = 429)", async () => {
+    await clearOfWindow(3600000);
     const cid = await mkCustomer();
     const acc = await mkAccount(cid);
     const a = `/customers/${cid}/accounts/${acc.id}/reveal`;
@@ -807,6 +821,7 @@ describe("accounts vault", () => {
       404,
     );
     // Its own limit: 60 per hour.
+    await clearOfWindow(3600000);
     await ctx.db.collection("rate_limits").deleteMany({});
     for (let i = 0; i < 60; i++)
       await call(path, { method: "POST", session: owner, body: {} });
@@ -1482,12 +1497,18 @@ describe("files", () => {
       t.req.write(Buffer.alloc(3));
       return t;
     });
-    await sleep(400);
-    const third = await up(admin, cid, { body: body() });
-    assert.equal(third.status, 503, third.text);
-    for (const t of stalled) t.req.destroy();
+    try {
+      // Wait on observable state: the cheap probe is 503 only while both slots
+      // are taken (otherwise it is refused as a malformed id after the slot gate).
+      await until(async () => (await slotsFull()).status === 503, PROBE);
+      const third = await up(admin, cid, { body: body() });
+      assert.equal(third.status, 503, third.text);
+    } finally {
+      for (const t of stalled) t.req.destroy();
+    }
     await Promise.all(stalled.map((t) => t.promise));
-    await sleep(200);
+    // The slots come back once the aborted handlers finish.
+    await until(async () => (await slotsFull()).status !== 503, PROBE);
     assert.equal((await up(admin, cid, { body: body() })).status, 201);
   });
 
@@ -1844,6 +1865,7 @@ describe("POS block", () => {
       409,
     );
     // Reveal shares the 30/hour limit.
+    await clearOfWindow(3600000);
     await ctx.db.collection("rate_limits").deleteMany({});
     for (let i = 0; i < 30; i++)
       await call(`/installations/${iid}/pos/reveal`, {
@@ -2369,7 +2391,15 @@ describe("review fixes: restore claims and unknown commits (M1)", () => {
 describe("review fixes: transfers and delete order (L1, L2)", () => {
   it("holds the slot until the handler finishes, even if the client leaves", async () => {
     const cid = await mkCustomer();
-    fake.hooks.beforePut = () => sleep(900);
+    // The S3 call is held open by a gate the test controls, so "the handler is
+    // still running" is a fact, not a race against a timer.
+    let entered = 0,
+      open;
+    const gate = new Promise((resolve) => (open = resolve));
+    fake.hooks.beforePut = async () => {
+      entered++;
+      await gate;
+    };
     const slow = [1, 2].map(() => {
       const t = upload(admin, cid, {
         body: Buffer.from("slow-body".repeat(10)),
@@ -2378,13 +2408,18 @@ describe("review fixes: transfers and delete order (L1, L2)", () => {
       t.req.end(Buffer.from("slow-body".repeat(10)));
       return t;
     });
-    await sleep(250);
-    for (const t of slow) t.req.destroy();
-    await sleep(150);
-    const third = await up(admin, cid, { body: Buffer.from("third") });
-    assert.equal(third.status, 503, "slots are still held");
-    fake.hooks.beforePut = null;
-    await sleep(1200);
+    try {
+      await until(() => entered >= 2, { what: "both uploads to reach S3" });
+      for (const t of slow) t.req.destroy();
+      const third = await up(admin, cid, { body: Buffer.from("third") });
+      assert.equal(third.status, 503, "slots are still held");
+    } finally {
+      // Never leave the gate shut: later tests share this fake.
+      fake.hooks.beforePut = null;
+      open();
+      for (const t of slow) t.req.destroy();
+    }
+    await until(async () => (await slotsFull()).status !== 503, PROBE);
     assert.equal(
       (await up(admin, cid, { body: Buffer.from("after") })).status,
       201,

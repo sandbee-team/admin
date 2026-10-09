@@ -11,6 +11,7 @@ import {
   VAULT_KEY,
   AUTH_SECRET,
   BACKUP_KEY,
+  clearOfWindow,
 } from "./helpers.js";
 import {
   base32Encode,
@@ -592,6 +593,7 @@ describe("TOTP enrolment, login, step-up and recovery", () => {
     );
   });
   it("throttles repeated wrong codes per account", async () => {
+    await clearOfWindow(900000);
     const who = await enrol();
     const statuses = [];
     for (let i = 0; i < 12; i++)
@@ -1041,13 +1043,15 @@ describe("TOTP enrolment, login, step-up and recovery", () => {
   });
   it("applies the authentication gate to case and trailing-slash variants", async () => {
     // Downstream calls are held open so eight requests occupy the gate.
-    let release;
+    let release,
+      arrived = 0;
     const hold = new Promise((resolve) => (release = resolve));
     const slow = (collection, method) =>
       new Proxy(collection, {
         get: (target, prop) =>
           prop === method
             ? async (...args) => {
+                arrived++;
                 await hold;
                 return target[prop](...args);
               }
@@ -1098,7 +1102,11 @@ describe("TOTP enrolment, login, step-up and recovery", () => {
         send("/LOGIN/", mail),
         send("/Login", mail),
       ];
-      await new Promise((r) => setTimeout(r, 400));
+      // Wait on observable state, not time: all eight are inside the gate.
+      for (let i = 0; arrived < 8; i++) {
+        assert.ok(i < 1000, `only ${arrived} of 8 requests reached the gate`);
+        await new Promise((r) => setTimeout(r, 10));
+      }
       const busy = await send("/verify-totp/", totp);
       assert.equal(busy.status, 503);
       assert.equal((await send("/RECOVER", { email: mail.email })).status, 503);

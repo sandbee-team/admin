@@ -18,6 +18,7 @@ import {
 } from "../components/ui";
 import { WorkspaceFrame } from "../components/workspace-frame";
 import { Link } from "../lib/router";
+import { StateBadge, behindText, liveText } from "./pos-fleet";
 import { dateTime } from "../lib/api";
 import { can } from "../../../shared/policy";
 import { RecordEditor } from "./record-editor";
@@ -75,6 +76,15 @@ function CustomerInstallations({ customer, user }) {
   const [page, setPage] = useState(1),
     resource = useResource(
       `/installations?customerId=${customer._id}&page=${page}`,
+    ),
+    // POS columns (live version, behind-by) come from the fleet route.
+    fleet = useResource(
+      can(user.role, "credentials")
+        ? `/pos/fleet?customerId=${customer._id}`
+        : null,
+    ),
+    pos = new Map(
+      (fleet.data?.rows ?? []).map((row) => [row.installationId, row]),
     );
   return (
     <>
@@ -100,6 +110,15 @@ function CustomerInstallations({ customer, user }) {
                       <th>Environment</th>
                       <th>Release</th>
                       <th>Status</th>
+                      {pos.size > 0 && (
+                        <>
+                          <th>Live</th>
+                          <th>Behind</th>
+                          <th>
+                            <span className="sr-only">Deploy</span>
+                          </th>
+                        </>
+                      )}
                     </tr>
                   </thead>
                   <tbody>
@@ -118,6 +137,9 @@ function CustomerInstallations({ customer, user }) {
                         <td>
                           <Badge value={row.status} />
                         </td>
+                        {pos.size > 0 && (
+                          <PosCells row={pos.get(row._id)} id={row._id} />
+                        )}
                       </tr>
                     ))}
                   </tbody>
@@ -134,6 +156,36 @@ function CustomerInstallations({ customer, user }) {
           )
         }
       </Resource>
+    </>
+  );
+}
+function PosCells({ row, id }) {
+  if (!row)
+    return (
+      <>
+        <td>—</td>
+        <td>—</td>
+        <td />
+      </>
+    );
+  return (
+    <>
+      <td>
+        {liveText(row)}
+        <span className="cell-subtext">
+          <StateBadge state={row.state} />
+        </span>
+      </td>
+      <td>{behindText(row)}</td>
+      <td>
+        <Link
+          className="text-link"
+          href={`/installations/${id}/deploy`}
+          aria-label={`Deploy ${row.slug}`}
+        >
+          Deploy →
+        </Link>
+      </td>
     </>
   );
 }

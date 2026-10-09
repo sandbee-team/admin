@@ -311,7 +311,14 @@ test("owner keeps accounts, files and POS setup; secrets show only briefly", asy
   await expect(
     page.getByRole("heading", { name: "POS setup", exact: true }),
   ).toBeVisible();
-  await expect(page.getByText("Deploys — coming in Stage 2")).toBeVisible();
+  // Deploys moved to their own tab; the setup page only shows the lock state.
+  await expect(
+    page
+      .getByRole("navigation", { name: "Installation navigation" })
+      .getByRole("link", { name: "Deploy", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Deploys — coming in Stage 2")).toHaveCount(0);
+  await expect(page.getByLabel("Deploy lock on")).toHaveCount(0);
   const form = page.getByRole("form", { name: "POS configuration" });
   await form.getByLabel("Slug", { exact: true }).fill("record-pos");
   await form.getByLabel("Subdomain", { exact: true }).fill("recordpos");
