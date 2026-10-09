@@ -1,6 +1,8 @@
 # POS integration — plan and decisions
 
-Status: Stage 1 LIVE on admin.sandbee.in since 2026-10-09 (commit `8949777` on `main`).
+Status: Stage 1 LIVE on admin.sandbee.in since 2026-10-09 (commit `8949777`); full-codebase review
+fixes LIVE since 2026-10-10 (commit `1617d30`: 204 unit/API tests, 18 Playwright ×3 green; owner
+smoke-checked accounts, files and Recovery after deploy).
 Stage 2: planned, spikes pending (see docs/POS-STAGE2-PLAN.md). Stage 3 and Phases 2-3 not started. Owner: single operator.
 Open owner items: enter Lucifer by hand (Step 8 of the go-live: customer → POS installation →
 POS setup with the `lucifer007` profile ids, a new dedicated Vercel token, the MONGODB_URI from the
@@ -40,6 +42,17 @@ then usage analytics (Phase 2) and T&C e-signature (Phase 3).
 | D16 | File uploads up to 20 MB; API `requestTimeout` raised 15 s → 60 s (`headersTimeout` stays 10 s).                                                                                                                            |
 | D17 | Add `uqr` (exact version pinned) for the authenticator QR code. S3 bucket created in ap-south-1 (name goes only in the server `.env`).                                                                                      |
 | D18 | Server keeps ONE image (`sandbee-admin:local`), rebuilt in place on each release; no per-release tags, no staging build. Rollback = check out the previous commit and rebuild.                                              |
+| D19 | (2026-10-10) S3 also holds a build cache under `builds/` (amends D6). Only the admin worker writes it; GitHub holds no AWS credentials. Design: `docs/POS-STAGE2-REV2.md`. |
+| D20 | Build objects are ciphertext (SBB1); data key sealed with VAULT_KEY in a MAC-protected manifest; every reuse integrity-checked; failure → quarantine + one rebuild. |
+| D21 | A build is identified by `(sha, buildKey)`; `buildKey` = HMAC over every build-time input. One build for all clients waits on a separate owner-approved POS change. |
+| D22 | Manifests are build metadata, not deploy history (D4). **Retention (owner): the LIVE build of every installation is kept always; the PREVIOUS build is kept 10 days after it was replaced; every other build expires after 10 days** (lifecycle `builds/` 10 days + copy-forward of live builds; previous copied forward once when it becomes previous). |
+| D23 | Single-flight builds via transient `system_state` `pos-build:*` rows; build lane 2, deploy lane 1. |
+| D24 | Redeploy = same commit with current settings. Rollback = Vercel instant rollback (Hobby: previous only — spike: two-step rollback returns 402), fallback = redeploy the previous commit from the cache. |
+| D25 | The deploy root always contains an empty `apps/cafe`; admin never edits client project settings (spike run #2: `productionFeasibleWithoutProjectChange: TRUE`); deployments found by `--meta sandbeeRequest`; CLI failures stored as category codes only. |
+| D26 | Readiness computed once on the server gates UI and API; fleet view shows behind-by-N; "deploy to all" rollout: demo first, then A-Z, stop at the first failure (owner). |
+| D27 | Builder token `pos-builder-actions` gains Contents: read on pos-builder only. |
+| D28 | (owner, 2026-10-10) In-app client DB backup cap 20 MB compressed; automatic rollback when the post-deploy health check fails; pos-builder run/log retention 7 days; deploy, rollback, purge and "prepare build" are owner-only (`deploy` permission). |
+| D29 | Spike evidence (run #2): prebuilt output in the client's Vercel exposes no source — files API counts ts/tsx/map/apps-hub/packages-shared-src/scripts all 0. |
 
 Box memory measured 2026-10-09: 3834 MB total, 2383 MB available, 2 GB swap; all containers
 together ≈ 680 MB (largest: sandbee-platform-demo 388 MB; admin 48 MB of 512 MB).
