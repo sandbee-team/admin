@@ -54,6 +54,7 @@ export function teamRoutes({ db, client, auth }) {
         "staff",
         row._id,
         row.role,
+        req,
       );
     });
     res.status(201).json(publicStaff(row));
@@ -100,6 +101,7 @@ export function teamRoutes({ db, client, auth }) {
         "staff",
         user._id,
         `${data.role} / ${status}`,
+        req,
       );
     });
     res.json({ ok: true });

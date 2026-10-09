@@ -23,6 +23,7 @@ import {
   Button,
   ErrorBox,
   Notice,
+  TextLink,
 } from "../components/ui";
 import { api, dateTime } from "../lib/api";
 import { can } from "../../../shared/policy";
@@ -48,6 +49,7 @@ export function AuditPage() {
                     <th>Resource</th>
                     <th>Detail</th>
                     <th>Time</th>
+                    <th>IP address</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -65,6 +67,7 @@ export function AuditPage() {
                       <td className="small subtle">
                         {dateTime(row.createdAt)}
                       </td>
+                      <td className="small subtle mono">{row.ip || "—"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -178,9 +181,11 @@ export function TeamPage({ user, onLogout }) {
           <KeyRound size={22} />
           <h2>Your account security</h2>
           <p>
-            Every new session requires your password and an email code. Password
-            recovery revokes existing sessions.
+            Every new session requires your password and an email code, plus
+            your authenticator code once it is set up. Password recovery revokes
+            existing sessions.
           </p>
+          <TextLink href="/account">Authenticator and backup codes</TextLink>
           <Button variant="secondary" onClick={revoke}>
             Sign out all my sessions
           </Button>
@@ -400,13 +405,13 @@ export function RecoveryPage() {
     ],
     [
       Database,
-      "Database snapshot",
-      "Schedule encrypted backups away from the app server. Persistent Mongo storage is not a backup.",
+      "Database dump",
+      "Take a mongodump of sandbee_admin to your own PC by hand. Secrets inside are sealed and useless without the vault key. Persistent Mongo storage is not a backup.",
     ],
     [
       KeyRound,
-      "Separate recovery keys",
-      "Keep the vault and backup keys in a secure, separately recoverable location.",
+      "Vault key copies",
+      "Keep VAULT_KEY in three places: the server, a password manager and an offline sealed copy. Never next to the dumps.",
     ],
     [
       Cloud,
@@ -449,35 +454,35 @@ export function RecoveryPage() {
           </section>
         ))}
       </div>
+      <Resource resource={resource}>
+        {(data) => <KeyCopies data={data} />}
+      </Resource>
       <div className="two-columns section-gap">
         <section className="panel aside-card">
           <h2>Portable recovery workflow</h2>
           <ol className="steps">
             <li>
-              <strong>Pause admin writes.</strong>
-              <span>
-                Stop all Admin API instances before taking an application
-                snapshot.
-              </span>
-            </li>
-            <li>
-              <strong>Create an encrypted snapshot.</strong>
+              <strong>Dump the admin database.</strong>
               <code>
-                node --env-file=.env scripts/recovery.js backup --maintenance
+                mongodump --uri "&lt;sandbee_admin URI&gt;" --out &lt;folder&gt;
               </code>
-            </li>
-            <li>
-              <strong>Copy it off-machine.</strong>
               <span>
-                Keep the source archive, .env and backup key in separate
-                protected locations.
+                Run it on your own PC. Customer files are not in the dump: the
+                S3 bucket is their copy.
               </span>
             </li>
             <li>
-              <strong>Restore into a new empty database.</strong>
+              <strong>Keep the keys apart from the dump.</strong>
               <span>
-                Follow docs/DEPLOYMENT.md, verify login, record counts and
-                credential decryption, then record the drill.
+                Verify each key copy above after you save or change it.
+              </span>
+            </li>
+            <li>
+              <strong>Restore on a scratch machine.</strong>
+              <span>
+                Follow docs/DEPLOYMENT.md: restore into a new database, start
+                Admin with the same VAULT_KEY, sign in and reveal one test
+                secret. Then record the drill.
               </span>
             </li>
           </ol>
@@ -490,27 +495,30 @@ export function RecoveryPage() {
             </div>
           </div>
           <Resource resource={resource}>
-            {(data) =>
-              data.rows.length ? (
-                <div className="drill-list">
-                  {data.rows.map((row) => (
-                    <article key={row._id}>
-                      <Badge value="recorded">{row.restoredAt}</Badge>
-                      <h3>{row.location}</h3>
-                      <p>{row.notes}</p>
-                      <small>
-                        {row.recordedBy} · Source {row.sourceRevision}
-                      </small>
-                    </article>
-                  ))}
-                </div>
-              ) : (
-                <Empty icon={ShieldCheck} title="No restore drill recorded">
-                  Run a restore on a separate machine or scratch database and
-                  record the result here.
-                </Empty>
-              )
-            }
+            {(data) => (
+              <>
+                <DrillStatus status={data.drillStatus} />
+                {data.rows.length ? (
+                  <div className="drill-list">
+                    {data.rows.map((row) => (
+                      <article key={row._id}>
+                        <Badge value="recorded">{row.restoredAt}</Badge>
+                        <h3>{row.location}</h3>
+                        <p>{row.notes}</p>
+                        <small>
+                          {row.recordedBy} · Source {row.sourceRevision}
+                        </small>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <Empty icon={ShieldCheck} title="No restore drill recorded">
+                    Run a restore on a separate machine or scratch database and
+                    record the result here.
+                  </Empty>
+                )}
+              </>
+            )}
           </Resource>
         </section>
       </div>
@@ -524,6 +532,103 @@ export function RecoveryPage() {
         />
       )}
     </>
+  );
+}
+const COPIES = [
+  ["server", "Server copy"],
+  ["password-manager", "Password manager copy"],
+  ["offline", "Offline sealed copy"],
+];
+const verifyCommand = (kind, copy) =>
+  copy === "server"
+    ? `docker compose -f compose.production.yaml exec -T app node scripts/recovery.js verify-key --kind=${kind} --copy=server --from-env`
+    : `docker compose -f compose.production.yaml exec app node scripts/recovery.js verify-key --kind=${kind} --copy=${copy}`;
+function KeyCopyList({ kind, checks }) {
+  return (
+    <ul className="key-list">
+      {COPIES.map(([copy, name]) => {
+        const check = checks?.[copy];
+        return (
+          <li key={copy}>
+            <div className="key-list-head">
+              <strong>{name}</strong>
+              {check?.current ? (
+                <Badge value="live">Verified {dateTime(check.at)}</Badge>
+              ) : check ? (
+                <Badge value="attention">
+                  Verified {dateTime(check.at)} against an older key
+                </Badge>
+              ) : (
+                <Badge value="attention">Never verified</Badge>
+              )}
+            </div>
+            <code>{verifyCommand(kind, copy)}</code>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+function KeyCopies({ data }) {
+  const { vault, backup } = data.keys;
+  return (
+    <section className="panel aside-card section-gap" aria-labelledby="keys-h">
+      <h2 id="keys-h">Key copies</h2>
+      <p>
+        The vault key unlocks every saved secret. A dump of the database is
+        useless without it, so each copy must be proven correct, not assumed.
+        The command asks for the key with hidden input (or reads it from stdin);
+        the key is never shown here, only its fingerprint.
+      </p>
+      <p className="key-print">
+        Vault key fingerprint <code>{vault.fingerprint}</code>
+      </p>
+      <KeyCopyList kind="vault" checks={data.keyChecks.vault} />
+      {backup.state === "configured" ? (
+        <>
+          <p className="key-print">
+            Backup key fingerprint <code>{backup.fingerprint}</code>
+          </p>
+          <KeyCopyList kind="backup" checks={data.keyChecks.backup} />
+        </>
+      ) : backup.state === "invalid" ? (
+        <ErrorBox>
+          BACKUP_KEY is set but is not a valid 64-character key. Fix or remove
+          it.
+        </ErrorBox>
+      ) : (
+        <p className="key-print">
+          Backup key: not used — admin backups are manual mongodumps.
+        </p>
+      )}
+    </section>
+  );
+}
+function DrillStatus({ status }) {
+  const text = {
+    green: "Drill up to date",
+    amber: "Drill due soon",
+    red: status.lastDrill ? "Drill overdue" : "No drill yet",
+  }[status.state];
+  return (
+    <p className="drill-status">
+      <Badge
+        value={
+          status.state === "green"
+            ? "live"
+            : status.state === "amber"
+              ? "attention"
+              : "disabled"
+        }
+      >
+        {text}
+      </Badge>
+      <span>
+        {status.lastDrill
+          ? `Last drill ${status.lastDrill} (${status.daysSince} days ago). Aim for one every 100 days.`
+          : "Aim for a restore drill every 100 days."}
+      </span>
+    </p>
   );
 }
 function RecoveryModal({ onClose, onSaved }) {

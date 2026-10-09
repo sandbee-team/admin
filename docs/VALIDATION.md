@@ -24,6 +24,10 @@ Screenshots and detailed local test output are in ignored `test-results/` and `p
 6. Optional Store DB connection was initially awaited during startup. It now connects lazily so an optional Store outage does not prevent Admin itself from starting.
 7. Windows npm PowerShell wrapper dropped forwarded maintenance flags. Recovery/bootstrap documentation uses direct Node commands with explicit flags.
 
+## Recovery (key copies)
+
+Automated: key fingerprint properties, `verify-key` match/mismatch/format/`--key=` rejection through the real CLI with stdin piped, backup-kind states, a malformed BACKUP_KEY never stopping boot, drill-status thresholds at 100/101/190/191 days, drills and key checks kept apart in `/recovery` and `/overview`, no key material in responses, owner-only access, and a browser check of the Recovery page. Not automated: the interactive hidden-prompt path (needs a real terminal) and an actual restore drill, which the owner performs on a scratch machine per docs/DEPLOYMENT.md.
+
 ## Scope limits
 
 These checks do not establish unlimited capacity, absence of all bugs, a production penetration test, provider API correctness, actual cloud backup scheduling or payment accounting correctness. Vercel/Cloudflare deployment execution, POS registry migration, Store write APIs, Messaging wallet settlement and automated external backup scheduling are not included in this phase. Existing projects and production databases were not modified. Deployment at admin.sandbee.in requires the documented production environment, DNS/HTTPS and off-machine recovery setup.

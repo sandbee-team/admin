@@ -9,6 +9,8 @@ import {
   ScrollText,
   ShieldCheck,
   LifeBuoy,
+  FileUp,
+  LockKeyhole,
   Store,
   PanelLeftClose,
   PanelLeftOpen,
@@ -44,6 +46,8 @@ const groups = [
     [
       ["/audit", "Audit trail", ScrollText],
       ["/team", "Team & access", ShieldCheck],
+      ["/account", "Account security", LockKeyhole],
+      ["/pos-import", "POS import", FileUp],
       ["/recovery", "Recovery", LifeBuoy],
     ],
   ],
@@ -132,7 +136,8 @@ export function Shell({ user, onLogout, children }) {
               {links
                 .filter(
                   ([href]) =>
-                    href !== "/recovery" || can(user.role, "recovery"),
+                    (href !== "/recovery" || can(user.role, "recovery")) &&
+                    (href !== "/pos-import" || can(user.role, "secrets")),
                 )
                 .map(([href, text, Icon]) => (
                   <Link

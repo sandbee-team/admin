@@ -29,4 +29,20 @@ export async function consume(db, key, limit, windowMs) {
       429,
       "Too many requests. Please wait before trying again.",
     );
+  return row.count;
+}
+const bucketId = (key, windowMs) =>
+  digest(`${key}:${Math.floor(Date.now() / windowMs)}`);
+// Read-only check: has this window already reached the limit?
+export async function exceeded(db, key, limit, windowMs) {
+  const row = await db
+    .collection("rate_limits")
+    .findOne({ _id: bucketId(key, windowMs) });
+  return (row?.count ?? 0) >= limit;
+}
+// Forget the current window (maintenance resets).
+export async function clearLimit(db, key, windowMs, options) {
+  await db
+    .collection("rate_limits")
+    .deleteOne({ _id: bucketId(key, windowMs) }, options);
 }

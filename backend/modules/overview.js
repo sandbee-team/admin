@@ -4,10 +4,16 @@ import { randomUUID } from "node:crypto";
 import { transaction } from "../db.js";
 import { audit } from "../lib/audit.js";
 import { authorizeWrite } from "./records.js";
+import { can } from "../../shared/policy.js";
+import { keyFingerprint } from "../lib/crypto.js";
+import { backupKeyInfo } from "../config.js";
+import { drillState, latestKeyChecks } from "../lib/recovery-tasks.js";
+// IP and user agent are for staff who manage the team only.
+const withoutNetwork = ({ ip, userAgent, ...row }) => row;
 export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
   const router = Router();
   router.use(auth.requireAuth);
-  router.get("/overview", async (_req, res) => {
+  router.get("/overview", async (req, res) => {
     let data = cache.get("overview");
     if (!data) {
       const [
@@ -62,7 +68,7 @@ export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
         }),
         db
           .collection("recovery_checks")
-          .findOne({}, { sort: { createdAt: -1 } }),
+          .findOne({ type: { $ne: "key-check" } }, { sort: { createdAt: -1 } }),
       ]);
       data = {
         customers,
@@ -77,7 +83,12 @@ export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
       };
       cache.set("overview", data);
     }
-    res.json(data);
+    // The cached summary keeps full rows; strip per viewer at response time.
+    res.json(
+      can(req.staff.role, "team")
+        ? data
+        : { ...data, activity: data.activity.map(withoutNetwork) },
+    );
   });
   router.get("/options/:kind", async (req, res) => {
     const kind = z
@@ -109,37 +120,78 @@ export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
     res.json({ rows, limited: rows.length === 100 });
   });
   router.get("/audit", async (req, res) => {
-    const page = z.coerce
-      .number()
-      .int()
-      .min(1)
-      .max(10000)
-      .default(1)
-      .parse(req.query.page);
+    const seeNetwork = can(req.staff.role, "team");
+    const { page, customerId } = z
+      .object({
+        page: z.coerce.number().int().min(1).max(10000).default(1),
+        customerId: z.union([z.uuid(), z.literal("")]).default(""),
+      })
+      .parse({ page: req.query.page, customerId: req.query.customerId });
+    // A customer's trail is its own events plus those of its installations.
+    let filter = {};
+    if (customerId) {
+      const installations = await db
+        .collection("installations")
+        .find({ customerId }, { projection: { _id: 1 } })
+        .limit(50)
+        .toArray();
+      filter = {
+        resourceId: { $in: [customerId, ...installations.map((i) => i._id)] },
+      };
+    }
     const [rows, total] = await Promise.all([
       db
         .collection("audit_events")
-        .find({})
+        .find(filter)
         .sort({ createdAt: -1, _id: -1 })
         .skip((page - 1) * 30)
         .limit(30)
         .toArray(),
-      db.collection("audit_events").countDocuments(),
+      db.collection("audit_events").countDocuments(filter),
     ]);
-    res.json({ rows, total, page, pageSize: 30 });
-  });
-  router.get("/recovery", auth.permit("recovery"), async (_req, res) =>
     res.json({
-      rows: await db
-        .collection("recovery_checks")
-        .find({})
-        .sort({ createdAt: -1 })
-        .limit(20)
-        .toArray(),
+      rows: seeNetwork ? rows : rows.map(withoutNetwork),
+      total,
+      page,
+      pageSize: 30,
+    });
+  });
+  router.get("/recovery", auth.permit("recovery"), async (_req, res) => {
+    const drills = { type: { $ne: "key-check" } },
+      backup = backupKeyInfo(c),
+      vaultFingerprint = keyFingerprint(c.VAULT_KEY),
+      backupFingerprint = backup.key ? keyFingerprint(backup.key) : null,
+      [rows, last, checks] = await Promise.all([
+        db
+          .collection("recovery_checks")
+          .find(drills)
+          .sort({ createdAt: -1 })
+          .limit(20)
+          .toArray(),
+        db
+          .collection("recovery_checks")
+          .findOne(drills, { sort: { restoredAt: -1 } }),
+        latestKeyChecks(db),
+      ]),
+      current = { vault: vaultFingerprint, backup: backupFingerprint };
+    // A check only counts while it matches the key in use today.
+    for (const kind of Object.keys(checks))
+      for (const copy of Object.keys(checks[kind]))
+        if (checks[kind][copy])
+          checks[kind][copy].current =
+            checks[kind][copy].fingerprint === current[kind];
+    res.json({
+      rows,
+      keys: {
+        vault: { fingerprint: vaultFingerprint },
+        backup: { fingerprint: backupFingerprint, state: backup.state },
+      },
+      keyChecks: checks,
+      drillStatus: drillState(last?.restoredAt),
       environment: c.NODE_ENV,
       storeConfigured: Boolean(storeDb),
-    }),
-  );
+    });
+  });
   router.post("/recovery", auth.permit("recovery"), async (req, res) => {
     const data = z
       .object({
@@ -173,6 +225,8 @@ export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
         "recovery.recorded",
         "recovery_checks",
         row._id,
+        "",
+        req,
       );
     });
     cache.clear();

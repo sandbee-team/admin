@@ -1,5 +1,6 @@
 import { BSON } from "mongodb";
 import { encrypt, decrypt } from "./crypto.js";
+import { verifySecretBoxes } from "./secrets.js";
 export const BACKUP_COLLECTIONS = [
   "staff",
   "products",
@@ -18,8 +19,7 @@ export async function makeSnapshot(db, vaultKey, backupKey) {
   for (const name of BACKUP_COLLECTIONS) {
     collections[name] = [];
     for await (const row of db.collection(name).find({})) {
-      if (name === "connections" && row.secret)
-        decrypt(row.secret, vaultKey, `connection:${row._id}`);
+      verifySecretBoxes(name, row, vaultKey);
       bytes += Buffer.byteLength(BSON.EJSON.stringify(row));
       if (bytes > MAX_BYTES)
         throw new Error(
@@ -59,7 +59,8 @@ export function parseSnapshot(value, vaultKey, backupKey) {
       "sandbee-admin-vault"
   )
     throw new Error("Vault verification failed.");
-  for (const row of snapshot.collections.connections)
-    if (row.secret) decrypt(row.secret, vaultKey, `connection:${row._id}`);
+  for (const name of BACKUP_COLLECTIONS)
+    for (const row of snapshot.collections[name])
+      verifySecretBoxes(name, row, vaultKey);
   return snapshot;
 }

@@ -1,6 +1,14 @@
 export const ROLES = ["owner", "admin", "operations", "viewer"];
 const grants = {
-  owner: ["read", "operate", "catalog", "credentials", "team", "recovery"],
+  owner: [
+    "read",
+    "operate",
+    "catalog",
+    "credentials",
+    "team",
+    "recovery",
+    "secrets",
+  ],
   admin: ["read", "operate", "catalog", "credentials"],
   operations: ["read", "operate"],
   viewer: ["read"],

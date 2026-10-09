@@ -2,9 +2,10 @@ import { MongoClient } from "mongodb";
 import { config } from "./config.js";
 import { connect } from "./db.js";
 import { createApp } from "./app.js";
-import { mailer } from "./modules/mail.js";
+import { mailer, notifier } from "./modules/mail.js";
 import { seedCatalog } from "./modules/catalog-seed.js";
 import { verifyVaultKey } from "./lib/vault.js";
+import { createS3 } from "./lib/s3.js";
 const c = config(),
   { db, client } = await connect(c);
 await verifyVaultKey(db, c.VAULT_KEY);
@@ -19,11 +20,27 @@ if (c.STORE_MONGODB_URI) {
   // connects lazily and reports its own bounded failure.
   storeDb = storeClient.db(c.STORE_MONGODB_DB);
 }
-const app = createApp({ c, db, client, storeDb, sendCode: mailer(c) });
+const app = createApp({
+  c,
+  db,
+  client,
+  storeDb,
+  sendCode: mailer(c),
+  notify: notifier(c),
+  s3: c.FILES_S3_BUCKET
+    ? createS3({
+        region: c.FILES_S3_REGION,
+        bucket: c.FILES_S3_BUCKET,
+        accessKeyId: c.FILES_S3_ACCESS_KEY_ID,
+        secretAccessKey: c.FILES_S3_SECRET_ACCESS_KEY,
+      })
+    : undefined,
+});
 const server = app.listen(c.PORT, "0.0.0.0", () =>
   console.info(`Sandbee Admin listening on port ${c.PORT}`),
 );
-server.requestTimeout = 15000;
+// 20 MB uploads need more than 15 s on a slow uplink (headersTimeout unchanged).
+server.requestTimeout = 60000;
 server.headersTimeout = 10000;
 let stopping = false;
 async function stop() {

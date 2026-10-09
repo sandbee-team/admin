@@ -14,6 +14,8 @@ export function Login({ onLogin }) {
     [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
     [code, setCode] = useState(""),
+    [totp, setTotp] = useState(""),
+    [backup, setBackup] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   async function submit(event) {
@@ -21,7 +23,17 @@ export function Login({ onLogin }) {
     setBusy(true);
     setError("");
     try {
-      if (challenge) {
+      if (totp) {
+        const result = await api("/auth/verify-totp", {
+          method: "POST",
+          body: {
+            challengeId: totp,
+            ...(backup ? { backupCode: code } : { code }),
+          },
+        });
+        setCsrf(result.csrf);
+        onLogin(result.staff);
+      } else if (challenge) {
         const result = await api("/auth/verify", {
           method: "POST",
           body: {
@@ -30,8 +42,16 @@ export function Login({ onLogin }) {
             ...(mode === "recovery" ? { password } : {}),
           },
         });
-        setCsrf(result.csrf);
-        onLogin(result.staff);
+        if (result.totpRequired) {
+          // No session yet: the authenticator step finishes sign-in.
+          setTotp(result.challengeId);
+          setChallenge("");
+          setCode("");
+          setPassword("");
+        } else {
+          setCsrf(result.csrf);
+          onLogin(result.staff);
+        }
       } else {
         const result = await api(
           mode === "login" ? "/auth/login" : "/auth/recover",
@@ -52,6 +72,8 @@ export function Login({ onLogin }) {
   function switchMode(next) {
     setMode(next);
     setChallenge("");
+    setTotp("");
+    setBackup(false);
     setCode("");
     setPassword("");
     setError("");
@@ -110,22 +132,60 @@ export function Login({ onLogin }) {
         <div className="login-form-wrap">
           <p className="eyebrow">YOUR OPERATIONS DESK</p>
           <h2>
-            {challenge
-              ? "Check your inbox"
-              : mode === "recovery"
-                ? "Set up or recover access"
-                : "Welcome back."}
+            {totp
+              ? "Confirm with your authenticator"
+              : challenge
+                ? "Check your inbox"
+                : mode === "recovery"
+                  ? "Set up or recover access"
+                  : "Welcome back."}
           </h2>
           <p className="subtle">
-            {challenge
-              ? `If ${email} has access, a verification code has been sent. It expires in 10 minutes.`
-              : mode === "recovery"
-                ? "Use the email your owner added to the team. Public signup is not available."
-                : "Sign in with your staff account. An email code verifies each new session."}
+            {totp
+              ? backup
+                ? "Enter one of your unused backup codes. Each works once."
+                : "Enter the 6-digit code from your authenticator app."
+              : challenge
+                ? `If ${email} has access, a verification code has been sent. It expires in 10 minutes.`
+                : mode === "recovery"
+                  ? "Use the email your owner added to the team. Public signup is not available."
+                  : "Sign in with your staff account. An email code verifies each new session."}
           </p>
           <form onSubmit={submit}>
             {error && <ErrorBox>{error}</ErrorBox>}
-            {!challenge ? (
+            {totp ? (
+              backup ? (
+                <Field label="Backup code">
+                  <input
+                    className="backup-input"
+                    autoComplete="off"
+                    autoCapitalize="characters"
+                    spellCheck={false}
+                    maxLength={12}
+                    required
+                    value={code}
+                    onChange={(event) => setCode(event.target.value)}
+                    autoFocus
+                  />
+                </Field>
+              ) : (
+                <Field label="Authenticator code">
+                  <input
+                    className="otp-input"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    pattern="[0-9]{6}"
+                    maxLength={6}
+                    required
+                    value={code}
+                    onChange={(event) =>
+                      setCode(event.target.value.replace(/[^0-9]/g, ""))
+                    }
+                    autoFocus
+                  />
+                </Field>
+              )
+            ) : !challenge ? (
               <>
                 <Field label="Work email">
                   <input
@@ -186,7 +246,7 @@ export function Login({ onLogin }) {
               </>
             )}
             <Button type="submit" busy={busy}>
-              {challenge ? "Verify and continue" : "Continue"}
+              {challenge || totp ? "Verify and continue" : "Continue"}
               <ArrowRight size={16} />
             </Button>
           </form>
@@ -198,7 +258,19 @@ export function Login({ onLogin }) {
               ? "First time here or forgot your password?"
               : "Back to sign in"}
           </button>
-          {challenge && (
+          {totp && (
+            <button
+              className="plain-link"
+              onClick={() => {
+                setBackup(!backup);
+                setCode("");
+                setError("");
+              }}
+            >
+              {backup ? "Use my authenticator app" : "Use a backup code"}
+            </button>
+          )}
+          {(challenge || totp) && (
             <button className="plain-link" onClick={() => switchMode(mode)}>
               Use a different email or request a new code
             </button>

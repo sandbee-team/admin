@@ -4,7 +4,7 @@ import { z } from "zod";
 import { schemas, listQuery } from "../../shared/schemas.js";
 import { TRANSITIONS, can } from "../../shared/policy.js";
 import { modelFor, providersFor } from "../../shared/product-models.js";
-import { ensure } from "../lib/errors.js";
+import { ensure, staleError } from "../lib/errors.js";
 import { encrypt } from "../lib/crypto.js";
 import { audit } from "../lib/audit.js";
 import { transaction } from "../db.js";
@@ -32,9 +32,12 @@ const permissionFor = (name) =>
     : name === "connections"
       ? "credentials"
       : "operate";
+// Embedded vault blocks are owned by their own modules and never leave through
+// the generic record API.
 const scrub = (row) => {
   if (!row) return row;
-  const { secret, ...safe } = row;
+  // eslint-disable-next-line no-unused-vars
+  const { secret, accounts, files, pos, ...safe } = row;
   return {
     ...safe,
     ...(Object.hasOwn(row, "secret") ? { hasCredential: Boolean(secret) } : {}),
@@ -208,7 +211,9 @@ export function recordRoutes({ db, client, c, auth, cache }) {
       const [rows, total] = await Promise.all([
         db
           .collection(kind)
-          .find(filter, { projection: { secret: 0 } })
+          .find(filter, {
+            projection: { secret: 0, accounts: 0, files: 0, pos: 0 },
+          })
           .sort({ updatedAt: -1, _id: -1 })
           .skip((page - 1) * 30)
           .limit(30)
@@ -248,6 +253,7 @@ export function recordRoutes({ db, client, c, auth, cache }) {
             kind,
             row._id,
             data.name || data.title,
+            req,
           );
         });
         cache.clear();
@@ -267,7 +273,8 @@ export function recordRoutes({ db, client, c, auth, cache }) {
           const old = await db
             .collection(kind)
             .findOne({ _id: req.params.id, revision }, { session });
-          ensure(old, 409, "This record changed. Reload it before saving.");
+          if (!old)
+            throw staleError("This record changed. Reload it before saving.");
           await validateReferences(kind, data, old, session);
           const updated = await db.collection(kind).findOneAndUpdate(
             { _id: old._id, revision },
@@ -277,7 +284,8 @@ export function recordRoutes({ db, client, c, auth, cache }) {
             },
             { session, returnDocument: "after" },
           );
-          ensure(updated, 409, "This record changed. Reload it before saving.");
+          if (!updated)
+            throw staleError("This record changed. Reload it before saving.");
           await audit(
             db,
             session,
@@ -288,6 +296,7 @@ export function recordRoutes({ db, client, c, auth, cache }) {
             old.status !== data.status
               ? `${old.status} → ${data.status}`
               : "Details updated",
+            req,
           );
           return scrub(updated);
         });
@@ -327,11 +336,10 @@ export function recordRoutes({ db, client, c, auth, cache }) {
           },
           { session },
         );
-        ensure(
-          updated.matchedCount,
-          409,
-          "Record changed. Reload before updating the credential.",
-        );
+        if (!updated.matchedCount)
+          throw staleError(
+            "Record changed. Reload before updating the credential.",
+          );
         await audit(
           db,
           session,
@@ -339,6 +347,8 @@ export function recordRoutes({ db, client, c, auth, cache }) {
           "credential.replaced",
           "connections",
           req.params.id,
+          "",
+          req,
         );
       });
       res.json({ ok: true });
@@ -363,11 +373,10 @@ export function recordRoutes({ db, client, c, auth, cache }) {
           },
           { session },
         );
-        ensure(
-          result.matchedCount,
-          409,
-          "Record changed. Reload before removing the credential.",
-        );
+        if (!result.matchedCount)
+          throw staleError(
+            "Record changed. Reload before removing the credential.",
+          );
         await audit(
           db,
           session,
@@ -375,6 +384,8 @@ export function recordRoutes({ db, client, c, auth, cache }) {
           "credential.removed",
           "connections",
           req.params.id,
+          "",
+          req,
         );
       });
       res.json({ ok: true });

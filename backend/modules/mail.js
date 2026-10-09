@@ -1,5 +1,8 @@
 import nodemailer from "nodemailer";
-export function mailer(c) {
+// One transport per config, shared by the OTP sender and security notices.
+const transports = new WeakMap();
+function transport(c) {
+  if (transports.has(c)) return transports.get(c);
   const smtp = nodemailer.createTransport({
     host: c.SMTP_HOST,
     port: c.SMTP_PORT,
@@ -11,6 +14,18 @@ export function mailer(c) {
     connectionTimeout: 8000,
     socketTimeout: 10000,
   });
+  transports.set(c, smtp);
+  return smtp;
+}
+// Best-effort security notices (never contain codes or keys).
+export function notifier(c) {
+  const smtp = transport(c);
+  return async (email, { subject, text }) => {
+    await smtp.sendMail({ from: c.MAIL_FROM, to: email, subject, text });
+  };
+}
+export function mailer(c) {
+  const smtp = transport(c);
   return async (email, code) => {
     await smtp.sendMail({
       from: c.MAIL_FROM,

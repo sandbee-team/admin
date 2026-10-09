@@ -7,13 +7,19 @@ import "@fontsource/ibm-plex-sans/latin-600.css";
 import "@fontsource/ibm-plex-mono/latin-400.css";
 import "./styles.css";
 import { api, setCsrf } from "./lib/api";
-import { usePath, navigate } from "./lib/router";
+import { usePath, navigate, Link } from "./lib/router";
 import { Shell } from "./components/shell";
 import { Loading, ErrorBox, Empty } from "./components/ui";
+import { StepUpHost } from "./components/step-up";
+import { ShieldAlert } from "lucide-react";
 import { Login } from "./pages/login";
+import { AccountSecurity } from "./pages/account-security";
 import { Overview } from "./pages/overview";
 import { EcomPage } from "./pages/ecom";
 import { ProductWorkspace } from "./pages/product-workspace";
+import { CustomerWorkspace } from "./pages/customer-workspace";
+import { InstallationWorkspace } from "./pages/installation-workspace";
+import { PosImport } from "./pages/pos-import";
 import { RecordList } from "./pages/record-list";
 import { RecordEditor } from "./pages/record-editor";
 import { definitions } from "./pages/records-config";
@@ -66,6 +72,14 @@ function App() {
   useEffect(() => {
     document.title = `${path === "/" ? "Dashboard" : path.split("/")[1].replace(/^./, (c) => c.toUpperCase())} · Sandbee Admin`;
   }, [path]);
+  // Re-reads the signed-in staff member after enrolment changes (banner, step-up).
+  async function refreshUser() {
+    try {
+      setUser((await api("/auth/me")).staff);
+    } catch (e) {
+      if (e.status !== 401) setError(e.message);
+    }
+  }
   async function logout() {
     try {
       await api("/auth/logout", { method: "POST", body: {} });
@@ -91,10 +105,18 @@ function App() {
   let page;
   if (!kind) page = <Overview user={user} />;
   else if (kind === "ecom") page = <EcomPage user={user} />;
+  else if (kind === "pos-import" && can(user.role, "secrets"))
+    page = <PosImport />;
   else if (definitions[kind] && !id)
     page = <RecordList key={kind} kind={kind} user={user} />;
   else if (kind === "products" && id && id !== "new")
     page = <ProductWorkspace key={id} id={id} section={section} user={user} />;
+  else if (kind === "customers" && id && id !== "new")
+    page = <CustomerWorkspace key={id} id={id} section={section} user={user} />;
+  else if (kind === "installations" && id && id !== "new")
+    page = (
+      <InstallationWorkspace key={id} id={id} section={section} user={user} />
+    );
   else if (definitions[kind] && id)
     page = (
       <RecordEditor key={`${kind}-${id}`} kind={kind} id={id} user={user} />
@@ -111,6 +133,8 @@ function App() {
         }}
       />
     );
+  else if (kind === "account")
+    page = <AccountSecurity user={user} onChange={refreshUser} />;
   else if (kind === "store") page = <StorePage />;
   else if (kind === "recovery" && can(user.role, "recovery"))
     page = <RecoveryPage />;
@@ -121,9 +145,21 @@ function App() {
       </Empty>
     );
   return (
-    <Shell user={user} onLogout={logout}>
-      {page}
-    </Shell>
+    <>
+      <Shell user={user} onLogout={logout}>
+        {user.role === "owner" && !user.totpEnabled && kind !== "account" && (
+          <div className="notice notice-warning">
+            <ShieldAlert size={16} />
+            <span>
+              Set up your authenticator app to protect owner access.{" "}
+              <Link href="/account">Open account security</Link>
+            </span>
+          </div>
+        )}
+        {page}
+      </Shell>
+      <StepUpHost user={user} />
+    </>
   );
 }
 createRoot(document.getElementById("root")).render(

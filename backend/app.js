@@ -10,9 +10,19 @@ import { authModule } from "./modules/auth.js";
 import { recordRoutes } from "./modules/records.js";
 import { teamRoutes } from "./modules/team.js";
 import { overviewRoutes } from "./modules/overview.js";
+import { accountRoutes } from "./modules/accounts.js";
+import { fileRoutes } from "./modules/files.js";
+import { posRoutes } from "./modules/pos.js";
+import { posImportRoutes } from "./modules/pos-import.js";
 import { ecomRoutes } from "./modules/ecom.js";
 import { consume } from "./lib/limiter.js";
 import { ensure } from "./lib/errors.js";
+// The one route that takes a raw (streamed) body instead of JSON.
+const UPLOAD_PATH =
+  /^\/customers\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/files\/?$/i;
+// The go-live import posts a whole client file, so it gets a larger JSON limit.
+const IMPORT_PATH = /^\/pos\/import\/(preview|confirm)\/?$/i;
+const isUpload = (req) => req.method === "POST" && UPLOAD_PATH.test(req.path);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export function createApp(deps) {
   const { db, c } = deps,
@@ -59,11 +69,24 @@ export function createApp(deps) {
           403,
           "This request origin is not allowed.",
         );
-        ensure(req.is("application/json"), 415, "Use JSON requests.");
+        if (isUpload(req))
+          ensure(
+            /^application\/octet-stream\s*(;|$)/i.test(
+              req.get("content-type") ?? "",
+            ),
+            415,
+            "Upload the file as application/octet-stream.",
+          );
+        else ensure(req.is("application/json"), 415, "Use JSON requests.");
       }
       next();
     },
-    express.json({ limit: "32kb" }),
+    (() => {
+      const small = express.json({ limit: "32kb" }),
+        large = express.json({ limit: "128kb" });
+      return (req, res, next) =>
+        (IMPORT_PATH.test(req.path) ? large : small)(req, res, next);
+    })(),
     cookieParser(),
     async (req, _res, next) => {
       await consume(db, `api-ip:${req.ip}`, 400, 60000);
@@ -77,15 +100,28 @@ export function createApp(deps) {
   app.use("/api/team", teamRoutes(context));
   app.use("/api/ecom", ecomRoutes(context));
   app.use("/api", overviewRoutes(context));
+  app.use("/api", accountRoutes(context));
+  app.use("/api", fileRoutes(context));
+  app.use("/api", posRoutes(context));
+  app.use("/api", posImportRoutes(context));
   app.use("/api", recordRoutes(context));
   app.use("/api", (_req, res) =>
     res.status(404).json({ error: "API route not found." }),
   );
   app.use(
-    express.static(path.join(root, "dist"), { maxAge: "1h", index: false }),
+    express.static(path.join(root, "dist"), {
+      maxAge: "1h",
+      index: false,
+      // The shell must never be restored from cache (bfcache could bring back
+      // one-time setup data); hashed assets keep their cache.
+      setHeaders: (res, file) => {
+        if (path.basename(file) === "index.html")
+          res.set("Cache-Control", "no-store");
+      },
+    }),
   );
   app.get("/{*path}", (_req, res) => {
-    res.set("Cache-Control", "no-cache");
+    res.set("Cache-Control", "no-store");
     res.sendFile(path.join(root, "dist/index.html"));
   });
   app.use((error, req, res, _next) => {
@@ -104,7 +140,7 @@ export function createApp(deps) {
               .join("; ")
           : error.code === 11000
             ? "A record with these identifying details already exists."
-            : status >= 500
+            : status >= 500 && !error.expose
               ? "Service unavailable. Please retry shortly."
               : error.message;
     // Never log request bodies, credentials, Mongo URIs or provider responses.
@@ -118,7 +154,11 @@ export function createApp(deps) {
         }),
       );
     if (status === 429) res.set("Retry-After", "60");
-    res.status(status).json({ error: message, requestId: req.requestId });
+    res.status(status).json({
+      error: message,
+      ...(error.apiCode ? { code: error.apiCode } : {}),
+      requestId: req.requestId,
+    });
   });
   return app;
 }

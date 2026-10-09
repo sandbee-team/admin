@@ -1,0 +1,26 @@
+{
+  "fixture-cafe": {
+    "app": "apps/cafe",
+    "orgId": "team_fixture01",
+    "projectId": "prj_fixture0001",
+    "scope": "team_fixture01",
+    "tokenEnv": null,
+    "token": "test-vercel-token-AAAA1111bbbb"
+  },
+  "fixture-cafe-env": {
+    "app": "apps/cafe",
+    "orgId": "team_fixture01",
+    "projectId": "prj_fixture0001",
+    "scope": "team_fixture01",
+    "tokenEnv": "TEST_VERCEL_TOKEN_FIXTURE",
+    "token": null
+  },
+  "other-cafe": {
+    "app": "apps/cafe",
+    "orgId": "team_other0002",
+    "projectId": "prj_other0002",
+    "scope": null,
+    "tokenEnv": null,
+    "token": "test-vercel-token-OTHER2222zzzz"
+  }
+}

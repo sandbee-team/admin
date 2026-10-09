@@ -14,6 +14,13 @@ export const digest = (value) =>
   createHash("sha256").update(value).digest("hex");
 export const mac = (key, value) =>
   createHmac("sha256", key).update(value).digest("hex");
+// Non-secret identifier of a 32-byte hex key: an HMAC of a fixed label keyed by
+// the key itself, so it reveals nothing usable and is never a slice of the key.
+export const keyFingerprint = (hex) =>
+  mac(Buffer.from(hex, "hex"), "sandbee-admin-key-fingerprint-v1")
+    .slice(0, 16)
+    .match(/.{4}/g)
+    .join("-");
 export function equal(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return false;
   const left = Buffer.from(a),
@@ -59,13 +66,17 @@ export function encrypt(value, key, context) {
 }
 export function decrypt(box, key, context) {
   if (box.version !== 1) throw new Error("Unsupported encrypted data version.");
+  // A short GCM tag is easier to forge: only full 16-byte tags are accepted.
+  const tag = Buffer.from(box.tag, "base64");
+  if (tag.length !== 16) throw new Error("Invalid authentication tag.");
   const decipher = createDecipheriv(
     "aes-256-gcm",
     Buffer.from(key, "hex"),
     Buffer.from(box.iv, "base64"),
+    { authTagLength: 16 },
   );
   decipher.setAAD(Buffer.from(context));
-  decipher.setAuthTag(Buffer.from(box.tag, "base64"));
+  decipher.setAuthTag(tag);
   return Buffer.concat([
     decipher.update(Buffer.from(box.data, "base64")),
     decipher.final(),

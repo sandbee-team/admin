@@ -70,6 +70,14 @@ export async function indexes(db) {
     db.collection("connections").createIndex({ customerId: 1, provider: 1 }),
     db.collection("tasks").createIndex({ status: 1, dueAt: 1 }),
     db.collection("audit_events").createIndex({ createdAt: -1, _id: -1 }),
+    db.collection("audit_events").createIndex({ resourceId: 1, createdAt: -1 }),
+    db.collection("installations").createIndex(
+      { "pos.slug": 1 },
+      {
+        unique: true,
+        partialFilterExpression: { "pos.slug": { $exists: true } },
+      },
+    ),
     db.collection("recovery_checks").createIndex({ createdAt: -1 }),
   ]);
 }

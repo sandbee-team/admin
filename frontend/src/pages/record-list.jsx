@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowUpRight, Database } from "lucide-react";
+import { ArrowUpRight, Database, FileUp } from "lucide-react";
 import { definitions } from "./records-config";
 import { useResource } from "../hooks/use-resource";
 import {
@@ -36,9 +36,17 @@ export function RecordList({ kind, user }) {
         title={def.title}
         description={def.description}
         action={
-          writable && (
-            <NewLink href={`/${kind}/new`}>Add {def.singular}</NewLink>
-          )
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {kind === "customers" && can(user.role, "secrets") && (
+              <Link className="button secondary" href="/pos-import">
+                <FileUp size={16} />
+                Import from go-live file
+              </Link>
+            )}
+            {writable && (
+              <NewLink href={`/${kind}/new`}>Add {def.singular}</NewLink>
+            )}
+          </div>
         }
       />
       <div className="list-toolbar">

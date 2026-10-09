@@ -1,0 +1,78 @@
+{
+  "_readme": ["Synthetic go-live client file for tests. Every value is fake."],
+  "slug": "fixture-cafe",
+  "vercel": {
+    "token": "test-vercel-token-AAAA1111bbbb",
+    "project": null,
+    "teamId": "team_fixture01"
+  },
+  "cloudflare": {
+    "token": "test-cloudflare-token-CCCC2222dddd",
+    "accountId": "0123456789abcdef0123456789abcdef",
+    "publishSecret": "test-publish-secret-EEEE3333ffff"
+  },
+  "subdomain": "fixture-cafe",
+  "mongodbUri": "mongodb+srv://fixtureuser:test-mongo-pw-GGGG4444@cluster0.fixture.example.test/fixture_pos?retryWrites=true&w=majority",
+  "admin": { "username": "Fixtureadmin", "password": "Test-admin-pw-7!" },
+  "cafe": {
+    "name": "Fixture Cafe",
+    "tagline": "Fake tagline",
+    "mobile": "+91 90000 00000",
+    "address": "1 Test Street",
+    "receiptFooter": "Thank you",
+    "fssai": "",
+    "gst": { "enabled": false, "number": "", "rate": 5, "mode": "inclusive" }
+  },
+  "tables": 8,
+  "menu": null,
+  "image": {
+    "store": "r2",
+    "accountId": "fixtureR2acct",
+    "accessKeyId": "test-r2-access-key-IIII5555",
+    "secretAccessKey": "test-r2-secret-key-JJJJ6666",
+    "bucket": "fixture-bucket",
+    "publicBaseUrl": "https://img.fixture.example.test"
+  },
+  "contact": {
+    "ownerName": "Fiona Fixture",
+    "phone": "+91 90000 11111",
+    "whatsapp": "+91 90000 22222"
+  },
+  "accounts": {
+    "vercel": {
+      "email": "vercel-owner@fixture.example.test",
+      "password": "test-vercel-login-QQQQ9999"
+    },
+    "atlas": {
+      "email": "atlas-owner@fixture.example.test",
+      "password": "test-atlas-login-RRRR1010"
+    },
+    "images": {
+      "email": "images-owner@fixture.example.test",
+      "password": "test-images-login-SSSS1111"
+    },
+    "other": "Printer portal: admin / test-other-login-TTTT1212"
+  },
+  "notes": "Printer model X. test-notes-password-UUUU1313",
+  "standbyHosts": [],
+  "deployLock": false,
+  "generated": {
+    "host": "fixture-cafe.fixture.example.test",
+    "tenantId": "fixture-cafe",
+    "rootDomain": "fixture.example.test",
+    "projectId": "prj_fixture0001",
+    "orgId": "team_fixture01",
+    "projectName": "fixture-cafe",
+    "authSecret": "test-auth-secret-KKKK7777llllMMMM",
+    "healthStatsToken": "test-health-token-NNNN8888ooooPPPP",
+    "seededAt": "2026-01-01T00:00:00.000Z",
+    "webAddress": { "state": "ok" },
+    "realtime": {
+      "workerName": "fixture-cafe-rt",
+      "url": "https://fixture-cafe-rt.fixture.example.test",
+      "publishSecret": "test-publish-secret-EEEE3333ffff",
+      "sourceHash": "0000"
+    }
+  },
+  "lastRun": { "action": "go-live", "status": "ok", "exitCode": 0 }
+}
