@@ -35,7 +35,22 @@ const schema = z.object({
   FILES_S3_BUCKET: z.string().default(""),
   FILES_S3_ACCESS_KEY_ID: z.string().default(""),
   FILES_S3_SECRET_ACCESS_KEY: z.string().default(""),
+  // POS deploys (Stage 2). Validated by hand below so errors list names only.
+  POS_GITHUB_SOURCE_REPO: z.string().default("KartikDesai07/lucifer"),
+  POS_GITHUB_SOURCE_TOKEN: z.string().default(""),
+  POS_GITHUB_BUILDER_REPO: z.string().default("KartikDesai07/pos-builder"),
+  POS_GITHUB_BUILDER_TOKEN: z.string().default(""),
+  POS_BUILDER_WORKFLOW: z.string().default("build.yml"),
+  POS_BUILDER_REF: z.string().default("main"),
+  POS_WORK_DIR: z.string().default("/work"),
+  POS_BUILD_CACHE: z.string().default(""),
 });
+export const GITHUB_REPO_RE = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
+export const GITHUB_TOKEN_RE = /^github_pat_[A-Za-z0-9_]{50,255}$/;
+const WORKFLOW_RE = /^[A-Za-z0-9._-]{1,100}\.ya?ml$/;
+const REF_RE =
+  /^(?!-)(?!.*\.\.)(?!\/)(?!.*\/\/)(?!.*\/$)[A-Za-z0-9._/-]{1,200}$/;
+const WORK_DIR_RE = /^(?:[A-Za-z]:)?[\/][A-Za-z0-9._ \/:-]{0,200}$/;
 const FILES_VARS = [
   "FILES_S3_REGION",
   "FILES_S3_BUCKET",
@@ -104,6 +119,32 @@ export function config(env = process.env) {
     if (bad.length)
       throw new Error(`Invalid file storage settings: ${bad.join(", ")}`);
   }
+  // POS deploys: an empty token disables that half of the feature; a
+  // malformed value stops the boot. Only variable NAMES are ever reported.
+  const posBad = [];
+  if (!GITHUB_REPO_RE.test(c.POS_GITHUB_SOURCE_REPO))
+    posBad.push("POS_GITHUB_SOURCE_REPO");
+  if (!GITHUB_REPO_RE.test(c.POS_GITHUB_BUILDER_REPO))
+    posBad.push("POS_GITHUB_BUILDER_REPO");
+  for (const name of ["POS_GITHUB_SOURCE_TOKEN", "POS_GITHUB_BUILDER_TOKEN"])
+    if (c[name] !== "" && !GITHUB_TOKEN_RE.test(c[name])) posBad.push(name);
+  if (!WORKFLOW_RE.test(c.POS_BUILDER_WORKFLOW))
+    posBad.push("POS_BUILDER_WORKFLOW");
+  if (!REF_RE.test(c.POS_BUILDER_REF)) posBad.push("POS_BUILDER_REF");
+  if (
+    !WORK_DIR_RE.test(c.POS_WORK_DIR) ||
+    /(^|[\/])\.\.([\/]|$)/.test(c.POS_WORK_DIR)
+  )
+    posBad.push("POS_WORK_DIR");
+  if (!["", "on", "off"].includes(c.POS_BUILD_CACHE))
+    posBad.push("POS_BUILD_CACHE");
+  else if (c.POS_BUILD_CACHE === "on" && !filesSet.length)
+    posBad.push("POS_BUILD_CACHE");
+  if (posBad.length)
+    throw new Error(`Invalid POS deploy settings: ${posBad.join(", ")}`);
+  // Build cache: on by default exactly when file storage is configured.
+  if (c.POS_BUILD_CACHE === "")
+    c.POS_BUILD_CACHE = filesSet.length ? "on" : "off";
   return c;
 }
 // The snapshot key as scripts/recovery.js reads it: BACKUP_KEY, else the local

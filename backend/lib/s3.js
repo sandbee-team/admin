@@ -1,4 +1,9 @@
 import { createHash, createHmac } from "node:crypto";
+import { createReadStream, createWriteStream, statSync } from "node:fs";
+import { rename, unlink } from "node:fs/promises";
+import https from "node:https";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { HttpError } from "./errors.js";
 // Minimal S3 client: AWS Signature V4 over fetch + node:crypto. It needs five
 // operations (put, get, delete, copy, list) so the full SDK is not worth its
@@ -114,6 +119,25 @@ async function readBody(response, maxBytes) {
   }
   return Buffer.concat(parts);
 }
+// Keys the streaming/build helpers may touch: client files and the build cache.
+const KEY_RE = /^(?:files|builds)\/[A-Za-z0-9._/-]{1,900}$/;
+export const validKey = (key) =>
+  typeof key === "string" &&
+  KEY_RE.test(key) &&
+  !key.includes("//") &&
+  !key.split("/").some((part) => part === "." || part === "..") &&
+  !key.endsWith("/");
+const SHA256_RE = /^[0-9a-f]{64}$/;
+const unxml = (text) =>
+  text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+// Whether an error is S3 refusing a conditional write (If-None-Match).
+export const isConflict = (error) =>
+  ["PreconditionFailed", "ConditionalRequestConflict"].includes(error?.s3Code);
 const validVersion = (id) =>
   typeof id === "string" &&
   id.length >= 1 &&
@@ -126,6 +150,7 @@ export function createS3({
   secretAccessKey,
   fetch: fetchImpl = globalThis.fetch,
   now = () => new Date(),
+  httpsRequest = https.request,
 }) {
   if (!BUCKET_RE.test(bucket ?? ""))
     throw new Error("Invalid S3 bucket name (dots are not supported).");
@@ -189,6 +214,32 @@ export function createS3({
     }
     return { status: response.status, headers: response.headers, data };
   }
+  // Signs a request whose body is not buffered; returns query and headers.
+  function sign({ method, key, query = {}, headers = {}, payloadHash }) {
+    const signed = signRequest({
+      method,
+      host,
+      path: `/${key}`,
+      query,
+      headers,
+      payloadHash,
+      region,
+      accessKeyId,
+      secretAccessKey,
+      date: now(),
+    });
+    return {
+      search: signed.canonicalQuery ? `?${signed.canonicalQuery}` : "",
+      headers: {
+        ...Object.fromEntries(
+          Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]),
+        ),
+        "x-amz-date": signed.amzDate,
+        "x-amz-content-sha256": payloadHash,
+        authorization: signed.authorization,
+      },
+    };
+  }
   const versionOf = (headers) => {
     const id = headers.get("x-amz-version-id");
     return validVersion(id) && id !== "null" ? id : null;
@@ -251,6 +302,224 @@ export function createS3({
       if (!newVersion) throw unavailable("NoVersionId");
       return { versionId: newVersion };
     },
+    // Small objects (manifests): conditional create and current-version read.
+    async putBytes(
+      key,
+      buffer,
+      { ifNoneMatch = false, contentType = "application/octet-stream" } = {},
+    ) {
+      if (!validKey(key) || !Buffer.isBuffer(buffer))
+        throw unavailable("BadKey");
+      const { headers } = await call({
+        method: "PUT",
+        key,
+        body: buffer,
+        timeout: 30000,
+        headers: {
+          "content-type": contentType,
+          ...(ifNoneMatch ? { "if-none-match": "*" } : {}),
+          "x-amz-server-side-encryption": "AES256",
+        },
+      });
+      return { versionId: versionOf(headers) };
+    },
+    async getBytes(key, maxBytes = 1024 * 1024) {
+      if (!validKey(key)) throw unavailable("BadKey");
+      const { data } = await call({
+        method: "GET",
+        key,
+        timeout: 30000,
+        maxBytes,
+      });
+      return data;
+    },
+    // Streams a local file with an explicit Content-Length and a signed
+    // payload hash (sha256 hex of the file; computed here when not given).
+    async putFile(
+      key,
+      path,
+      {
+        ifNoneMatch = false,
+        sha256: known,
+        contentType = "application/octet-stream",
+        timeout = 300000,
+      } = {},
+    ) {
+      if (!validKey(key)) throw unavailable("BadKey");
+      if (known !== undefined && !SHA256_RE.test(known))
+        throw unavailable("BadHash");
+      let size, payloadHash;
+      try {
+        size = statSync(path).size;
+        if (known) payloadHash = known;
+        else {
+          const hash = createHash("sha256");
+          for await (const chunk of createReadStream(path)) hash.update(chunk);
+          payloadHash = hash.digest("hex");
+        }
+      } catch {
+        throw unavailable("LocalFile");
+      }
+      const signed = sign({
+        method: "PUT",
+        key,
+        payloadHash,
+        headers: {
+          "content-type": contentType,
+          ...(ifNoneMatch ? { "if-none-match": "*" } : {}),
+          "x-amz-server-side-encryption": "AES256",
+        },
+      });
+      let sent = 0;
+      const meter = new Transform({
+        transform(chunk, _e, cb) {
+          sent += chunk.length;
+          cb(null, chunk);
+        },
+      });
+      const result = await new Promise((resolve, reject) => {
+        const req = httpsRequest(
+          {
+            hostname: host,
+            port: 443,
+            method: "PUT",
+            path: `${encodePath(`/${key}`)}${signed.search}`,
+            headers: { ...signed.headers, "content-length": String(size) },
+          },
+          (res) => {
+            const parts = [];
+            let got = 0;
+            res.on("data", (chunk) => {
+              got += chunk.length;
+              if (got <= 65536) parts.push(chunk);
+            });
+            res.on("error", reject);
+            res.on("end", () =>
+              resolve({
+                status: res.statusCode,
+                headers: res.headers,
+                text: Buffer.concat(parts).toString("utf8"),
+              }),
+            );
+          },
+        );
+        req.setTimeout?.(timeout, () => req.destroy(new Error("timeout")));
+        req.on("error", reject);
+        pipeline(
+          createReadStream(path, { highWaterMark: 65536 }),
+          meter,
+          req,
+        ).catch(reject);
+      }).catch(() => {
+        throw unavailable("Network");
+      });
+      if (result.status < 200 || result.status > 299) {
+        const code = codeOf(result.text);
+        throw unavailable(
+          result.status === 412
+            ? "PreconditionFailed"
+            : code || `Http${result.status}`,
+        );
+      }
+      if (sent !== size) throw unavailable("SizeChanged");
+      const id = result.headers["x-amz-version-id"];
+      return { versionId: validVersion(id) && id !== "null" ? id : null };
+    },
+    // Streams the current version to `path` (via `path.part`, renamed on
+    // success). Refuses more than maxBytes; returns {bytes, sha256}.
+    async getToFile(key, path, { maxBytes, timeout = 300000 } = {}) {
+      if (!validKey(key) || !Number.isSafeInteger(maxBytes) || maxBytes < 0)
+        throw unavailable("BadKey");
+      const signed = sign({ method: "GET", key, payloadHash: sha256("") });
+      const part = `${path}.part`;
+      let response;
+      try {
+        response = await fetchImpl(
+          `https://${host}${encodePath(`/${key}`)}${signed.search}`,
+          {
+            method: "GET",
+            headers: signed.headers,
+            redirect: "error",
+            signal: AbortSignal.timeout(timeout),
+          },
+        );
+      } catch {
+        throw unavailable("Network");
+      }
+      if (!response.ok) {
+        let text = "";
+        try {
+          text = (await readBody(response, 65536)).toString("utf8");
+        } catch {
+          // Only the status matters below.
+        }
+        const code = codeOf(text);
+        if (code === "NoSuchKey" || code === "NoSuchVersion") throw gone(code);
+        throw unavailable(code || `Http${response.status}`);
+      }
+      const header = response.headers.get("content-length");
+      const declared = header === null ? null : Number(header);
+      if (declared !== null && declared > maxBytes) {
+        await response.body?.cancel().catch(() => {});
+        throw unavailable("TooLarge");
+      }
+      const hash = createHash("sha256");
+      let bytes = 0;
+      const meter = new Transform({
+        transform(chunk, _e, cb) {
+          bytes += chunk.length;
+          if (bytes > maxBytes) return cb(new Error("TooLarge"));
+          hash.update(chunk);
+          cb(null, chunk);
+        },
+      });
+      try {
+        if (!response.body) throw new Error("Empty");
+        await pipeline(
+          Readable.fromWeb(response.body),
+          meter,
+          createWriteStream(part),
+        );
+        if (declared !== null && declared !== bytes)
+          throw new Error("Truncated");
+        await rename(part, path);
+      } catch (error) {
+        await unlink(part).catch(() => {});
+        throw unavailable(
+          error?.message === "TooLarge" ? "TooLarge" : "Network",
+        );
+      }
+      return { bytes, sha256: hash.digest("hex") };
+    },
+    // Rewrites an object onto itself (resets the lifecycle clock). S3 insists
+    // on MetadataDirective REPLACE for a self-copy, so content type and the
+    // server-side encryption header are sent again.
+    async copySelf(key, { contentType } = {}) {
+      if (!validKey(key)) throw unavailable("BadKey");
+      const type =
+        contentType ??
+        (key.endsWith(".json")
+          ? "application/json"
+          : "application/octet-stream");
+      const { headers, data } = await call({
+        method: "PUT",
+        key,
+        timeout: 60000,
+        headers: {
+          "x-amz-copy-source": `/${bucket}/${encodePath(key)}`,
+          "x-amz-metadata-directive": "REPLACE",
+          "content-type": type,
+          "x-amz-server-side-encryption": "AES256",
+        },
+      });
+      const text = data.toString("utf8");
+      if (/<Error[\s>]/.test(text)) {
+        const code = codeOf(text);
+        if (code === "NoSuchKey") throw gone(code);
+        throw unavailable(code || "CopyFailed");
+      }
+      return { versionId: versionOf(headers) };
+    },
     async list(prefix, maxKeys = 1) {
       const { data } = await call({
         method: "GET",
@@ -262,8 +531,21 @@ export function createS3({
       });
       const text = data.toString("utf8");
       if (!/<ListBucketResult[\s>]/.test(text)) throw unavailable("BadList");
+      const objects = [
+        ...text.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g),
+      ].map((m) => {
+        const field = (tag) =>
+          new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(m[1])?.[1] ?? "";
+        return {
+          key: unxml(field("Key")),
+          size: Number(field("Size")) || 0,
+          lastModified: field("LastModified"),
+        };
+      });
       return {
         keys: [...text.matchAll(/<Key>([^<]*)<\/Key>/g)].map((m) => m[1]),
+        objects,
+        truncated: /<IsTruncated>true<\/IsTruncated>/.test(text),
       };
     },
   };

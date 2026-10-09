@@ -8,6 +8,8 @@ const grants = {
     "team",
     "recovery",
     "secrets",
+    // Deploys, rollbacks, builds and purges: owner only.
+    "deploy",
   ],
   admin: ["read", "operate", "catalog", "credentials"],
   operations: ["read", "operate"],

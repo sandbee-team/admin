@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { Readable, Writable } from "node:stream";
 import { createS3, signRequest } from "../backend/lib/s3.js";
 // In-memory S3 for tests: versioned objects, delete markers, signature
 // checking and failure injection. It never touches the network.
@@ -27,9 +28,9 @@ export function createFakeS3({ versioning = true } = {}) {
     const last = versions[versions.length - 1];
     return last && !last.marker ? last : null;
   };
-  function newVersion(key, body, marker = false) {
+  function newVersion(key, body, marker = false, type = "") {
     const id = state.versioning ? `ver-${++counter}-${key.length}` : null;
-    const entry = { id: id ?? "null", body, marker };
+    const entry = { id: id ?? "null", body, marker, type };
     store.set(key, [...(store.get(key) ?? []), entry]);
     return id;
   }
@@ -114,7 +115,7 @@ export function createFakeS3({ versioning = true } = {}) {
       if (headers["x-amz-server-side-encryption"] !== "AES256")
         return xml(400, "InvalidArgument");
       if (hooks.beforePut) await hooks.beforePut(key);
-      const id = newVersion(key, body);
+      const id = newVersion(key, body, false, headers["content-type"] ?? "");
       if (hooks.afterPut) await hooks.afterPut(key);
       return new Response(null, {
         status: 200,
@@ -122,16 +123,37 @@ export function createFakeS3({ versioning = true } = {}) {
       });
     }
     if (op === "copy") {
-      const m = /^\/([^/]+)\/([^?]+)\?versionId=(.+)$/.exec(copySource);
+      const m = /^\/([^/]+)\/([^?]+)(?:\?versionId=(.+))?$/.exec(copySource);
       const [, bucket, srcKey, srcVersion] = m
-        ? [m[0], m[1], decodeURIComponent(m[2]), decodeURIComponent(m[3])]
+        ? [
+            m[0],
+            m[1],
+            decodeURIComponent(m[2]),
+            m[3] && decodeURIComponent(m[3]),
+          ]
         : [];
       if (bucket !== FAKE.bucket) return xml(404, "NoSuchBucket");
-      const found = (store.get(srcKey) ?? []).find(
-        (v) => v.id === srcVersion && !v.marker,
+      // Like S3: copying an object onto itself needs MetadataDirective REPLACE.
+      if (
+        srcKey === key &&
+        !srcVersion &&
+        headers["x-amz-metadata-directive"] !== "REPLACE"
+      )
+        return xml(400, "InvalidRequest");
+      if (headers["x-amz-server-side-encryption"] !== "AES256")
+        return xml(400, "InvalidArgument");
+      const found = srcVersion
+        ? (store.get(srcKey) ?? []).find(
+            (v) => v.id === srcVersion && !v.marker,
+          )
+        : live(srcKey);
+      if (!found) return xml(404, srcVersion ? "NoSuchVersion" : "NoSuchKey");
+      const id = newVersion(
+        key,
+        found.body,
+        false,
+        headers["content-type"] ?? found.type,
       );
-      if (!found) return xml(404, "NoSuchVersion");
-      const id = newVersion(key, found.body);
       return new Response(
         "<CopyObjectResult><ETag>x</ETag></CopyObjectResult>",
         { status: 200, headers: id ? { "x-amz-version-id": id } : {} },
@@ -144,7 +166,10 @@ export function createFakeS3({ versioning = true } = {}) {
         ? versions.find((v) => v.id === versionId)
         : versions[versions.length - 1];
       if (!found) return xml(404, versionId ? "NoSuchVersion" : "NoSuchKey");
-      if (found.marker) return xml(405, "MethodNotAllowed");
+      if (found.marker)
+        return versionId
+          ? xml(405, "MethodNotAllowed")
+          : xml(404, "NoSuchKey", { "x-amz-delete-marker": "true" });
       return new Response(found.body, { status: 200 });
     }
     if (op === "delete") {
@@ -152,13 +177,16 @@ export function createFakeS3({ versioning = true } = {}) {
       return new Response(null, { status: 204 });
     }
     const prefix = u.searchParams.get("prefix") ?? "";
-    const keys = [...store.keys()].filter(
-      (k) => k.startsWith(prefix) && live(k),
-    );
+    const keys = [...store.keys()]
+      .filter((k) => k.startsWith(prefix) && live(k))
+      .sort();
     return new Response(
       `<ListBucketResult><KeyCount>${keys.length}</KeyCount>${keys
         .slice(0, Number(u.searchParams.get("max-keys") ?? 1000))
-        .map((k) => `<Contents><Key>${k}</Key></Contents>`)
+        .map(
+          (k) =>
+            `<Contents><Key>${k}</Key><LastModified>2026-01-01T00:00:00.000Z</LastModified><Size>${live(k).body.length}</Size></Contents>`,
+        )
         .join("")}</ListBucketResult>`,
       { status: 200 },
     );
@@ -211,7 +239,50 @@ export function createFakeS3({ versioning = true } = {}) {
       if (versions.at(-1)?.marker) store.set(key, []);
     },
     pending,
-    client: (overrides = {}) => createS3({ ...FAKE, fetch, ...overrides }),
+    // node:https.request stand-in for streaming uploads: collects the body,
+    // runs it through the same fake (signature check included) and answers
+    // like an IncomingMessage.
+    stats: { maxWriteChunk: 0, requests: 0 },
+    request(options, onResponse) {
+      const chunks = [];
+      const req = new Writable({
+        write(chunk, _e, cb) {
+          fake.stats.maxWriteChunk = Math.max(
+            fake.stats.maxWriteChunk,
+            chunk.length,
+          );
+          chunks.push(chunk);
+          cb();
+        },
+        final(cb) {
+          const headers = options.headers ?? {};
+          const body = Buffer.concat(chunks);
+          fake.stats.requests++;
+          fake.lastRequest = { options, bytes: body.length };
+          (async () => {
+            if (Number(headers["content-length"]) !== body.length)
+              throw new Error("content-length mismatch");
+            const res = await fetch(
+              `https://${options.hostname}${options.path}`,
+              { method: options.method, headers, body, redirect: "error" },
+            );
+            const buffer = Buffer.from(await res.arrayBuffer());
+            const message = Readable.from(buffer.length ? [buffer] : []);
+            message.statusCode = res.status;
+            message.headers = Object.fromEntries(res.headers);
+            onResponse(message);
+          })().then(
+            () => cb(),
+            (error) => cb(error),
+          );
+        },
+      });
+      req.setTimeout = () => req;
+      return req;
+    },
+    contentType: (key) => store.get(key)?.at(-1)?.type ?? "",
+    client: (overrides = {}) =>
+      createS3({ ...FAKE, fetch, httpsRequest: fake.request, ...overrides }),
   };
   return fake;
 }
