@@ -90,20 +90,36 @@ export function parseBuilderJson(raw) {
     cliVersion: raw.cliVersion,
   };
 }
+// The builder accepts only canonical values: URLs in `new URL(v).href` form
+// (a bare host gets its trailing "/") and a lowercase cloud name. Errors name
+// the key only, never the value.
+export function canonicalEnvValue(key, value) {
+  if (typeof value !== "string" || !VALUE_RE.test(value))
+    throw new Error(`Invalid build input: ${key}`);
+  if (value === "") return "";
+  if (key === "NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME") return value.toLowerCase();
+  try {
+    return new URL(value).href;
+  } catch {
+    throw new Error(`Invalid build input: ${key}`);
+  }
+}
+// The three NEXT_PUBLIC_* values in the builder's canonical form.
+export function canonicalNextPublic(pos) {
+  const env = nextPublicOf(pos);
+  return Object.fromEntries(
+    NEXT_PUBLIC_KEYS.map((key) => [key, canonicalEnvValue(key, env[key])]),
+  );
+}
 // inputs = {v, settings, env, builder}. `env` is exactly the three
-// NEXT_PUBLIC_* keys for now (outcome A of rev 2 section 2.1). Errors name
-// keys only, never values.
+// NEXT_PUBLIC_* keys for now (outcome A of rev 2 section 2.1).
 export function buildInputs({ pos, builderSha, builder }) {
   if (!isSha(builderSha)) throw new Error("Invalid builder commit.");
   const descriptor = parseBuilderJson(builder);
-  const env = nextPublicOf(pos);
-  for (const key of NEXT_PUBLIC_KEYS)
-    if (typeof env[key] !== "string" || !VALUE_RE.test(env[key]))
-      throw new Error(`Invalid build input: ${key}`);
   return {
     v: BUILD_KEY_VERSION,
     settings: { ...BUILD_SETTINGS },
-    env: Object.fromEntries(NEXT_PUBLIC_KEYS.map((key) => [key, env[key]])),
+    env: canonicalNextPublic(pos),
     builder: {
       sha: builderSha,
       workflow: BUILDER_WORKFLOW,

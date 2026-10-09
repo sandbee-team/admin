@@ -5,6 +5,7 @@ import { transaction } from "../db.js";
 import { audit } from "../lib/audit.js";
 import { authorizeWrite } from "./records.js";
 import { can } from "../../shared/policy.js";
+import { WORKER_ONLINE_MS } from "../../shared/deploy.js";
 import { keyFingerprint } from "../lib/crypto.js";
 import { backupKeyInfo } from "../config.js";
 import { drillState, latestKeyChecks } from "../lib/recovery-tasks.js";
@@ -25,6 +26,10 @@ export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
         overdue,
         connections,
         latestRecovery,
+        posFailed,
+        posUnverified,
+        posLocked,
+        posWorker,
       ] = await Promise.all([
         db
           .collection("customers")
@@ -71,6 +76,27 @@ export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
           // Every role reads /overview: expose only the drill date.
           { sort: { createdAt: -1 }, projection: { _id: 0, restoredAt: 1 } },
         ),
+        // POS deploy attention: counts only, no installation detail.
+        db.collection("installations").countDocuments({
+          "pos.deploy.current.status": {
+            $in: ["failed", "unhealthy", "rolled-back", "expired"],
+          },
+        }),
+        db.collection("installations").countDocuments({
+          pos: { $exists: true },
+          status: { $ne: "retired" },
+          $or: ["vercel", "project", "env", "mongo", "health"].map((key) => ({
+            [`pos.verify.${key}`]: { $ne: "ok" },
+          })),
+        }),
+        db.collection("installations").countDocuments({
+          pos: { $exists: true },
+          status: { $ne: "retired" },
+          "pos.deployLock": { $ne: false },
+        }),
+        db
+          .collection("system_state")
+          .findOne({ _id: "pos-worker" }, { projection: { _id: 0, at: 1 } }),
       ]);
       data = {
         customers,
@@ -81,6 +107,14 @@ export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
         overdue,
         connections,
         latestRecovery,
+        pos: {
+          failed: posFailed,
+          unverified: posUnverified,
+          locked: posLocked,
+          workerOnline:
+            posWorker?.at instanceof Date &&
+            Date.now() - posWorker.at.getTime() < WORKER_ONLINE_MS,
+        },
         asOf: new Date(),
       };
       cache.set("overview", data);

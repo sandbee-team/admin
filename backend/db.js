@@ -79,6 +79,27 @@ export async function indexes(db) {
       },
     ),
     db.collection("recovery_checks").createIndex({ createdAt: -1 }),
+    // Stage 2 deploys: the worker claims by status; partial so idle rows cost nothing.
+    db.collection("installations").createIndex(
+      { "pos.deploy.current.status": 1 },
+      {
+        partialFilterExpression: {
+          "pos.deploy.current.status": { $exists: true },
+        },
+      },
+    ),
+    db
+      .collection("installations")
+      .createIndex(
+        { "pos.task.status": 1 },
+        { partialFilterExpression: { "pos.task.status": { $exists: true } } },
+      ),
+    db
+      .collection("system_state")
+      .createIndex(
+        { kind: 1, status: 1 },
+        { partialFilterExpression: { kind: "build" } },
+      ),
   ]);
 }
 export async function transaction(client, operation) {

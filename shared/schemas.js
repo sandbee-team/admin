@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { MODELS, INSTALL_STATES, CHECKS } from "./policy.js";
 import { PROVIDERS } from "./product-models.js";
+import { BRANCH_RE, SHA_RE } from "./deploy.js";
 const text = (max) => z.string().trim().max(max);
 const name = text(120).min(2);
 const id = z.uuid();
@@ -287,7 +288,6 @@ export const posConfigSchema = z
     host: posPattern(APEX_RE, "Use a lowercase host name.", 253),
     tenantId: posId,
     rootDomain: posPattern(APEX_RE, "Use a lowercase domain.", 253),
-    deployLock: z.boolean().default(true),
     vercel: z
       .object({
         projectId: posId,
@@ -556,4 +556,59 @@ export const posImportSchemas = {
       ]),
     })
     .strict(),
+};
+
+// ---- POS deploys (Stage 2) --------------------------------------------------
+// `confirm` is the typed slug where a slug is required; redeploy confirms with
+// `true`. Every body is strict.
+const deployBranch = z.string().max(200).regex(BRANCH_RE, "Use a branch name.");
+const deploySha = z.string().regex(SHA_RE, "Use the full 40-character commit.");
+const slugConfirm = z.string().trim().min(1).max(60);
+export const deploySchemas = {
+  enqueue: z.discriminatedUnion("kind", [
+    z
+      .object({
+        kind: z.literal("deploy"),
+        branch: deployBranch,
+        sha: deploySha,
+        confirm: slugConfirm,
+      })
+      .strict(),
+    z
+      .object({
+        kind: z.literal("redeploy"),
+        // Which stored version to ship again; the commit comes from the
+        // server's record, never from the request.
+        of: z.enum(["last", "previous"]).default("last"),
+        confirm: z.literal(true),
+      })
+      .strict(),
+  ]),
+  rollback: z.object({ confirm: slugConfirm }).strict(),
+  job: z.object({ requestId: id }).strict(),
+  lock: z.object({}).strict(),
+  unlock: z
+    .object({
+      confirm: slugConfirm,
+      // Optional attestation that the local clients/<slug>.json now has
+      // deployLock:true (POS-STAGE2-PLAN section 6).
+      localLocked: z.boolean().optional(),
+    })
+    .strict(),
+  empty: z.object({}).strict(),
+  build: z.object({ branch: deployBranch, sha: deploySha }).strict(),
+  freeze: z
+    .object({ reason: text(200).default("") })
+    .strict()
+    .prefault({}),
+  purge: z
+    .object({
+      previewTaskId: id,
+      digest: z.string().regex(/^[0-9a-f]{64}$/),
+      confirm: slugConfirm,
+    })
+    .strict(),
+  plan: z.object({ branch: deployBranch }).strict(),
+  branches: z.object({ installation: id.optional() }).strict(),
+  fleet: z.object({ customerId: id.optional() }).strict(),
 };

@@ -126,6 +126,36 @@ describe("build inputs and buildKey", () => {
       );
     }
   });
+  it("build env values are canonical: URLs in new URL().href form, lowercase cloud name", () => {
+    const env = inputsOf(
+      posOf(
+        { store: "r2", publicBaseUrl: R2 },
+        { workerUrl: "https://RT.Example.workers.dev" },
+      ),
+    ).env;
+    for (const value of Object.values(env).filter(Boolean))
+      assert.equal(new URL(value).href, value);
+    assert.equal(env.NEXT_PUBLIC_R2_PUBLIC_BASE_URL, `${R2}/`);
+    assert.equal(
+      env.NEXT_PUBLIC_REALTIME_URL,
+      "wss://rt.example.workers.dev/join",
+    );
+    const cloud = inputsOf(
+      posOf({ store: "cloudinary", cloudName: "My-Cloud_1" }),
+    ).env;
+    assert.equal(cloud.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME, "my-cloud_1");
+    // Equivalent spellings share one buildKey.
+    assert.equal(
+      buildKeyOf(
+        VAULT_KEY,
+        inputsOf(posOf({ store: "r2", publicBaseUrl: R2 })),
+      ),
+      buildKeyOf(
+        VAULT_KEY,
+        inputsOf(posOf({ store: "r2", publicBaseUrl: `${R2}/` })),
+      ),
+    );
+  });
   it("derives the realtime URL from the worker host", () => {
     assert.equal(
       nextPublicOf(POS).NEXT_PUBLIC_REALTIME_URL,

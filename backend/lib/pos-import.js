@@ -201,7 +201,6 @@ export function parseImport(input) {
     host,
     tenantId: str(g.tenantId),
     rootDomain: str(g.rootDomain),
-    deployLock: true,
     vercel: {
       projectId,
       orgId,

@@ -241,7 +241,6 @@ const POS_CONFIG = (slug) => ({
   host: `cafe.pos.example.com`,
   tenantId: "tenant_1",
   rootDomain: "pos.example.com",
-  deployLock: true,
   vercel: {
     projectId: "prj_abc123",
     orgId: "team_abc123",
@@ -1731,6 +1730,9 @@ describe("POS block", () => {
       { ...POS_CONFIG("ok-slug"), host: "UPPER.example.com" },
       { ...POS_CONFIG("ok-slug"), tenantId: "<tenant-id>" },
       { ...POS_CONFIG("ok-slug"), posAdmin: { username: "A" } },
+      // Finding 1: the lock is no longer part of the config form.
+      { ...POS_CONFIG("ok-slug"), deployLock: false },
+      { ...POS_CONFIG("ok-slug"), deployLock: true },
       {
         ...POS_CONFIG("ok-slug"),
         vercel: { ...POS_CONFIG("x").vercel, token: "nope" },
@@ -1884,7 +1886,6 @@ describe("POS block", () => {
         config: {
           ...POS_CONFIG("changed-slug"),
           host: "other.pos.example.com",
-          deployLock: false,
           cloudflare: {
             accountId: "cfacc999",
             workerName: "w2",

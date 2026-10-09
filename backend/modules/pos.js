@@ -1,13 +1,33 @@
 import { Router } from "express";
 import { z } from "zod";
 import { posSchemas, POS_SECRET_FIELDS } from "../../shared/schemas.js";
-import { ensure, staleError } from "../lib/errors.js";
+import { HttpError, ensure, staleError } from "../lib/errors.js";
 import { encrypt, decrypt } from "../lib/crypto.js";
 import { audit } from "../lib/audit.js";
 import { consume } from "../lib/limiter.js";
 import { transaction } from "../db.js";
 import { authorizeWrite } from "./records.js";
+import {
+  deployView,
+  nextPublicView,
+  taskView,
+  verifyView,
+} from "../lib/deploy-view.js";
+import { jobBlocks } from "../../shared/deploy.js";
 
+// Settings that a running job reads are frozen while it is active.
+const JOB_FIELDS = ["vercel.token", "mongo.uri"];
+export const busyError = (message) => {
+  const error = new HttpError(409, message);
+  error.apiCode = "busy";
+  return error;
+};
+const idle = (pos) => {
+  if (jobBlocks(pos.deploy?.current))
+    throw busyError(
+      "A deploy is running for this installation. Wait for it to finish or cancel it.",
+    );
+};
 const at = (object, path) =>
   path.split(".").reduce((value, part) => value?.[part], object);
 export const changedKey = (field) => field.replace(".", "_");
@@ -51,12 +71,11 @@ export const posView = (pos) => ({
     bucket: pos.image?.bucket ?? "",
   },
   posAdmin: { username: pos.posAdmin?.username ?? "" },
-  build: { nextPublic: pos.build?.nextPublic ?? {} },
-  deploy: {
-    current: pos.deploy?.current ?? null,
-    last: pos.deploy?.last ?? null,
-    previous: pos.deploy?.previous ?? null,
-  },
+  build: { nextPublic: nextPublicView(pos.build?.nextPublic) },
+  // Lease, fence, object keys and run ids never leave the server (deployView).
+  deploy: deployView(pos.deploy),
+  task: taskView(pos.task),
+  verify: verifyView(pos.verify),
   secrets: Object.fromEntries(
     POS_SECRET_FIELDS.map((field) => [
       field,
@@ -75,7 +94,8 @@ export const newPos = (config) => ({
   host: config.host,
   tenantId: config.tenantId,
   rootDomain: config.rootDomain,
-  deployLock: config.deployLock,
+  // Always locked: only the owner-only unlock route can change it.
+  deployLock: true,
   vercel: { ...config.vercel, token: null },
   mongo: { uri: null },
   cloudflare: config.cloudflare ? { ...config.cloudflare, token: null } : null,
@@ -87,7 +107,7 @@ export const newPos = (config) => ({
   },
   posAdmin: { username: config.posAdmin.username, password: null },
   build: { nextPublic: nextPublic(config.image) },
-  deploy: { current: null, last: null, previous: null },
+  deploy: { current: null, last: null, previous: null, cutoverAt: null },
   secretsChangedAt: {},
   importedAt: null,
   importedBy: null,
@@ -100,7 +120,6 @@ function configPaths(config) {
     "pos.host": config.host,
     "pos.tenantId": config.tenantId,
     "pos.rootDomain": config.rootDomain,
-    "pos.deployLock": config.deployLock,
     "pos.build.nextPublic": nextPublic(config.image),
     "pos.posAdmin.username": config.posAdmin.username,
   };
@@ -171,6 +190,7 @@ export function posRoutes({ db, client, c, auth }) {
           );
         } else {
           const pos = requirePos(row, rev);
+          idle(pos);
           ensure(
             config.image.store === (pos.image?.store ?? null) ||
               !pos.image?.keys,
@@ -222,6 +242,7 @@ export function posRoutes({ db, client, c, auth }) {
       const view = await transaction(client, async (session) => {
         await authorizeWrite(db, session, req.staff, "credentials");
         const pos = requirePos(await load(id, session), rev);
+        if (JOB_FIELDS.includes(field)) idle(pos);
         if (field === "cloudflare.token")
           ensure(pos.cloudflare, 409, "Save the Cloudflare details first.");
         if (field === "image.keys") {
@@ -273,6 +294,7 @@ export function posRoutes({ db, client, c, auth }) {
       const view = await transaction(client, async (session) => {
         await authorizeWrite(db, session, req.staff, "secrets");
         const pos = requirePos(await load(id, session), rev);
+        if (JOB_FIELDS.includes(field)) idle(pos);
         ensure(at(pos, field), 404, "Nothing is stored in this field.");
         const done = await installations.updateOne(
           guarded(id, rev),
@@ -340,6 +362,7 @@ export function posRoutes({ db, client, c, auth }) {
       await transaction(client, async (session) => {
         await authorizeWrite(db, session, req.staff, "secrets");
         const pos = requirePos(await load(id, session), rev);
+        idle(pos);
         const done = await installations.updateOne(
           guarded(id, rev),
           { $unset: { pos: "" } },

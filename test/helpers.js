@@ -12,7 +12,11 @@ export const AUTH_SECRET = "c".repeat(64);
 export const BACKUP_KEY = "b".repeat(64);
 // Starts an in-memory replica set, the real app and one staff member per role
 // (plus any extra emails given as [email, role]). Returns request/login helpers.
-export async function startApp({ dbName = "admin_test", extra = [] } = {}) {
+export async function startApp({
+  dbName = "admin_test",
+  extra = [],
+  deps = {},
+} = {}) {
   const repl = await MongoMemoryReplSet.create({
     replSet: { count: 1, storageEngine: "wiredTiger" },
   });
@@ -51,6 +55,7 @@ export async function startApp({ dbName = "admin_test", extra = [] } = {}) {
   const notices = [];
   const flags = { failNotify: false };
   const app = createApp({
+    ...deps,
     db,
     client,
     c,
