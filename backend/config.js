@@ -16,6 +16,9 @@ const schema = z.object({
   // Optional and never validated here: a bad value is reported as `invalid` on
   // the Recovery page instead of stopping the boot.
   BACKUP_KEY: z.string().default(""),
+  // Where the legacy backup key file lives (default .local/backup-key.txt); tests
+  // point it at a temp path so they never read a real .local/.
+  BACKUP_KEY_FILE: z.string().default(""),
   AUTH_SECRET: z.string().min(48),
   SMTP_HOST: z.string().min(1).default("127.0.0.1"),
   SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(1031),
@@ -150,7 +153,10 @@ export function config(env = process.env) {
 // The snapshot key as scripts/recovery.js reads it: BACKUP_KEY, else the local
 // key file. The key is returned only for in-memory use; `state` is
 // "configured", "missing" or "invalid".
-export function backupKeyInfo(c, file = ".local/backup-key.txt") {
+export function backupKeyInfo(
+  c,
+  file = c.BACKUP_KEY_FILE || ".local/backup-key.txt",
+) {
   let key = (c.BACKUP_KEY || "").trim();
   if (!key) {
     try {

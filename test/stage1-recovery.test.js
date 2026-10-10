@@ -38,6 +38,7 @@ function runCli(args, { input, env = {} } = {}) {
           MONGODB_DB: "admin_test",
           VAULT_KEY,
           AUTH_SECRET,
+          BACKUP_KEY_FILE: join(tmpdir(), `no-backup-key-${process.pid}.txt`),
           ...env,
         },
       },

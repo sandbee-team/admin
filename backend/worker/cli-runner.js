@@ -6,7 +6,7 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -72,6 +72,11 @@ export function cliEnv({ token, orgId = "", projectId = "", workDir, jobDir }) {
 // (sticky, world-writable) so that uid can write its HOME/TMP without any chown;
 // the payload (<job>/root) stays root-owned 0755/0644: readable, never writable.
 export async function prepareCliDir(jobDir) {
+  // The CLI's uid must be able to walk down to its scratch dirs: every directory
+  // on the way (the job dir and its parent) is explicitly 0755, not left to umask.
+  await mkdir(jobDir, { recursive: true });
+  await chmod(jobDir, 0o755);
+  await chmod(dirname(jobDir), 0o755);
   const dir = cliDirOf(jobDir);
   await mkdir(dir, { recursive: true });
   await chmod(dir, 0o1777);

@@ -13,6 +13,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "test": "node --test --test-concurrency=1 test/*.test.js",
+    "test:linux": "bash scripts/test-linux.sh",
     "test:ui": "playwright test",
     "format": "prettier --write backend frontend shared scripts test *.json *.mjs",
     "backup": "node --env-file=.env scripts/recovery.js backup",

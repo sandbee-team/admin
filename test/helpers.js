@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import { config } from "../backend/config.js";
 import { connect } from "../backend/db.js";
@@ -48,6 +50,8 @@ export async function startApp({
     MONGODB_DB: dbName,
     VAULT_KEY,
     AUTH_SECRET,
+    // Never the repo's real .local/: a path that does not exist.
+    BACKUP_KEY_FILE: join(tmpdir(), `no-backup-key-${randomUUID()}.txt`),
   });
   const { client, db } = await connect(c);
   await seedCatalog(db);

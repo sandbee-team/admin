@@ -3,6 +3,7 @@
 // is off, from the GitHub artifact the build lane kept. Paths, the free-space
 // check and the local one-hour reuse live here too.
 import {
+  chmod,
   mkdir,
   readdir,
   readFile,
@@ -32,6 +33,9 @@ export const dirs = (workDir) => ({
 export async function ensureLayout(workDir) {
   for (const dir of Object.values(dirs(workDir)))
     await mkdir(dir, { recursive: true });
+  // Traversable for the CLI's uid (a 0700 work dir would block it).
+  for (const dir of [workDir, dirs(workDir).jobs])
+    await chmod(dir, 0o755).catch(() => {});
 }
 export const jobDir = (ctx, requestId) => {
   if (!UUID_RE.test(requestId)) throw new JobFail("bad-id", "Invalid job id.");

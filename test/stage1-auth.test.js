@@ -2,7 +2,13 @@ import { describe, it, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import express from "express";
 import cookieParser from "cookie-parser";
-import { readdirSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { randomUUID } from "node:crypto";
 import {
   startApp,
@@ -1474,14 +1480,31 @@ describe("TOTP enrolment, login, step-up and recovery", () => {
     }
   });
   it("serves the app shell with no-store and keeps long caching for assets", async () => {
-    for (const path of ["/", "/account", "/index.html"]) {
-      const res = await fetch(`${ctx.origin}${path}`);
-      assert.match(res.headers.get("cache-control") || "", /no-store/, path);
-    }
-    const assets = readdirSync(new URL("../dist/assets", import.meta.url));
-    if (assets.length) {
+    // Self-sufficient: without a prior `npm run build` a tiny fixture is created
+    // and removed again; a real build is left untouched.
+    const dist = new URL("../dist/", import.meta.url);
+    const made = [];
+    const ensure = (rel, text) => {
+      const url = new URL(rel, dist);
+      if (!existsSync(url)) {
+        mkdirSync(new URL(".", url), { recursive: true });
+        writeFileSync(url, text);
+        made.push(url);
+      }
+    };
+    ensure("index.html", "<!doctype html><title>fixture</title>");
+    ensure("assets/fixture.js", "/* fixture */");
+    try {
+      for (const path of ["/", "/account", "/index.html"]) {
+        const res = await fetch(`${ctx.origin}${path}`);
+        assert.match(res.headers.get("cache-control") || "", /no-store/, path);
+      }
+      const assets = readdirSync(new URL("assets", dist));
+      assert.ok(assets.length);
       const res = await fetch(`${ctx.origin}/assets/${assets[0]}`);
       assert.match(res.headers.get("cache-control") || "", /max-age=3600/);
+    } finally {
+      for (const url of made.reverse()) rmSync(url, { force: true });
     }
   });
   it("roundtrips snapshots with enrolled TOTP and checks every staff box", async () => {

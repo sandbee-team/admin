@@ -3485,7 +3485,7 @@ describe("re-review fixes", () => {
         { cliUser: null, c: { NODE_ENV: "production" } },
         "/x",
       ),
-      "fail",
+      "fail:worker-not-root",
     );
     assert.equal(
       await isolationProbe({ cliUser: null, c: { NODE_ENV: "test" } }, "/x"),
@@ -3501,9 +3501,85 @@ describe("re-review fixes", () => {
     });
     const lines = [];
     const result = await selfCheck(w.ctx, { print: (l) => lines.push(l) });
-    assert.ok(lines.includes("fail cli-isolation"));
+    assert.ok(lines.includes("fail cli-isolation worker-not-root"));
     assert.equal(result.ok, false);
   });
+  it("the isolation probe names the failing sub-check with a fixed reason code", async () => {
+    const ctx = { cliUser: { uid: 10001, gid: 10001 } };
+    const probe = async (out) => {
+      ctx.probeSpawn = () => (out instanceof Error ? { error: out } : out);
+      return isolationProbe(ctx, "/work/jobs/x/cli/home");
+    };
+    const ok = (stdout) => ({ status: 0, stdout });
+    assert.equal(await probe(ok("10001,EACCES,EACCES,OK")), "ok");
+    assert.equal(
+      await probe(ok("10001,ENOENT,ENOENT,OK")),
+      "ok",
+      "hidepid is isolation",
+    );
+    assert.equal(
+      await probe(ok("10001,READ,EACCES,OK")),
+      "fail:proc1-readable",
+    );
+    assert.equal(
+      await probe(ok("10001,EACCES,READ,OK")),
+      "fail:worker-environ-readable",
+    );
+    assert.equal(
+      await probe(ok("10001,ESRCH,EACCES,OK")),
+      "fail:proc1-unexpected-esrch",
+    );
+    assert.equal(
+      await probe(ok("10001,EACCES,EIO,OK")),
+      "fail:worker-environ-unexpected-eio",
+    );
+    assert.equal(await probe(ok("0,EACCES,EACCES,OK")), "fail:not-dropped-uid");
+    assert.equal(
+      await probe(ok("10001,EACCES,EACCES,EACCES")),
+      "fail:home-not-writable-eacces",
+    );
+    assert.equal(
+      await probe(ok("10001,EACCES,EACCES,BLOCKED3")),
+      "fail:home-path-blocked-at-3",
+    );
+    assert.equal(await probe(ok("garbage")), "fail:probe-bad-output");
+    assert.equal(await probe({ status: 1, stdout: "" }), "fail:probe-exit-1");
+    assert.equal(
+      await probe(Object.assign(new Error("x"), { code: "EPERM" })),
+      "fail:spawn-failed-eperm",
+    );
+  });
+  it("a self-check line carries the reason: fail cli-isolation <reason>", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    w.ctx.runCli = async () => ({
+      code: 0,
+      category: null,
+      stdout: `${CLI_VERSION}
+`,
+    });
+    w.ctx.isolationProbe = async () => "fail:proc1-readable";
+    const lines = [];
+    await selfCheck(w.ctx, { print: (l) => lines.push(l) });
+    assert.ok(
+      lines.includes("fail cli-isolation proc1-readable"),
+      lines.join("|"),
+    );
+  });
+  it(
+    "the work dir and job dirs are traversable for the CLI's uid even under a 0700 temp dir",
+    { skip: platform() === "win32" },
+    async () => {
+      const env = await makeEnv();
+      await chmod(env.workDir, 0o700);
+      await makeWorker(env); // boot runs ensureLayout
+      assert.equal((await stat(env.workDir)).mode & 0o777, 0o755);
+      assert.equal(
+        (await stat(path.join(env.workDir, "jobs"))).mode & 0o777,
+        0o755,
+      );
+    },
+  );
   it("L9: the audit detail of a pre-admin rollback has no @", async () => {
     const env = await makeEnv();
     const w = await makeWorker(env);

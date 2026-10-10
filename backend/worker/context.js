@@ -193,16 +193,30 @@ async function containsBytes(root, needle, limit = 200000) {
   }
   return { found: false, unchecked: unchecked + (stack.length ? 1 : 0) };
 }
-// Runs a tiny node probe as the CLI's uid: it must NOT be able to read
-// /proc/1/environ or the worker's /proc/<pid>/environ (EACCES/EPERM) and must
-// be able to write its own HOME. -> "ok" | "fail" | "skip" (worker is not root).
+// Runs a tiny node probe as the CLI's uid. Sub-checks, each with a fixed,
+// value-free reason code when it fails:
+//   spawn-failed-<errno>        the probe could not be started (uid switch refused, no exec)
+//   probe-exit-<status>         the probe crashed
+//   probe-bad-output            unexpected probe output
+//   not-dropped-uid             the probe still runs as another uid than the CLI's
+//   proc1-readable              /proc/1/environ could be read (real isolation failure)
+//   proc1-unexpected-<errno>    anything but EACCES/EPERM/ENOENT (hidepid) for it
+//   worker-environ-readable     /proc/<worker pid>/environ could be read (real failure)
+//   worker-environ-unexpected-<errno>
+//   home-path-blocked-at-<n>    a directory on the way to the CLI's HOME is not traversable
+//   home-not-writable-<errno>   the CLI's HOME cannot be written
+// -> "ok" | "skip" | "fail:<reason>" (a worker that is not root: skip, but in
+// production it must fail, as the CLI would run as the worker itself).
 export async function isolationProbe(ctx, homeDir) {
-  // In production a worker that is not root cannot switch uid: the CLI would
-  // run as the worker itself and could read its secrets. That must fail loudly.
-  if (!ctx.cliUser) return ctx.c?.NODE_ENV === "production" ? "fail" : "skip";
+  if (!ctx.cliUser)
+    return ctx.c?.NODE_ENV === "production" ? "fail:worker-not-root" : "skip";
   const code =
-    'const fs=require("fs");const o=[];for(const p of ["/proc/1/environ","/proc/"+process.argv[1]+"/environ"]){try{fs.readFileSync(p);o.push("READ")}catch(e){o.push(e.code)}}try{fs.writeFileSync(process.argv[2]+"/probe","x");o.push("W-OK")}catch(e){o.push("W-"+e.code)}process.stdout.write(o.join(","))';
-  const r = spawnSync(
+    'const fs=require("fs"),p=require("path");const o=[String(process.getuid())];' +
+    'for(const f of ["/proc/1/environ","/proc/"+process.argv[1]+"/environ"]){try{fs.readFileSync(f);o.push("READ")}catch(e){o.push(e.code||"ERR")}}' +
+    'let w="OK";try{fs.writeFileSync(p.join(process.argv[2],"probe"),"x")}catch(e){w=e.code||"ERR";' +
+    'const parts=process.argv[2].split(p.sep);let cur=p.sep;for(let i=1;i<parts.length;i++){cur=p.join(cur,parts[i]);try{fs.statSync(cur)}catch{w="BLOCKED"+i;break}}}' +
+    'o.push(w);process.stdout.write(o.join(","))';
+  const r = (ctx.probeSpawn ?? spawnSync)(
     process.execPath,
     ["-e", code, String(process.pid), homeDir],
     {
@@ -214,21 +228,36 @@ export async function isolationProbe(ctx, homeDir) {
       shell: false,
     },
   );
-  const [a, b, w] = String(r.stdout ?? "").split(",");
+  const tag = (x) =>
+    String(x ?? "err")
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+  if (r.error) return `fail:spawn-failed-${tag(r.error.code)}`;
+  if (r.status !== 0) return `fail:probe-exit-${tag(r.status)}`;
+  const [uid, p1, wk, home] = String(r.stdout ?? "").split(",");
+  if (home === undefined) return "fail:probe-bad-output";
+  if (Number(uid) !== ctx.cliUser.uid) return "fail:not-dropped-uid";
   // ENOENT (hidepid) is isolation too.
   const denied = (x) => x === "EACCES" || x === "EPERM" || x === "ENOENT";
-  return r.status === 0 && denied(a) && denied(b) && w === "W-OK"
-    ? "ok"
-    : "fail";
+  if (p1 === "READ") return "fail:proc1-readable";
+  if (!denied(p1)) return `fail:proc1-unexpected-${tag(p1)}`;
+  if (wk === "READ") return "fail:worker-environ-readable";
+  if (!denied(wk)) return `fail:worker-environ-unexpected-${tag(wk)}`;
+  if (home?.startsWith("BLOCKED"))
+    return `fail:home-path-blocked-at-${home.slice(7)}`;
+  if (home !== "OK") return `fail:home-not-writable-${tag(home)}`;
+  return "ok";
 }
 export async function selfCheck(
   ctx,
   { installationId, print = (line) => console.info(line) } = {},
 ) {
   const results = {};
+  // outcome may carry a reason: "fail:<reason>" prints "fail <name> <reason>".
   const record = (name, outcome) => {
-    results[name] = outcome;
-    print(`${outcome} ${name}`);
+    const [state, reason] = String(outcome).split(":");
+    results[name] = state;
+    print(reason ? `${state} ${name} ${reason}` : `${state} ${name}`);
   };
   const d = dirs(ctx.workDir);
   await ensureLayout(ctx.workDir).catch(() => undefined);
