@@ -2622,6 +2622,23 @@ describe("M1: symlinks and extraction", () => {
     ]);
     assert.ok(v.symlinkEscapes > 0, "a chain that ends outside the output");
   });
+  it("a refusal inside extraction is never reported as success (partial extraction)", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "extract-"));
+    try {
+      const file = path.join(dir, "o.tgz");
+      await writeFile(file, validOutput(SHA1).tgz);
+      const out = path.join(dir, "root");
+      await mkdir(out);
+      // A FILE where the output directory must go: the first entry cannot be created.
+      await writeFile(path.join(out, ".vercel"), "not a directory");
+      await assert.rejects(
+        () => extractTgz(file, out),
+        (e) => e.code === "tar-invalid",
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   it(
     "extraction refuses an existing symlink on the path and never writes outside",
     { skip: platform() === "win32" },
@@ -3493,6 +3510,25 @@ describe("re-review fixes", () => {
     );
     const env = await makeEnv();
     const w = await makeWorker(env);
+    // The uid source is injectable: a worker that is not root has no cliUser,
+    // whatever uid the test process really runs as.
+    const nonRoot = await buildContext({
+      c: env.c,
+      db: env.db,
+      client,
+      getuid: () => 1000,
+      overrides: { workDir: env.workDir },
+    });
+    assert.equal(nonRoot.cliUser, null);
+    const asRoot = await buildContext({
+      c: env.c,
+      db: env.db,
+      client,
+      getuid: () => 0,
+      overrides: { workDir: env.workDir },
+    });
+    assert.deepEqual(asRoot.cliUser, { uid: 10001, gid: 10001 });
+    w.ctx.cliUser = nonRoot.cliUser;
     w.ctx.c = { ...w.ctx.c, NODE_ENV: "production" };
     w.ctx.runCli = async () => ({
       code: 0,

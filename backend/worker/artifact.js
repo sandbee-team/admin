@@ -4,7 +4,7 @@
 // checks the builder security review requires. Nothing here prints or returns
 // file contents; results are counts and codes.
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { constants, createReadStream } from "node:fs";
 import {
   chmod,
   lstat,
@@ -324,6 +324,15 @@ async function walkTgz(file, onEntry, { signal, finalize } = {}) {
     over = {},
     ended = false;
   let rawBytes = 0;
+  let cbError = null;
+  const cb = async (fn) => {
+    try {
+      return await fn();
+    } catch (error) {
+      cbError = error;
+      throw error;
+    }
+  };
   const finishData = async () => {
     if (meta) {
       const data = Buffer.concat(meta.chunks);
@@ -340,7 +349,7 @@ async function walkTgz(file, onEntry, { signal, finalize } = {}) {
       }
       meta = null;
     } else if (sink) {
-      await sink.end();
+      await cb(() => sink.end());
       sink = null;
     }
   };
@@ -357,7 +366,7 @@ async function walkTgz(file, onEntry, { signal, finalize } = {}) {
           const n = Math.min(remaining, chunk.length);
           const part = chunk.subarray(0, n);
           if (meta) meta.chunks.push(part);
-          else if (sink) await sink.write(part);
+          else if (sink) await cb(() => sink.write(part));
           remaining -= n;
           chunk = chunk.subarray(n);
           if (remaining === 0) await finishData();
@@ -432,7 +441,7 @@ async function walkTgz(file, onEntry, { signal, finalize } = {}) {
           mode: numeric(block, 100, 8) ?? 0,
         };
         judge(v, entry);
-        sink = (await onEntry(entry, v)) ?? null;
+        sink = (await cb(() => onEntry(entry, v))) ?? null;
         if (type === "file") {
           remaining = size;
           pad = (512 - (size % 512)) % 512;
@@ -452,8 +461,12 @@ async function walkTgz(file, onEntry, { signal, finalize } = {}) {
     }
   } catch (error) {
     if (signal?.aborted) throw error;
-    v.malformed++;
     await sink?.abort?.();
+    // An error raised by the CALLER's own handlers (a refused path, a full
+    // disk) is never a "malformed archive": it propagates, so a caller can
+    // not mistake a half-finished walk for success.
+    if (cbError) throw cbError;
+    v.malformed++;
   } finally {
     input.destroy();
     gunzip.destroy();
@@ -686,7 +699,16 @@ export async function extractTgz(file, dest, options = {}) {
         links.push(target);
         return null;
       }
-      const handle = await open(target, "wx", 0o644);
+      // O_EXCL|O_NOFOLLOW: never follows a link at the final component and never
+      // overwrites; the parent was verified as a real directory just above.
+      const handle = await open(
+        target,
+        constants.O_WRONLY |
+          constants.O_CREAT |
+          constants.O_EXCL |
+          (constants.O_NOFOLLOW ?? 0),
+        0o644,
+      );
       return {
         write: (buf) => handle.write(buf),
         end: async () => {

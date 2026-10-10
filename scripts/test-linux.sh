@@ -14,8 +14,14 @@ cp -a /src /app && cd /app && rm -rf node_modules \
 npm run build >/tmp/build.log 2>&1 || { tail -20 /tmp/build.log; exit 1; }
 npm test >/tmp/test.log 2>&1
 code=$?
-echo "---- failing tests ----"
-grep -E "^[[:space:]]*not ok" /tmp/test.log || echo "(none)"
+echo "---- failing tests (name + first 30 lines of the TAP/YAML block) ----"
+if grep -qE "^[[:space:]]*not ok" /tmp/test.log; then
+  grep -E -A30 "^[[:space:]]*not ok" /tmp/test.log
+else
+  echo "(none)"
+fi
+echo "---- failing test names only ----"
+grep -E "^[[:space:]]*not ok" /tmp/test.log || true
 echo "---- summary ----"
 grep -E "^# (tests|suites|pass|fail|cancelled|skipped|todo)" /tmp/test.log
 exit $code

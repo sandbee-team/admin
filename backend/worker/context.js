@@ -91,6 +91,7 @@ export async function buildContext({
   s3,
   cache = null,
   notify,
+  getuid = () => process.getuid?.(),
   overrides = {},
 }) {
   const github =
@@ -122,7 +123,7 @@ export async function buildContext({
     vercelFor: ({ token, teamId }) => createVercel({ token, teamId }),
     runCli,
     // The uid the Vercel CLI runs as (only when the worker itself is root).
-    cliUser: process.getuid?.() === 0 ? { uid: CLI_UID, gid: CLI_UID } : null,
+    cliUser: getuid() === 0 ? { uid: CLI_UID, gid: CLI_UID } : null,
     healthGet: undefined,
     cloudflareVerify: verifyToken,
     pingMongo: (uri) => pingClientMongo(uri),
