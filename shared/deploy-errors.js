@@ -673,18 +673,89 @@ for (const [c, msg, action] of [
   ["delete-failed", "Some deployments could not be deleted.", RETRY],
 ])
   add(c, "task", c.replace(/-/g, " "), msg, action);
-for (const code of [
-  "unauthorized",
-  "forbidden",
-  "not-found",
-  "rate-limited",
-  "unavailable",
-  "timeout",
-  "network",
-  "failed",
-])
-  if (!T[code])
-    add(code, "task", PROVIDER[code][0], PROVIDER[code][1], PROVIDER[code][2]);
+// Bare provider codes (verify flags, task errors). The provider's "too-large"
+// is stored as "response-too-large" because "too-large" already means an
+// oversized artifact file.
+export const providerFlag = (code) =>
+  code === "too-large" ? "response-too-large" : code;
+for (const [code, [title, msg, action]] of Object.entries(PROVIDER)) {
+  const bare = providerFlag(code);
+  if (!T[bare]) add(bare, "task", title, msg, action);
+  if (bare !== code)
+    for (const p of ["github", "vercel", "cloudflare"])
+      add(
+        `${p}-${bare}`,
+        p === "github" ? "build" : "vercel",
+        title,
+        msg,
+        action,
+      );
+  if (!T[`project-${bare}`])
+    add(
+      `project-${bare}`,
+      "preflight",
+      title,
+      `The Vercel project could not be read: ${msg.toLowerCase()}`.slice(
+        0,
+        160,
+      ),
+      action,
+    );
+  if (!T[`env-${bare}`])
+    add(
+      `env-${bare}`,
+      "preflight",
+      title,
+      `The Vercel environment could not be read: ${msg.toLowerCase()}`.slice(
+        0,
+        160,
+      ),
+      action,
+    );
+}
+// ---- later additions ------------------------------------------------------------
+add(
+  "not-picked-up",
+  "queued",
+  "Not picked up",
+  "The worker was offline for more than 10 minutes, so this request expired.",
+  "Check the worker, then try again.",
+);
+add(
+  "work-disk-error",
+  "fetch",
+  "Work disk error",
+  "The worker could not write to its work volume.",
+  "Check disk space and permissions on the server, then retry.",
+);
+add(
+  "cache-work-disk-error",
+  "fetch",
+  "Work disk error",
+  "The worker could not write to its work volume.",
+  "Check disk space and permissions on the server, then retry.",
+);
+add(
+  "artifact-filepathmap",
+  "build",
+  "Output refused",
+  "The build output references files outside itself and was refused.",
+  "Tell support; do not deploy this build.",
+);
+add(
+  "rollback-baseline-no-fallback",
+  "vercel",
+  "Cannot roll back",
+  "Vercel refused the instant rollback and the previous version was not built by admin.",
+  "Deploy that branch again.",
+);
+add(
+  "cache-unavailable",
+  "fetch",
+  "Cache unavailable",
+  "The build cache could not be reached.",
+  "Retry in a few minutes.",
+);
 // ---- client database backup ---------------------------------------------------------
 add(
   "backup-too-large",

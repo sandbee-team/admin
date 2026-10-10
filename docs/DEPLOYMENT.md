@@ -74,8 +74,8 @@ Stage 2 adds a second container, `worker`, to `compose.production.yaml` (same im
 
    Also once: the IAM policy gains `s3:PutObject`, `s3:GetObject` and `s3:DeleteObject` on `builds/*` and `s3:ListBucket` for the `builds/*` prefix, and the bucket lifecycle rule for `builds/` expires objects after **10 days** (noncurrent versions after 1 day). The worker keeps the live build of every installation by copying it onto itself (copy-forward) when it is older than 5 days, and copies the previous build forward once, when it is replaced; every other build expires. The pos-builder secret `LUCIFER_READ_TOKEN` is a third, separate token.
 
-3. **Build and start both services:** `cd ~/admin && git pull && unset RELEASE_TAG && docker compose -f compose.production.yaml up -d --build`, then `docker image prune -f`. This builds the image once (including the pinned Vercel CLI under `/opt/vercel-cli`) and starts `app` and `worker`.
-4. **Volume check:** `docker volume inspect sandbee-admin_pos-work` must exist, and `docker compose -f compose.production.yaml exec worker sh -c 'touch /work/.w && rm /work/.w && id -un'` must succeed as the `node` user (the image creates `/work` owned by `node`, which a fresh named volume inherits). `docker compose -f compose.production.yaml ps` shows both services healthy (the worker's health check is `node backend/worker.js --health`: its heartbeat file under `/work` is younger than 60 s).
+3. **Build and start both services:** `cd ~/admin && git pull && unset RELEASE_TAG && docker compose -f compose.production.yaml up -d --build`, then `docker image prune -f`. Compose builds the same image twice (the `app` and `worker` entries both have `build: .`; the second build is all cache hits and takes seconds), including the pinned Vercel CLI under `/opt/vercel-cli`, and starts `app` and `worker`. **A malformed `POS_GITHUB_*` token or repository name stops the container from booting** (the error lists variable names only), so run `docker compose -f compose.production.yaml ps` right after `up` and check that both services stay up; fix `.env` and run `up -d` again if one restarts.
+4. **Volume check:** `docker volume inspect sandbee-admin_pos-work` must exist, and `docker compose -f compose.production.yaml exec worker sh -c 'touch /work/.w && rm /work/.w && id -un'` must succeed (it prints `root`: the worker runs as root inside the container with only the SETUID, SETGID and KILL capabilities, so that it can start the Vercel CLI as the unprivileged uid 10001; the image creates `/work` owned by `root`, which a fresh named volume inherits). **If a `pos-work` volume was created by an earlier build of this stage (owned by `node`), remove it first:** `docker compose -f compose.production.yaml down worker && docker volume rm sandbee-admin_pos-work`. `docker compose -f compose.production.yaml ps` shows both services healthy (the worker's health check is `node backend/worker.js --health`: its heartbeat file under `/work` is younger than 60 s). Why the CLI runs as another uid: it is third-party code that receives the customer's token, and the worker's own environment (VAULT_KEY, database URI, mail and S3 keys) must not be readable by it; `/proc/<pid>/environ` is readable only by the same uid. Per-job directories: the worker creates `/work/jobs/<id>` (root, 0755), the deploy payload `root/` is root-owned and read-only for the CLI, and only `cli/` (HOME, TMPDIR, XDG_*; mode 1777 so no `chown` is needed) is writable by it; it is deleted with the job.
 5. **Self-check** (proves the CLI runs under the read-only root with HOME and XDG on `/work`; prints ok/fail lines only):
 
    ```sh
@@ -83,12 +83,12 @@ Stage 2 adds a second container, `worker`, to `compose.production.yaml` (same im
    docker compose -f compose.production.yaml exec worker node backend/worker.js --self-check --installation=<demo installation id>
    ```
 
-   The second form decrypts the demo's Vercel token, runs `vercel whoami` with the token only in the child's environment, and proves the token is absent from the child's `/proc/<pid>/cmdline` and from every file under `/work` afterwards.
+   The installation id is the UUID in the panel URL of the client's installation page (`/installations/<id>/...`). The self-check also runs a probe as the CLI's uid that must be refused (`EACCES`) when reading `/proc/1/environ` and the worker's `/proc/<pid>/environ` (`ok cli-isolation`). The second form decrypts the demo's Vercel token, runs `vercel whoami` with the token only in the child's environment, and proves the token is absent from the child's `/proc/<pid>/cmdline` and from every file under `/work` afterwards.
 
 6. **First demo deploy.** In the panel, for the demo client: Verify, Unlock (owner), then Deploy `main`. The first deploy **builds** (a GitHub Actions run; the output is sealed into S3). Then press **Redeploy**: it must say **cached** and start no GitHub run. While it uploads, sample memory with `docker stats --no-stream` and adjust the worker's `mem_limit` (it starts at 256m).
 7. **Kill-and-resume drill.** Start another deploy and, while it is building, `docker compose -f compose.production.yaml kill -s SIGKILL worker`, then `docker compose -f compose.production.yaml up -d worker`. When the 60-second lease runs out the new worker takes the job over, continues the same GitHub run (no second dispatch) and finishes. A kill during the upload finds the deployment through its `sandbeeRequest` meta instead of uploading twice.
 8. **Rollback.** Use "Roll back" on the Previous card. On a Hobby Vercel account only the immediately previous deployment can be switched; when Vercel refuses (402) the worker redeploys the previous commit from the build cache.
-9. **Release rollback of the whole stage:** `git checkout <previous commit> && docker compose -f compose.production.yaml up -d --build --remove-orphans` (removes the orphaned `worker`). Stage 2 data stays in the database and is ignored by older code.
+9. **Release rollback of the whole stage:** `git checkout <previous commit> && docker compose -f compose.production.yaml up -d --build --remove-orphans` (removes the orphaned `worker`). Stage 2 data stays in the database and is ignored by older code. **Before the next release, return to the branch tip:** `git checkout main && git pull`, then the usual `up -d --build`.
 
 Operating notes: the owner's freeze switch stops all deploys (running ones stop before the upload; rollbacks, verify and purge still run). One deploy runs at a time, builds run two at a time, tasks one at a time. `docker compose -f compose.production.yaml logs worker` shows event names, 8-character ids and error codes only: never tokens, URIs or provider text.
 
@@ -97,7 +97,15 @@ Operating notes: the owner's freeze switch stops all deploys (running ones stop 
 Download the file from the customer's Files (step-up needed; it comes back already decrypted, as `<slug>-db-<time>.jsonl.gz`). Restore it into a **scratch** MongoDB, never the client's live database:
 
 ```sh
-RESTORE_MONGODB_URI="mongodb://127.0.0.1:27017"   node scripts/pos-db-restore.js --file demo-db-20261010-1200.jsonl.gz --db demo_restore
+RESTORE_MONGODB_URI="mongodb://127.0.0.1:27017" node scripts/pos-db-restore.js --file demo-db-20261010-1200.jsonl.gz --db demo_restore
+```
+
+Windows PowerShell (environment variables are set on their own line, not as a prefix):
+
+```powershell
+$env:RESTORE_MONGODB_URI = "mongodb://127.0.0.1:27017"
+node scripts/pos-db-restore.js --file demo-db-20261010-1200.jsonl.gz --db demo_restore
+Remove-Item Env:RESTORE_MONGODB_URI
 ```
 
 The URI is read from the environment only. The script refuses an Atlas host (unless `--allow-atlas`), refuses a target database that already holds collections (unless `--force`), and verifies the document counts against the backup's trailer. Backups over 20 MB compressed are refused at creation: use `mongodump` locally for those.

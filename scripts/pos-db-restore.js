@@ -16,6 +16,8 @@ import { hostsOf } from "../backend/lib/client-mongo.js";
 
 const FORMAT = "sandbee-db-backup/1";
 const DB_RE = /^[A-Za-z0-9_-]{1,60}$/;
+// Case and trailing dots must not slip an Atlas host past the check.
+const normHost = (h) => String(h).toLowerCase().replace(/\.+$/, "");
 export class RestoreError extends Error {}
 const die = (message) => {
   throw new RestoreError(message);
@@ -31,7 +33,10 @@ export async function restoreBackup({
 }) {
   if (!uri) die("RESTORE_MONGODB_URI is not set.");
   if (!DB_RE.test(dbName ?? "")) die("--db must be a plain database name.");
-  if (!allowAtlas && hostsOf(uri).some((h) => h.endsWith(".mongodb.net")))
+  if (
+    !allowAtlas &&
+    hostsOf(uri).some((h) => normHost(h).endsWith(".mongodb.net"))
+  )
     die(
       "Refusing an Atlas host: restore into a scratch database (or pass --allow-atlas).",
     );

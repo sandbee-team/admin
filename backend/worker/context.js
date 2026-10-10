@@ -1,7 +1,9 @@
 // The worker's wiring (adapters, timing, logging) and the S4 self-check. Kept
 // out of backend/worker.js so tests can build a context with fakes.
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
+  chmod,
   mkdir,
   readFile,
   readdir,
@@ -17,11 +19,20 @@ import { pingClientMongo } from "../lib/client-mongo.js";
 import { HEARTBEAT_MS, LEASE_MS } from "../../shared/deploy.js";
 import { runDbBackup } from "./db-backup.js";
 import { createHeartbeat } from "./heartbeat.js";
-import { cliEnv, installedCliVersion, lastLine, runCli } from "./cli-runner.js";
+import {
+  cliEnv,
+  installedCliVersion,
+  lastLine,
+  prepareCliDir,
+  prepareDeployRoot,
+  removeJobDir,
+  runCli,
+} from "./cli-runner.js";
 import { dirs, ensureLayout, UUID_RE } from "./fetch-build.js";
 import { sleepReal } from "./lease.js";
 import { loadTarget } from "./verify.js";
 
+export const CLI_UID = 10001;
 export const DEFAULT_TIMING = {
   pollMs: 3000,
   leaseMs: LEASE_MS,
@@ -111,6 +122,8 @@ export async function buildContext({
     notify,
     vercelFor: ({ token, teamId }) => createVercel({ token, teamId }),
     runCli,
+    // The uid the Vercel CLI runs as (only when the worker itself is root).
+    cliUser: process.getuid?.() === 0 ? { uid: CLI_UID, gid: CLI_UID } : null,
     healthGet: undefined,
     cloudflareVerify: verifyToken,
     pingMongo: (uri) => pingClientMongo(uri),
@@ -175,6 +188,31 @@ async function containsBytes(root, needle, limit = 200000) {
   }
   return false;
 }
+// Runs a tiny node probe as the CLI's uid: it must NOT be able to read
+// /proc/1/environ or the worker's /proc/<pid>/environ (EACCES/EPERM) and must
+// be able to write its own HOME. -> "ok" | "fail" | "skip" (worker is not root).
+export async function isolationProbe(ctx, homeDir) {
+  if (!ctx.cliUser) return "skip";
+  const code =
+    'const fs=require("fs");const o=[];for(const p of ["/proc/1/environ","/proc/"+process.argv[1]+"/environ"]){try{fs.readFileSync(p);o.push("READ")}catch(e){o.push(e.code)}}try{fs.writeFileSync(process.argv[2]+"/probe","x");o.push("W-OK")}catch(e){o.push("W-"+e.code)}process.stdout.write(o.join(","))';
+  const r = spawnSync(
+    process.execPath,
+    ["-e", code, String(process.pid), homeDir],
+    {
+      uid: ctx.cliUser.uid,
+      gid: ctx.cliUser.gid,
+      env: { PATH: "/usr/bin:/bin" },
+      encoding: "utf8",
+      timeout: 15000,
+      shell: false,
+    },
+  );
+  const [a, b, w] = String(r.stdout ?? "").split(",");
+  const denied = (x) => x === "EACCES" || x === "EPERM";
+  return r.status === 0 && denied(a) && denied(b) && w === "W-OK"
+    ? "ok"
+    : "fail";
+}
 export async function selfCheck(
   ctx,
   { installationId, print = (line) => console.info(line) } = {},
@@ -187,7 +225,7 @@ export async function selfCheck(
   const d = dirs(ctx.workDir);
   await ensureLayout(ctx.workDir).catch(() => undefined);
   const dirOk = (
-    await Promise.all([d.home, d.tmp, d.cache, d.jobs].map(writable))
+    await Promise.all([d.tmp, d.jobs, d.builds].map(writable))
   ).every(Boolean);
   record("work-dir-writable", dirOk ? "ok" : "fail");
   // Informational: whether the root filesystem is read-only.
@@ -195,11 +233,27 @@ export async function selfCheck(
   record("root-filesystem", rootWritable ? "skip" : "ok");
   const jobDir = path.join(d.jobs, `selfcheck-${randomUUID().slice(0, 8)}`);
   await mkdir(jobDir, { recursive: true });
+  await prepareCliDir(jobDir);
+  // A deploy root prepared exactly like a real job's: the CLI (as its own uid)
+  // runs from here, so an EACCES on incidental writes shows up now.
+  const deployRoot = path.join(jobDir, "root");
+  await prepareDeployRoot(deployRoot, {});
+  const cliEnvDirs = cliEnv({ workDir: ctx.workDir, jobDir });
+  for (const key of ["HOME", "TMPDIR", "XDG_CACHE_HOME"]) {
+    await mkdir(cliEnvDirs[key], { recursive: true });
+    await chmod(cliEnvDirs[key], 0o1777);
+  }
+  // The CLI's uid must not be able to read the worker's secrets (/proc/<pid>/environ).
+  record(
+    "cli-isolation",
+    await (ctx.isolationProbe ?? isolationProbe)(ctx, cliEnvDirs.HOME),
+  );
   const version = await ctx.runCli({
     args: ["--version"],
-    cwd: ctx.workDir,
+    cwd: deployRoot,
     env: cliEnv({ workDir: ctx.workDir, jobDir }),
     timeoutMs: 60000,
+    user: ctx.cliUser ?? null,
   });
   const reported = lastLine(version.stdout);
   record(
@@ -235,7 +289,7 @@ export async function selfCheck(
         };
         const whoami = await ctx.runCli({
           args: ["whoami"],
-          cwd: ctx.workDir,
+          cwd: deployRoot,
           env: cliEnv({
             token,
             orgId: target.orgId,
@@ -245,6 +299,7 @@ export async function selfCheck(
           }),
           timeoutMs: 60000,
           onSpawn,
+          user: ctx.cliUser ?? null,
         });
         record("token-honoured", whoami.code === 0 ? "ok" : "fail");
         await new Promise((resolve) => setTimeout(resolve, 50));
@@ -260,13 +315,13 @@ export async function selfCheck(
               : "skip",
         );
         // The per-job config directory is deleted with the job; nothing may remain.
-        await rm(jobDir, { recursive: true, force: true }).catch(() => {});
+        await removeJobDir(ctx.cliUser ?? null, jobDir);
         const onDisk = await containsBytes(ctx.workDir, needle);
         record("token-not-on-disk", onDisk ? "fail" : "ok");
       }
     }
   }
-  await rm(jobDir, { recursive: true, force: true }).catch(() => {});
+  await removeJobDir(ctx.cliUser ?? null, jobDir);
   const ok = Object.values(results).every((v) => v !== "fail");
   print(ok ? "self-check: ok" : "self-check: fail");
   return { ok, results };

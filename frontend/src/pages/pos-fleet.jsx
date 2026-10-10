@@ -3,10 +3,13 @@ import { Badge, Empty, ErrorBox, Loading, PageTitle } from "../components/ui";
 import { Link } from "../lib/router";
 import { usePoll } from "../hooks/use-poll";
 import { can } from "../../../shared/policy";
+import { StaleBanner } from "../components/deploy/stale-banner";
 import { when } from "../components/deploy/format";
 const STATE = {
   live: ["live", "Live"],
   failed: ["disabled", "Failed"],
+  unhealthy: ["disabled", "Unhealthy — site may be down"],
+  "rolled-back": ["in-progress", "Rolled back — site is fine"],
   deploying: ["in-progress", "Deploying"],
   locked: ["paused", "Locked"],
   unverified: ["paused", "Unverified"],
@@ -17,7 +20,8 @@ export function StateBadge({ state }) {
   return <Badge value={value}>{text}</Badge>;
 }
 // How far the live commit is behind its branch head, said honestly.
-export function behindText(row) {
+export function behindText(row, light = false) {
+  if (light && row.behindBy == null) return "—";
   if (row.relation === "behind")
     return `Behind by ${row.behindBy} commit${row.behindBy === 1 ? "" : "s"}`;
   return (
@@ -46,8 +50,8 @@ const isBusy = (data) =>
 export function PosFleet({ user }) {
   const fleet = usePoll("/pos/fleet", {
     isActive: isBusy,
-    activeMs: 5000,
-    idleMs: 30000,
+    activeMs: 15000,
+    idleMs: 60000,
   });
   const rows = fleet.data?.rows ?? [],
     count = (state) => rows.filter((row) => row.state === state).length;
@@ -68,6 +72,15 @@ export function PosFleet({ user }) {
           </button>
         }
       />
+      <StaleBanner poll={fleet} />
+      {fleet.data?.freeze?.on && (
+        <div className="notice notice-warning" role="status">
+          <span>
+            Deploys are frozen for every client
+            {fleet.data.freeze.reason ? `: ${fleet.data.freeze.reason}` : "."}
+          </span>
+        </div>
+      )}
       {fleet.error && !fleet.data ? (
         <ErrorBox retry={fleet.refresh}>{fleet.error}</ErrorBox>
       ) : !fleet.data ? (
@@ -95,7 +108,15 @@ export function PosFleet({ user }) {
               <strong>{rows.length}</strong> client
               {rows.length === 1 ? "" : "s"}
             </span>
-            {["live", "deploying", "failed", "locked", "unverified"].map(
+            {[
+              "live",
+              "deploying",
+              "unhealthy",
+              "rolled-back",
+              "failed",
+              "locked",
+              "unverified",
+            ].map(
               (state) =>
                 count(state) > 0 && (
                   <span key={state}>
@@ -104,9 +125,6 @@ export function PosFleet({ user }) {
                 ),
             )}
           </p>
-          {fleet.error && (
-            <ErrorBox retry={fleet.refresh}>{fleet.error}</ErrorBox>
-          )}
           <div className="panel table-wrap">
             <table className="fleet-table">
               <thead>
@@ -126,7 +144,11 @@ export function PosFleet({ user }) {
               </thead>
               <tbody>
                 {rows.map((row) => (
-                  <tr key={row.installationId} data-slug={row.slug}>
+                  <tr
+                    key={row.installationId}
+                    data-slug={row.slug}
+                    className={row.state === "unhealthy" ? "row-urgent" : ""}
+                  >
                     <td>
                       <Link
                         className="table-name"

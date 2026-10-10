@@ -116,6 +116,8 @@ after all checks. Quarantine = DeleteObject on the manifest (delete marker only)
 mismatch (sealed under an earlier VAULT_KEY) is a plain miss, no alarm.
 
 ### 2.8 Retention
+> **Superseded by D22** (docs/POS-INTEGRATION.md): the lifecycle rule below uses **10 days**, not 60, and referenced builds are copied forward after **5 days** (live build) / once when it becomes previous, not after 30 / 7 days. The worker (`backend/worker/retention.js`) implements D22; the JSON and the copy-forward numbers in this section are historical.
+
 Lifecycle rule (owner adds in the S3 console):
 ```json
 { "ID": "builds-cache", "Status": "Enabled", "Filter": { "Prefix": "builds/" },

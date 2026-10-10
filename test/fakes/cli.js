@@ -49,6 +49,7 @@ export function createFakeCli({ onRun } = {}) {
       cwd: options.cwd,
       listing: options.cwd ? listing(options.cwd) : [],
       timeoutMs: options.timeoutMs,
+      user: options.user ?? null,
     };
     calls.push(call);
     const next = queue.shift() ?? { kind: "ok" };

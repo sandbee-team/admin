@@ -33,6 +33,7 @@ import {
 import { DeployProgress } from "../components/deploy/deploy-progress";
 import { DeployError } from "../components/deploy/deploy-error";
 import { BackupPanel } from "../components/deploy/backup-panel";
+import { StaleBanner } from "../components/deploy/stale-banner";
 import { VersionCard } from "../components/deploy/version-card";
 import { describeError, titlesOf } from "../components/deploy/format";
 const VERIFY_LABEL = {
@@ -133,9 +134,11 @@ export function InstallationDeploy({ installation, user }) {
     } catch (e) {
       if (!e.cancelled)
         setProblem(
-          e.items?.length
-            ? `${e.message} Needs: ${titlesOf(e.items)}.`
-            : e.message,
+          e.code === "not-cancellable"
+            ? "This rollback has already started and cannot be cancelled."
+            : e.items?.length
+              ? `${e.message} Needs: ${titlesOf(e.items)}.`
+              : e.message,
         );
       throw e;
     } finally {
@@ -161,6 +164,14 @@ export function InstallationDeploy({ installation, user }) {
         : kind === "redeploy"
           ? { ...data.last, headline: data.last?.commit?.headline }
           : { ...data.previous, headline: data.previous?.commit?.headline };
+  // The commit is fixed when the dialog opens: a plan reload never changes it.
+  function openAction(kind) {
+    setModal({
+      type: "action",
+      kind,
+      snap: { target: target(kind), plan: plan.data ?? null },
+    });
+  }
   const actions = {
     verified: !blocked.verify.length
       ? {
@@ -187,7 +198,7 @@ export function InstallationDeploy({ installation, user }) {
   const previousAction = {
     label: "Roll back to this",
     reason: reasons.rollback,
-    onClick: () => setModal({ type: "action", kind: "rollback" }),
+    onClick: () => openAction("rollback"),
   };
   return (
     <>
@@ -208,6 +219,7 @@ export function InstallationDeploy({ installation, user }) {
             roll back, unlock or prepare builds.
           </p>
         )}
+        <StaleBanner poll={poll} />
         {data.freeze.on && (
           <div className="notice notice-warning" role="status">
             <span>
@@ -222,6 +234,8 @@ export function InstallationDeploy({ installation, user }) {
           <DeployProgress
             job={current}
             owner={owner}
+            workerOnline={data.worker.online}
+            staleAt={poll.stale ? poll.updatedAt : 0}
             cancelling={busy === "cancel"}
             onCancel={() =>
               quiet("cancel", () =>
@@ -234,6 +248,7 @@ export function InstallationDeploy({ installation, user }) {
           <DeployError
             job={current}
             last={data.last}
+            previous={data.previous}
             owner={owner}
             busy={busy === "dismiss"}
             onDismiss={() =>
@@ -241,9 +256,7 @@ export function InstallationDeploy({ installation, user }) {
                 post("deploys/dismiss", { requestId: current.requestId }),
               )
             }
-            onRedeployPrevious={() =>
-              setModal({ type: "action", kind: "redeploy-previous" })
-            }
+            onRedeployPrevious={() => openAction("redeploy-previous")}
           />
         )}
         <div className="version-grid">
@@ -353,7 +366,7 @@ export function InstallationDeploy({ installation, user }) {
               selected={selected}
               onAction={(kind) => {
                 setNotice("");
-                setModal({ type: "action", kind });
+                openAction(kind);
               }}
             />
           </div>
@@ -363,6 +376,42 @@ export function InstallationDeploy({ installation, user }) {
           customerId={installation.customerId}
           owner={owner}
         />
+        <section className="panel deploy-freeze" aria-labelledby="freeze-title">
+          <div className="panel-title">
+            <div>
+              <h2 id="freeze-title">Freeze all deploys</h2>
+              <p>
+                {data.freeze.on
+                  ? "Frozen: no client can deploy, redeploy or build until the owner unfreezes."
+                  : "An emergency stop for every client. Not frozen."}
+              </p>
+            </div>
+            <Badge value={data.freeze.on ? "disabled" : "live"}>
+              {data.freeze.on ? "Frozen" : "Not frozen"}
+            </Badge>
+          </div>
+          <div className="panel-foot">
+            {owner ? (
+              <>
+                <span>
+                  {data.freeze.on
+                    ? "Rollbacks, verifies and tasks still work while frozen."
+                    : "Takes effect at once for every client."}
+                </span>
+                <Button
+                  variant="secondary"
+                  onClick={() =>
+                    setModal({ type: data.freeze.on ? "unfreeze" : "freeze" })
+                  }
+                >
+                  {data.freeze.on ? "Unfreeze deploys…" : "Freeze deploys…"}
+                </Button>
+              </>
+            ) : (
+              <span>Only the owner can freeze or unfreeze deploys.</span>
+            )}
+          </div>
+        </section>
         <section className="panel deploy-lock" aria-labelledby="lock-title">
           <div className="panel-title">
             <div>
@@ -421,10 +470,12 @@ export function InstallationDeploy({ installation, user }) {
           slug={settings.slug}
           projectName={settings.vercel?.projectName}
           host={settings.host}
-          target={target(modal.kind)}
-          plan={
-            modal.kind === "deploy" || modal.kind === "build" ? plan.data : null
-          }
+          target={modal.snap.target}
+          plan={modal.snap.plan}
+          onChanged={() => {
+            plan.reload();
+            branches.reload();
+          }}
           onClose={() => setModal(null)}
           onDone={(result) => {
             setModal(null);
@@ -433,7 +484,7 @@ export function InstallationDeploy({ installation, user }) {
                 ? result.build?.state === "cached"
                   ? "That build is already ready (cached)."
                   : result.build?.existing
-                    ? "A build for this commit is already in progress."
+                    ? `A build for this commit already exists (${result.build.state}).`
                     : "Build queued. It shows as cached once it has finished."
                 : modal.kind === "rollback"
                   ? "Rollback queued."
@@ -471,6 +522,16 @@ export function InstallationDeploy({ installation, user }) {
           <p>No deploy can start until the owner unlocks it again.</p>
         </ConfirmModal>
       )}
+      {modal?.type === "freeze" && (
+        <FreezeModal
+          onClose={() => setModal(null)}
+          onDone={() => {
+            setModal(null);
+            setNotice("Deploys are frozen for every client.");
+            poll.refresh();
+          }}
+        />
+      )}
       {modal?.type === "unfreeze" && (
         <ConfirmModal
           title="Unfreeze deploys for every client?"
@@ -489,6 +550,53 @@ export function InstallationDeploy({ installation, user }) {
         </ConfirmModal>
       )}
     </>
+  );
+}
+function FreezeModal({ onClose, onDone }) {
+  const [reason, setReason] = useState(""),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  async function submit(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await withStepUp(() =>
+        api("/pos/freeze", { method: "POST", body: { reason } }),
+      );
+      onDone();
+    } catch (e) {
+      if (!e.cancelled) setError(e.message);
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title="Freeze deploys for every client?" onClose={onClose}>
+      <form onSubmit={submit} className="deploy-confirm">
+        <p className="subtle">
+          All deploys, redeploys and builds stop for every client until an owner
+          unfreezes. Jobs already running finish; rollbacks, verifies and other
+          tasks still work.
+        </p>
+        {error && <ErrorBox>{error}</ErrorBox>}
+        <Field label="Reason (optional)" hint="Shown to everyone while frozen.">
+          <input
+            maxLength={200}
+            autoComplete="off"
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+          />
+        </Field>
+        <div className="confirm-actions">
+          <Button type="button" variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="danger" busy={busy}>
+            Freeze deploys
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 function UnlockModal({ base, slug, onClose, onDone }) {

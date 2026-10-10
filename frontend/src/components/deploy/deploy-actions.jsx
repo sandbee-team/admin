@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Button, ErrorBox, Field, Modal } from "../ui";
 import { withStepUp } from "../step-up";
 import { api } from "../../lib/api";
-import { minutes, sha7, titlesOf } from "./format";
+import { planWarnings } from "./branch-picker";
+import { PRE_ADMIN, minutes, sha7, titlesOf } from "./format";
 const MODAL = {
   deploy: {
     title: "Deploy this branch?",
@@ -21,6 +22,7 @@ const MODAL = {
     title: "Redeploy the previous commit?",
     action: "Redeploy previous",
     path: "deploys",
+    typed: true,
     stepUp: true,
   },
   rollback: {
@@ -36,7 +38,11 @@ const MODAL = {
     path: "builds",
   },
 };
-function buildLine(kind, plan) {
+function buildLine(kind, plan, preAdmin) {
+  if (kind === "rollback" && preAdmin)
+    return "No rebuild. Vercel switches production back to the version that was live before admin took over. There is no stored build to fall back on.";
+  if (kind === "redeploy-previous")
+    return "This ships the previous commit again and changes production, like a rollback. It uses the current settings; a stored build is reused if available, otherwise it builds first.";
   if (kind === "rollback")
     return "No rebuild. Vercel switches production back to this version. If Vercel refuses, the previous commit is redeployed from the stored build.";
   if (kind === "redeploy" || kind === "redeploy-previous")
@@ -58,11 +64,13 @@ export function DeployModal({
   plan,
   onClose,
   onDone,
+  onChanged,
 }) {
   const spec = MODAL[kind],
     [typed, setTyped] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  const warnings = plan ? planWarnings(plan) : [];
   const base = `/installations/${id}/pos`;
   const body =
     kind === "deploy"
@@ -75,7 +83,7 @@ export function DeployModal({
       : kind === "redeploy"
         ? { kind: "redeploy", of: "last", confirm: true }
         : kind === "redeploy-previous"
-          ? { kind: "redeploy", of: "previous", confirm: true }
+          ? { kind: "redeploy", of: "previous", confirm: typed }
           : kind === "rollback"
             ? { confirm: typed }
             : { branch: target.branch, sha: target.sha };
@@ -83,6 +91,30 @@ export function DeployModal({
     event.preventDefault();
     setBusy(true);
     setError("");
+    // The sha was fixed when the dialog opened; never send anything else.
+    const needsSha = kind === "deploy" || kind === "build";
+    if (needsSha && !/^[0-9a-f]{40}$/.test(target.sha ?? "")) {
+      setError("The branch moved — review again.");
+      setBusy(false);
+      return;
+    }
+    if (needsSha) {
+      try {
+        const fresh = await api(
+          `${base}/deploy-plan?branch=${encodeURIComponent(target.branch)}`,
+        );
+        if (fresh.head.sha !== target.sha) {
+          setError("The branch moved — review again.");
+          setBusy(false);
+          onChanged?.();
+          return;
+        }
+      } catch (e) {
+        setError(e.message);
+        setBusy(false);
+        return;
+      }
+    }
     const send = () => api(`${base}/${spec.path}`, { method: "POST", body });
     try {
       const result = await (spec.stepUp ? withStepUp(send) : send());
@@ -115,17 +147,32 @@ export function DeployModal({
           <div>
             <dt>Commit</dt>
             <dd>
-              <code>
-                {target.branch}@{sha7(target.sha)}
-              </code>
-              {target.headline && <span> — {target.headline}</span>}
+              {target.sha ? (
+                <>
+                  <code>
+                    {target.branch}@{sha7(target.sha)}
+                  </code>
+                  {target.headline && <span> — {target.headline}</span>}
+                </>
+              ) : (
+                <span>{PRE_ADMIN}</span>
+              )}
             </dd>
           </div>
           <div>
             <dt>Build</dt>
-            <dd>{buildLine(kind, plan)}</dd>
+            <dd>{buildLine(kind, plan, !target.sha)}</dd>
           </div>
         </dl>
+        {warnings.length > 0 && (
+          <ul className="plan-warnings" aria-label="Warnings">
+            {warnings.map((text) => (
+              <li key={text}>
+                <strong>Warning:</strong> {text}
+              </li>
+            ))}
+          </ul>
+        )}
         <p className="small subtle">
           {kind === "build"
             ? "This only prepares a build for later. The live site is not changed."
@@ -180,14 +227,15 @@ export function actionReasons({
           : "";
   const branch = !selected
     ? "Pick a branch first."
-    : plan?.loading
-      ? "Checking the branch…"
-      : plan?.error
-        ? "The branch could not be checked."
+    : plan?.error
+      ? "The branch could not be checked."
+      : plan?.loading || !plan?.data
+        ? "Checking the branch…"
         : "";
   return {
     deploy: stop("deploy") || branch,
-    redeploy: stop("deploy") || (last ? "" : "Nothing is live from admin yet."),
+    redeploy:
+      stop("deploy") || (last?.sha ? "" : "Nothing is live from admin yet."),
     rollback:
       stop("rollback") ||
       (previous?.vercelDeploymentId ? "" : "There is no previous version."),

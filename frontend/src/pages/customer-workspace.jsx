@@ -80,7 +80,7 @@ function CustomerInstallations({ customer, user }) {
     // POS columns (live version, behind-by) come from the fleet route.
     fleet = useResource(
       can(user.role, "credentials")
-        ? `/pos/fleet?customerId=${customer._id}`
+        ? `/pos/fleet?light=1&customerId=${customer._id}`
         : null,
     ),
     pos = new Map(
@@ -93,9 +93,19 @@ function CustomerInstallations({ customer, user }) {
         title="Installations"
         description="Product environments set up for this customer."
         action={
-          can(user.role, "operate") && (
-            <NewLink href="/installations/new">Add installation</NewLink>
-          )
+          <div className="account-actions">
+            {pos.size > 0 && (
+              <button
+                className="button secondary"
+                onClick={() => fleet.refresh().catch(() => {})}
+              >
+                Refresh deploy status
+              </button>
+            )}
+            {can(user.role, "operate") && (
+              <NewLink href="/installations/new">Add installation</NewLink>
+            )}
+          </div>
         }
       />
       <Resource resource={resource}>
@@ -177,7 +187,7 @@ function PosCells({ row, id }) {
           <StateBadge state={row.state} />
         </span>
       </td>
-      <td>{behindText(row)}</td>
+      <td>{behindText(row, true)}</td>
       <td>
         <Link
           className="text-link"

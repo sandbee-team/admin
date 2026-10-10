@@ -31,11 +31,23 @@ services:
     build: .
     command: ["node", "backend/worker.js"]
     env_file: .env
+    # Root inside the container ONLY so it can start the Vercel CLI under another uid (10001, see
+    # Dockerfile); it keeps nothing but SETUID, SETGID and KILL, and no-new-privileges stays on.
+    user: "0:0"
     environment:
       NODE_ENV: production
       POS_GITHUB_SOURCE_TOKEN: ""
       POS_WORK_DIR: /work
       TMPDIR: /work/tmp
+      # Every secret this process does not need is blanked (the CLI's uid cannot read
+      # /proc/<pid>/environ, but there is no reason to hold them at all).
+      BACKUP_KEY: ""
+      ECOM_SERVICE_URL: ""
+      ECOM_SERVICE_KEY: ""
+      STORE_MONGODB_URI: ""
+      STORE_MONGODB_DB: unused
+      # Required by the config schema but never read by the worker: a placeholder, not the real one.
+      AUTH_SECRET: worker-does-not-use-this-placeholder-0123456789abcdefghijkl
     volumes: ["pos-work:/work"]
     restart: unless-stopped
     init: true
@@ -43,7 +55,10 @@ services:
     tmpfs: ["/tmp:size=16m"]
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
-    mem_limit: 256m # lower or raise after sampling `docker stats` during the first deploy
+    cap_add: [SETUID, SETGID, KILL]
+    ulimits:
+      core: 0
+    mem_limit: 512m # the CLI's old-space is capped at 200 MB; sample `docker stats` during the first deploy
     cpus: 1.0
     pids_limit: 100
     # A running CLI gets up to 120 s on SIGTERM; the next start reconciles the rest.

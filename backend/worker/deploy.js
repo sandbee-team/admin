@@ -6,7 +6,7 @@
 // (a started upload is reconciled through the deployment's meta, never
 // repeated blindly). Messages stored on a job are fixed strings; nothing from a
 // provider, the CLI or a secret is ever copied into a stored field or a log.
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { audit } from "../lib/audit.js";
 import { ProviderError } from "../lib/provider-http.js";
@@ -32,9 +32,14 @@ import {
   wait,
   withLease,
 } from "./lease.js";
-import { AcceptError, extractTgz, inspectTgz } from "./artifact.js";
-import { CLI_CODES, cliEnv } from "./cli-runner.js";
-import { ensureSpace, fetchBuild, jobDir, rmDir } from "./fetch-build.js";
+import { AcceptError, extractTgz } from "./artifact.js";
+import {
+  CLI_CODES,
+  cliEnv,
+  prepareCliDir,
+  prepareDeployRoot,
+} from "./cli-runner.js";
+import { ensureSpace, fetchBuild, jobDir, rmJob } from "./fetch-build.js";
 import {
   COPY_FORWARD_AFTER_MS,
   copyForward,
@@ -42,7 +47,6 @@ import {
 } from "./retention.js";
 import {
   WORKER_ACTOR,
-  healthFlag,
   inspectProject,
   loadTarget,
   productionOf,
@@ -229,9 +233,8 @@ export async function preflight(jr) {
       "preflight",
     );
   const production = productionOf(ins.projectData);
-  const healthy = production
-    ? (await healthFlag(ctx, target, jr.signal)) === "ok"
-    : false;
+  // Three attempts: one slow response must not make a healthy baseline look sick.
+  const healthy = production ? (await probe(jr, 3)).ok : false;
   await jr.patch({ baseline: { vercelDeploymentId: production, healthy } });
   if (jr.job.kind === "rollback") {
     const deploy = target.pos.deploy ?? {};
@@ -557,27 +560,26 @@ export async function uploadDeployment(jr, { tgzPath, metaValue }) {
   const root = path.join(dir, "root");
   await rm(root, { recursive: true, force: true });
   await mkdir(root, { recursive: true });
-  const v = await inspectTgz(tgzPath, { signal: jr.signal });
-  if (v.bad || v.findings)
-    throw fail("tar-invalid", "The build output failed validation.", "upload");
+  // extractTgz validates the whole archive first (links, filePathMap) and
+  // creates every path component itself, never through a symlink.
   try {
     await extractTgz(tgzPath, root, { signal: jr.signal });
   } catch (error) {
     if (error instanceof AcceptError)
       throw fail(
-        "tar-invalid",
+        error.code === "artifact-filepathmap"
+          ? "artifact-filepathmap"
+          : "tar-invalid",
         "The build output failed validation.",
         "upload",
       );
     throw error;
   }
   // D25: an EMPTY apps/cafe in the deploy root; project settings are never changed.
-  await mkdir(path.join(root, "apps", "cafe"), { recursive: true });
-  await mkdir(path.join(root, ".vercel"), { recursive: true });
-  await writeFile(
-    path.join(root, ".vercel", "project.json"),
-    JSON.stringify({ orgId: target.orgId, projectId: target.projectId }),
-  );
+  await prepareDeployRoot(root, {
+    orgId: target.orgId,
+    projectId: target.projectId,
+  });
   const args = [
     "deploy",
     "--prebuilt",
@@ -602,13 +604,16 @@ export async function uploadDeployment(jr, { tgzPath, metaValue }) {
     workDir: ctx.workDir,
     jobDir: dir,
   });
-  await mkdir(env.HOME, { recursive: true });
-  await mkdir(env.TMPDIR, { recursive: true });
-  await mkdir(env.XDG_CACHE_HOME, { recursive: true });
+  await prepareCliDir(dir);
+  for (const key of ["HOME", "TMPDIR", "XDG_CACHE_HOME"]) {
+    await mkdir(env[key], { recursive: true });
+    await chmod(env[key], 0o1777); // writable by the CLI's uid, no chown needed
+  }
   const result = await ctx.runCli({
     args,
     cwd: root,
     env,
+    user: ctx.cliUser ?? null,
     timeoutMs: ctx.t.cliTimeoutMs,
     signal: jr.cliSignal(),
   });
@@ -807,8 +812,15 @@ export async function restore(jr, targetId, version) {
   }
   // Hobby allows only the immediately previous deployment (402): redeploy the
   // previous commit from the cache when its build is still there.
+  // A pre-admin baseline has no commit: only the instant rollback can work.
+  if (!version?.sha)
+    throw fail(
+      "rollback-baseline-no-fallback",
+      "Vercel refused the instant rollback and the previous version was not built by admin; deploy that branch again.",
+      "vercel",
+    );
   const keyOfVersion = version?.build?.buildKey;
-  if (!ctx.cache || !keyOfVersion || !version?.sha)
+  if (!ctx.cache || !keyOfVersion)
     throw fail(
       "rollback-refused",
       "Vercel refused the instant rollback and no cached build is available; deploy that branch again.",
@@ -1119,6 +1131,27 @@ export async function failJob(ctx, claim, jr, error) {
     jr ??
     new JobRun(ctx, { ...claim, doc: current }, new AbortController().signal);
   run.job = current;
+  // After promotion an error must never hide that the new deployment is live.
+  const recovered = run.recoverLive
+    ? await run.recoverLive(error).catch(() => false)
+    : false;
+  if (recovered) {
+    ctx.log("job-ended", {
+      id: current.requestId?.slice(0, 8) ?? "",
+      status: recovered,
+      code: safeCode(failureOf(error, current.step).code),
+    });
+    await dropWaiter(ctx, current);
+    if (recovered === "unhealthy")
+      await notifyOwner(
+        ctx,
+        run,
+        "unhealthy",
+        "The new version is live but the run ended with an error.",
+      );
+    await rmJob(ctx, claim.doc.requestId);
+    return;
+  }
   const userCancelled =
     info.status === "cancelled" && info.code === "cancelled";
   await endJob(run, {
@@ -1141,7 +1174,7 @@ export async function failJob(ctx, claim, jr, error) {
   await dropWaiter(ctx, current);
   if (info.status === "failed")
     await notifyOwner(ctx, run, "failed", info.message);
-  await rmDir(jobDir(ctx, claim.doc.requestId));
+  await rmJob(ctx, claim.doc.requestId);
 }
 const DEPLOY_STEP_NAMES = [
   "queued",
@@ -1154,6 +1187,42 @@ const DEPLOY_STEP_NAMES = [
   "health",
   "finalize",
 ];
+
+// After the new deployment was promoted, an error must not turn into "failed"
+// while it is live: read production first. -> false | "ok" | "unhealthy"
+export async function recoverDeployLive(jr, error) {
+  const id = jr.job.vercelDeploymentId;
+  if (
+    jr.job.kind === "rollback" ||
+    !id ||
+    !["vercel", "health", "finalize"].includes(jr.job.step) ||
+    !jr.vercel ||
+    !jr.target
+  )
+    return false;
+  if (error instanceof LeaseLost || error instanceof Released) return false;
+  let project;
+  try {
+    project = await jr.vercel.project(jr.target.projectId);
+  } catch {
+    return false;
+  }
+  if (productionOf(project) !== id) return false;
+  const healthPassed = jr.job.steps?.[jr.idx("health")]?.state === "done";
+  const info = failureOf(error, jr.job.step);
+  await finalizeLive(jr, {
+    deployment: { id, url: jr.job.url ?? "" },
+    healthy: healthPassed,
+    error: {
+      step: ["vercel", "health", "finalize"].includes(info.step)
+        ? info.step
+        : jr.job.step,
+      code: safeCode(info.code),
+      message: failMessage(info.message),
+    },
+  });
+  return healthPassed ? "ok" : "unhealthy";
+}
 
 // ---- the deploy / redeploy job ---------------------------------------------------------
 export async function runDeploy(ctx, claim) {
@@ -1185,6 +1254,7 @@ export async function runDeploy(ctx, claim) {
         token: jr.target.token,
         teamId: jr.target.teamId,
       });
+      jr.recoverLive = (error) => recoverDeployLive(jr, error);
       await jr.check();
       if (!jr.isDone("preflight")) await preflight(jr);
       await jr.check();
@@ -1221,13 +1291,13 @@ export async function runDeploy(ctx, claim) {
             },
             stepFailed: false,
           });
-          await rmDir(jobDir(ctx, jr.rid));
+          await rmJob(ctx, jr.rid);
           return;
         }
         await jr.end("health", "done");
         await jr.begin("finalize");
         await finalizeLive(jr, { deployment, healthy: true });
-        await rmDir(jobDir(ctx, jr.rid));
+        await rmJob(ctx, jr.rid);
         return;
       }
       await jr.end("health", "failed", reasonNote(res));
@@ -1248,17 +1318,30 @@ export async function runDeploy(ctx, claim) {
           await jr.note("health", "Rolling back");
           try {
             const last = jr.target.pos.deploy?.last;
-            await restore(
+            const live = await restore(
               jr,
               baseline.vercelDeploymentId,
               last?.vercelDeploymentId === baseline.vercelDeploymentId
                 ? last
                 : null,
             );
+            // The Hobby fallback makes a NEW deployment of the old commit: `last`
+            // must name what is live now.
+            if (last && live.id !== last.vercelDeploymentId)
+              await ctx.coll.installations.updateOne(jr.slot.filterOf(), {
+                $set: {
+                  "pos.deploy.last.vercelDeploymentId": live.id,
+                  "pos.deploy.last.url": live.url || last.url || "",
+                },
+              });
             const again = await probe(jr, ctx.t.rollbackHealthAttempts);
             rolledBack = again.ok;
           } catch (caught) {
-            if (!(caught instanceof JobFail)) throw caught;
+            // A rollback that fails for any reason leaves the production
+            // check below to say what is live.
+            if (caught instanceof LeaseLost || caught instanceof Released)
+              throw caught;
+            if (jr.signal.aborted) throw jr.signal.reason ?? caught;
           }
         }
       }
@@ -1300,7 +1383,7 @@ export async function runDeploy(ctx, claim) {
           });
         await notifyOwner(ctx, jr, "unhealthy", error.message);
       }
-      await rmDir(jobDir(ctx, jr.rid));
+      await rmJob(ctx, jr.rid);
     },
     (error) => failJob(ctx, claim, run, error),
   );

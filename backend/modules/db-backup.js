@@ -9,13 +9,16 @@ import {
   ACTIVE_TASK_STATES,
   DEAD_LEASE_MS,
   QUEUED_EXPIRY_MS,
+  WORKER_ONLINE_MS,
+  taskBlocks,
+  workerStale,
 } from "../../shared/deploy.js";
 import { HttpError, ensure } from "../lib/errors.js";
 import { audit } from "../lib/audit.js";
 import { consume } from "../lib/limiter.js";
 import { transaction } from "../db.js";
 import { authorizeWrite } from "./records.js";
-import { busyError } from "./pos.js";
+import { busyError, notReadyError } from "./pos.js";
 
 const clean = (value, max) =>
   String(value ?? "")
@@ -108,6 +111,19 @@ export function dbBackupRoutes({ db, client, auth, s3 }) {
         error.apiCode = "not-configured";
         throw error;
       }
+      // Cheap refusals first: they must not use up the hourly allowance.
+      const [pre, worker] = await Promise.all([
+        load(id),
+        db.collection("system_state").findOne({ _id: "pos-worker" }),
+      ]);
+      ensure(pre.pos.mongo?.uri, 409, "No client database URI is stored.");
+      if (taskBlocks(pre.pos.task, Date.now(), worker?.at ?? null))
+        throw busyError(
+          "Another task is already running for this installation.",
+        );
+      const beat = new Date(worker?.at ?? NaN).getTime();
+      if (!(Date.now() - beat < WORKER_ONLINE_MS))
+        throw notReadyError(["worker"]);
       await consume(db, `db-backup:${id}`, 6, 3600000);
       const task = await transaction(client, async (session) => {
         await authorizeWrite(db, session, req.staff, "deploy");
@@ -136,12 +152,16 @@ export function dbBackupRoutes({ db, client, auth, s3 }) {
             $or: [
               { "pos.task": null },
               { "pos.task.status": { $nin: ACTIVE_TASK_STATES } },
-              {
-                "pos.task.status": "queued",
-                "pos.task.requestedAt": {
-                  $lt: new Date(now - QUEUED_EXPIRY_MS),
-                },
-              },
+              ...(workerStale(worker?.at ?? null, now)
+                ? [
+                    {
+                      "pos.task.status": "queued",
+                      "pos.task.requestedAt": {
+                        $lt: new Date(now - QUEUED_EXPIRY_MS),
+                      },
+                    },
+                  ]
+                : []),
               {
                 "pos.task.status": "running",
                 "pos.task.lease.until": { $lt: new Date(now - DEAD_LEASE_MS) },

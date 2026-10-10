@@ -127,6 +127,7 @@ export const validKey = (key) =>
   !key.includes("//") &&
   !key.split("/").some((part) => part === "." || part === "..") &&
   !key.endsWith("/");
+const DISK_CODES = new Set(["ENOSPC", "EIO", "EROFS", "EDQUOT", "EACCES"]);
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const unxml = (text) =>
   text
@@ -486,7 +487,11 @@ export function createS3({
       } catch (error) {
         await unlink(part).catch(() => {});
         throw unavailable(
-          error?.message === "TooLarge" ? "TooLarge" : "Network",
+          error?.message === "TooLarge"
+            ? "TooLarge"
+            : DISK_CODES.has(error?.code)
+              ? "WorkDisk" // our own disk, not the network
+              : "Network",
         );
       }
       return { bytes, sha256: hash.digest("hex") };

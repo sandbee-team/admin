@@ -580,7 +580,9 @@ export const deploySchemas = {
         // Which stored version to ship again; the commit comes from the
         // server's record, never from the request.
         of: z.enum(["last", "previous"]).default("last"),
-        confirm: z.literal(true),
+        // true for the live version; the typed slug when of is "previous"
+        // (it changes production like a rollback).
+        confirm: z.union([z.literal(true), slugConfirm]),
       })
       .strict(),
   ]),
@@ -610,5 +612,11 @@ export const deploySchemas = {
     .strict(),
   plan: z.object({ branch: deployBranch }).strict(),
   branches: z.object({ installation: id.optional() }).strict(),
-  fleet: z.object({ customerId: id.optional() }).strict(),
+  fleet: z
+    .object({
+      customerId: id.optional(),
+      // light=1: no GitHub or build-cache lookups (relation "unknown").
+      light: z.literal("1").optional(),
+    })
+    .strict(),
 };

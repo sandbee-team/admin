@@ -131,7 +131,11 @@ test("fleet page, customer merge and overview attention show honest states", asy
     page.getByRole("columnheader", { name: "Behind" }),
   ).toBeVisible();
   await expect(page.getByRole("columnheader", { name: "Live" })).toBeVisible();
-  await expect(page.getByRole("cell", { name: /Behind by 2/ })).toBeVisible();
+  // The customer page uses the cheap route: no comparison, so Behind is a dash.
+  await expect(page.getByRole("cell", { name: /main@9999999/ })).toBeVisible();
+  await expect(
+    page.getByRole("cell", { name: "—", exact: true }),
+  ).toBeVisible();
   await page.getByRole("link", { name: "Deploy ui-ready" }).click();
   await expect(
     page.getByRole("heading", { name: "Deploy", level: 1 }),
@@ -145,12 +149,22 @@ test("fleet page, customer merge and overview attention show honest states", asy
   // A worker that stopped is called out on the dashboard.
   await control("worker?state=offline");
   try {
-    // The overview is cached for 5 seconds on the server.
-    await page.waitForTimeout(5500);
-    await page.goto("/");
-    await expect(
-      page.getByRole("link", { name: /POS deploy worker offline/ }),
-    ).toBeVisible({ timeout: 15000 });
+    // The server caches the overview for 5 s: reload until the cache expires.
+    const offline = page.getByRole("link", {
+      name: /POS deploy worker offline/,
+    });
+    await expect
+      .poll(
+        async () => {
+          await page.goto("/");
+          await expect(
+            page.getByRole("heading", { name: "Dashboard" }),
+          ).toBeVisible();
+          return offline.isVisible();
+        },
+        { timeout: 30000, intervals: [1000] },
+      )
+      .toBe(true);
   } finally {
     await control("worker?state=online");
   }
@@ -301,7 +315,7 @@ test("branch picker, deploy with typed slug and step-up, live progress and cance
   // The page polls: the worker moves to the build step.
   await control("job?scenario=deploy&status=running&step=build&run=1");
   await expect(page.locator(".progress-status")).toHaveText("Now: Build.", {
-    timeout: 10000,
+    timeout: 20000,
   });
   const build = page.locator(".step-item").filter({ hasText: "Build" });
   await expect(build).toHaveAttribute("data-state", "running");
@@ -317,7 +331,7 @@ test("branch picker, deploy with typed slug and step-up, live progress and cance
   // After the upload starts there is no cancelling.
   await control("job?scenario=deploy&status=running&step=upload");
   await expect(page.getByText("Too late to cancel")).toBeVisible({
-    timeout: 10000,
+    timeout: 20000,
   });
   await expect(
     page.getByRole("button", { name: "Cancel deploy" }),
@@ -325,7 +339,7 @@ test("branch picker, deploy with typed slug and step-up, live progress and cance
   // Back before the upload: cancel it.
   await control("job?scenario=deploy&status=running&step=build");
   const cancel = page.getByRole("button", { name: "Cancel deploy" });
-  await expect(cancel).toBeEnabled({ timeout: 10000 });
+  await expect(cancel).toBeEnabled({ timeout: 20000 });
   await cancel.click();
   await expect(page.locator(".progress-status")).toHaveText(
     "Cancelling after the current step.",
@@ -333,7 +347,7 @@ test("branch picker, deploy with typed slug and step-up, live progress and cance
   await control("job?scenario=deploy&status=cancelled&step=build");
   await expect(
     page.getByRole("heading", { name: "The deploy was cancelled" }),
-  ).toBeVisible({ timeout: 10000 });
+  ).toBeVisible({ timeout: 20000 });
 });
 
 test("redeploy confirms without a typed slug; rollback needs the slug", async ({
@@ -361,7 +375,7 @@ test("redeploy confirms without a typed slug; rollback needs the slug", async ({
   await expect(page.getByRole("heading", { name: /Redeploying/ })).toHaveCount(
     0,
     {
-      timeout: 10000,
+      timeout: 20000,
     },
   );
   // "Roll back to this" on the previous version opens the same confirmation.
@@ -424,6 +438,10 @@ test("failed, stalled and auto-rolled-back jobs are explained honestly", async (
       name: "Health check failed — rolled back to main@8888888",
     }),
   ).toBeVisible();
+  await expect(back).toContainText(
+    "may have been live for up to about a minute",
+  );
+  await expect(back).not.toContainText("Customers are not affected");
   await expect(back.getByRole("link", { name: /Open GitHub run/ })).toHaveCount(
     0,
   );

@@ -33,6 +33,8 @@ const IV_BYTES = 12,
 export const OBJECT_OVERHEAD = HEADER_BYTES + TAG_BYTES;
 const MAX_MANIFEST_BYTES = 65536;
 const CHUNK = 65536;
+const DISK_CODES = new Set(["ENOSPC", "EIO", "EROFS", "EDQUOT", "EACCES"]);
+export const isDiskError = (error) => DISK_CODES.has(error?.code);
 export class BuildCacheError extends Error {
   constructor(code) {
     super(`Build cache check failed (${code})`);
@@ -253,9 +255,11 @@ export async function sealToFile({
       seal,
       createWriteStream(destPath),
     );
-  } catch {
+  } catch (error) {
     await unlink(destPath).catch(() => {});
-    throw new BuildCacheError("seal-failed");
+    throw new BuildCacheError(
+      isDiskError(error) ? "work-disk-error" : "seal-failed",
+    );
   }
   return {
     dataKey: encrypt(dataKey.toString("hex"), vaultKey, aad),
@@ -298,8 +302,10 @@ export async function openToFile({
         cb();
       },
     }),
-  ).catch(() => {
-    throw new BuildCacheError("object-missing");
+  ).catch((error) => {
+    throw new BuildCacheError(
+      isDiskError(error) ? "work-disk-error" : "object-missing",
+    );
   });
   if (whole.digest("hex") !== manifest.object.sha256)
     throw new BuildCacheError("bad-object-hash");
@@ -358,9 +364,15 @@ export async function openToFile({
       }),
       createWriteStream(part),
     );
-  } catch {
+  } catch (error) {
     await unlink(part).catch(() => {});
-    throw new BuildCacheError(overflow ? "bad-output" : "bad-tag");
+    throw new BuildCacheError(
+      isDiskError(error)
+        ? "work-disk-error"
+        : overflow
+          ? "bad-output"
+          : "bad-tag",
+    );
   }
   if (
     bytes !== manifest.output.bytes ||
@@ -382,6 +394,8 @@ export function createBuildCache({
   vaultKey,
   now = () => new Date(),
   uuid = randomUUID,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  retryMs = [1000, 3000],
 }) {
   if (!s3) throw new Error("Build cache needs object storage.");
   // -> {state:"hit", manifest} | {state:"miss", reason} | {state:"invalid", reason}
@@ -413,22 +427,33 @@ export function createBuildCache({
     const { manifest } = found;
     const encPath = `${destPath}.enc`;
     try {
-      try {
-        await s3.getToFile(manifest.object.key, encPath, {
-          maxBytes: manifest.object.bytes,
-        });
-      } catch (error) {
-        if (error?.status === 410)
-          return { state: "invalid", reason: "object-missing" };
-        if (error?.s3Code === "TooLarge")
-          return { state: "invalid", reason: "bad-size" };
-        throw error;
+      // Transient S3 errors are retried; a failure of our own disk is not an
+      // integrity problem (no quarantine); an exhausted retry is "unavailable".
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await s3.getToFile(manifest.object.key, encPath, {
+            maxBytes: manifest.object.bytes,
+          });
+          break;
+        } catch (error) {
+          if (error?.status === 410)
+            return { state: "invalid", reason: "object-missing" };
+          if (error?.s3Code === "TooLarge")
+            return { state: "invalid", reason: "bad-size" };
+          if (error?.s3Code === "WorkDisk")
+            return { state: "error", reason: "work-disk-error" };
+          if (attempt >= retryMs.length)
+            return { state: "error", reason: "unavailable" };
+          await sleep(retryMs[attempt]);
+        }
       }
       try {
         await openToFile({ srcPath: encPath, destPath, manifest, vaultKey });
       } catch (error) {
         if (error instanceof BuildCacheError)
-          return { state: "invalid", reason: error.code };
+          return error.code === "work-disk-error"
+            ? { state: "error", reason: "work-disk-error" }
+            : { state: "invalid", reason: error.code };
         throw error;
       }
       return { state: "hit", manifest, path: destPath };

@@ -145,7 +145,7 @@ export const sha7 = (sha) => (isSha(sha) ? sha.slice(0, 7) : "");
 //
 // system_state rows:
 //   pos-worker        heartbeat: {_id, at, workerId, version, cliVersion,
-//                     builderConfigured, builder{sha, nodeVersion, cliVersion,
+//                     builderConfigured, builder{sha, protocol, nodeVersion, cliVersion,
 //                     ok, checkedAt}, lastBuildMs}. Online = at < 90 s old
 //   pos-deploy-freeze {_id, on, reason, by{id,name}, at}   global freeze
 //   pos-build:<sha>:<buildKey>   transient build row: {_id, kind:"build",
@@ -219,11 +219,31 @@ const ms = (value) =>
 // Does this `current` job still block a new request? (Shared by the enqueue
 // filter in the API and by the views.) A queued job older than the expiry and
 // an active job whose lease has been dead for DEAD_LEASE_MS do not.
-export function jobBlocks(current, now = Date.now()) {
+// Queue expiry rule (shared with the worker's lease.js): a queued job or task
+// is never free/expired while the worker heartbeat is fresh; only when the
+// heartbeat has been stale for QUEUED_EXPIRY_MS (or never existed) AND the
+// item itself is older than that. `workerAt` undefined = unknown: a queued
+// item then always blocks (conservative).
+export const workerStale = (workerAt, now = Date.now()) => {
+  const at = ms(workerAt);
+  return !Number.isFinite(at) || now - at >= QUEUED_EXPIRY_MS;
+};
+export const queuedExpired = (item, workerAt, now = Date.now()) =>
+  workerAt !== undefined &&
+  now - ms(item?.requestedAt) > QUEUED_EXPIRY_MS &&
+  workerStale(workerAt, now);
+export function jobBlocks(current, now = Date.now(), workerAt) {
   if (!current || !isActiveState(current.status)) return false;
   if (current.status === "queued")
-    return !(now - ms(current.requestedAt) > QUEUED_EXPIRY_MS);
+    return !queuedExpired(current, workerAt, now);
   const until = ms(current.lease?.until);
+  return !(Number.isFinite(until) && now - until > DEAD_LEASE_MS);
+}
+// Same rule for the one task slot (status queued|running).
+export function taskBlocks(task, now = Date.now(), workerAt) {
+  if (!task || !ACTIVE_TASK_STATES.includes(task.status)) return false;
+  if (task.status === "queued") return !queuedExpired(task, workerAt, now);
+  const until = ms(task.lease?.until);
   return !(Number.isFinite(until) && now - until > DEAD_LEASE_MS);
 }
 
@@ -231,7 +251,8 @@ export function jobBlocks(current, now = Date.now()) {
 // One function for the checklist in the panel and for the enqueue gate (409
 // {code:"not-ready", items:[ids]}). Pure: every fact is passed in.
 // ctx: {now, installationId, customerId, worker (heartbeat row | null),
-//   sources{source, builder} (tokens configured), cacheConfigured,
+//   sources{source (API source token), builder (the WORKER's builder token,
+//   from its heartbeat builderConfigured)}, cacheConfigured,
 //   authenticator (staff has TOTP), freeze ({on} | null), pos (stored pos),
 //   inputsOk (build inputs derivable), customerStatus, installationStatus}
 // Item: {id, group, required, state: ok|blocked|warn, reason, fix}
@@ -303,8 +324,8 @@ export function readinessOf(ctx) {
       ? no("Needs the deploy worker.")
       : !ctx.sources?.builder
         ? no(
-            "The builder token is not configured.",
-            note("Set POS_GITHUB_BUILDER_TOKEN."),
+            "The worker has no builder token.",
+            note("Set POS_GITHUB_BUILDER_TOKEN on the worker container."),
           )
         : !builder?.ok
           ? no(

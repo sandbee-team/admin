@@ -96,7 +96,7 @@ export function FilesSection({ customerId, user }) {
 }
 // Database backups are made from the POS installation's Deploy tab.
 function BackupNote({ customerId }) {
-  const fleet = useResource(`/pos/fleet?customerId=${customerId}`),
+  const fleet = useResource(`/pos/fleet?light=1&customerId=${customerId}`),
     rows = fleet.data?.rows ?? [];
   if (!rows.length) return null;
   return (

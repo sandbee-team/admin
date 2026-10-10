@@ -88,12 +88,25 @@ async function worker(overrides = {}) {
   });
   return { ctx, loop: createLoop(ctx) };
 }
-const enqueue = (id, session = owner) =>
+const enqueueRaw = (id, session = owner) =>
   app.request(`/installations/${id}/pos/db-backup`, {
     method: "POST",
     session,
     body: {},
   });
+// The API refuses without a fresh worker heartbeat (like deploys).
+const beat = () =>
+  app.db
+    .collection("system_state")
+    .updateOne(
+      { _id: "pos-worker" },
+      { $set: { at: new Date() } },
+      { upsert: true },
+    );
+const enqueue = async (id, session = owner) => {
+  await beat();
+  return enqueueRaw(id, session);
+};
 async function download(session, cid, fid) {
   const res = await fetch(
     `${app.origin}/api/customers/${cid}/files/${fid}/download`,
@@ -425,6 +438,53 @@ describe("backup API", () => {
       .collection("installations")
       .updateOne({ _id: id }, { $set: { "pos.task": null } });
     assert.equal((await enqueue(id)).status, 429);
+  });
+
+  it("refusals do not use up the six-per-hour allowance (busy, no URI, worker offline)", async () => {
+    // Busy: the one real request, then eight refusals, then a free slot.
+    const a = await seed();
+    assert.equal((await enqueue(a.id)).status, 201);
+    for (let i = 0; i < 8; i++)
+      assert.equal((await enqueueRaw(a.id)).data.code, "busy");
+    await app.db
+      .collection("installations")
+      .updateOne({ _id: a.id }, { $set: { "pos.task": null } });
+    for (let i = 0; i < 5; i++) {
+      assert.equal((await enqueue(a.id)).status, 201, `allowance left ${i}`);
+      await app.db
+        .collection("installations")
+        .updateOne({ _id: a.id }, { $set: { "pos.task": null } });
+    }
+    assert.equal((await enqueue(a.id)).status, 429, "six real requests used");
+    // No URI.
+    const b = await seed();
+    await app.db
+      .collection("installations")
+      .updateOne({ _id: b.id }, { $set: { "pos.mongo.uri": null } });
+    for (let i = 0; i < 8; i++) assert.equal((await enqueue(b.id)).status, 409);
+    const box = encrypt(uriFor("clientdb"), VAULT_KEY, `pos:${b.id}:mongo.uri`);
+    await app.db
+      .collection("installations")
+      .updateOne({ _id: b.id }, { $set: { "pos.mongo.uri": box } });
+    assert.equal((await enqueue(b.id)).status, 201);
+    // Worker offline: 409 not-ready naming the worker item.
+    const c = await seed();
+    await app.db.collection("system_state").deleteOne({ _id: "pos-worker" });
+    for (let i = 0; i < 8; i++) {
+      const res = await enqueueRaw(c.id);
+      assert.equal(res.status, 409);
+      assert.equal(res.data.code, "not-ready");
+      assert.deepEqual(res.data.items, ["worker"]);
+    }
+    await app.db
+      .collection("system_state")
+      .updateOne(
+        { _id: "pos-worker" },
+        { $set: { at: new Date(Date.now() - 120000) } },
+        { upsert: true },
+      );
+    assert.equal((await enqueueRaw(c.id)).data.code, "not-ready", "stale beat");
+    assert.equal((await enqueue(c.id)).status, 201);
   });
 
   it("needs a stored database URI, a POS installation and a strict body", async () => {

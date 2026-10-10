@@ -13,7 +13,7 @@ import {
   taskView,
   verifyView,
 } from "../lib/deploy-view.js";
-import { jobBlocks } from "../../shared/deploy.js";
+import { jobBlocks, taskBlocks } from "../../shared/deploy.js";
 
 // Settings that a running job reads are frozen while it is active.
 const JOB_FIELDS = ["vercel.token", "mongo.uri"];
@@ -22,12 +22,42 @@ export const busyError = (message) => {
   error.apiCode = "busy";
   return error;
 };
-const idle = (pos) => {
-  if (jobBlocks(pos.deploy?.current))
-    throw busyError(
-      "A deploy is running for this installation. Wait for it to finish or cancel it.",
-    );
+// 409 error for a gate that names readiness item ids (shared with deploys.js).
+export const notReadyError = (items) => {
+  const error = new HttpError(409, "This client is not ready yet.");
+  error.apiCode = "not-ready";
+  error.items = items;
+  return error;
 };
+// What "verify" checks: changing any of these makes the last verify stale.
+const verifyFingerprint = (x) =>
+  JSON.stringify([
+    x.host ?? "",
+    x.tenantId ?? "",
+    x.rootDomain ?? "",
+    [
+      x.vercel?.projectId ?? "",
+      x.vercel?.orgId ?? "",
+      x.vercel?.teamId ?? "",
+      x.vercel?.projectName ?? "",
+    ],
+    x.cloudflare
+      ? [
+          x.cloudflare.accountId ?? "",
+          x.cloudflare.workerName ?? "",
+          x.cloudflare.workerUrl ?? "",
+        ]
+      : null,
+    [
+      x.image?.store ?? null,
+      x.image?.publicBaseUrl ?? "",
+      x.image?.cloudName ?? "",
+      x.image?.r2AccountId ?? "",
+      x.image?.bucket ?? "",
+    ],
+  ]);
+// Secrets a verify reads: replacing or removing one also invalidates it.
+const VERIFY_SECRETS = ["vercel.token", "mongo.uri", "cloudflare.token"];
 const at = (object, path) =>
   path.split(".").reduce((value, part) => value?.[part], object);
 export const changedKey = (field) => field.replace(".", "_");
@@ -133,6 +163,22 @@ export function posRoutes({ db, client, c, auth }) {
     installations = db.collection("installations");
   router.use(auth.requireAuth);
   const iid = (req) => z.uuid().parse(req.params.id);
+  // 409 busy while a deploy job or a task (verify, purge, backup) is active.
+  async function idle(pos, session) {
+    const worker = await db
+      .collection("system_state")
+      .findOne({ _id: "pos-worker" }, { session, projection: { at: 1 } });
+    const workerAt = worker?.at ?? null;
+    const now = Date.now();
+    if (jobBlocks(pos.deploy?.current, now, workerAt))
+      throw busyError(
+        "A deploy is running for this installation. Wait for it to finish or cancel it.",
+      );
+    if (taskBlocks(pos.task, now, workerAt))
+      throw busyError(
+        "A task is running for this installation. Wait for it to finish.",
+      );
+  }
   // Loads the installation and requires the POS product (looked up by slug).
   async function load(id, session) {
     const row = await installations.findOne(
@@ -190,7 +236,7 @@ export function posRoutes({ db, client, c, auth }) {
           );
         } else {
           const pos = requirePos(row, rev);
-          idle(pos);
+          await idle(pos, session);
           ensure(
             config.image.store === (pos.image?.store ?? null) ||
               !pos.image?.keys,
@@ -211,6 +257,9 @@ export function posRoutes({ db, client, c, auth }) {
           else
             for (const [k, v] of Object.entries(config.cloudflare))
               set[`pos.cloudflare.${k}`] = v;
+          // Anything verify checks changed: the last verify no longer counts.
+          if (verifyFingerprint(pos) !== verifyFingerprint(config))
+            set["pos.verify"] = null;
           update.$set = set;
           const done = await installations.updateOne(guarded(id, rev), update, {
             session,
@@ -242,7 +291,7 @@ export function posRoutes({ db, client, c, auth }) {
       const view = await transaction(client, async (session) => {
         await authorizeWrite(db, session, req.staff, "credentials");
         const pos = requirePos(await load(id, session), rev);
-        if (JOB_FIELDS.includes(field)) idle(pos);
+        if (JOB_FIELDS.includes(field)) await idle(pos, session);
         if (field === "cloudflare.token")
           ensure(pos.cloudflare, 409, "Save the Cloudflare details first.");
         if (field === "image.keys") {
@@ -262,6 +311,7 @@ export function posRoutes({ db, client, c, auth }) {
             $set: {
               [`pos.${field}`]: encrypt(value, c.VAULT_KEY, aadOf(id, field)),
               [`pos.secretsChangedAt.${changedKey(field)}`]: new Date(),
+              ...(VERIFY_SECRETS.includes(field) ? { "pos.verify": null } : {}),
             },
             $inc: { "pos.rev": 1 },
           },
@@ -294,12 +344,15 @@ export function posRoutes({ db, client, c, auth }) {
       const view = await transaction(client, async (session) => {
         await authorizeWrite(db, session, req.staff, "secrets");
         const pos = requirePos(await load(id, session), rev);
-        if (JOB_FIELDS.includes(field)) idle(pos);
+        if (JOB_FIELDS.includes(field)) await idle(pos, session);
         ensure(at(pos, field), 404, "Nothing is stored in this field.");
         const done = await installations.updateOne(
           guarded(id, rev),
           {
-            $set: { [`pos.${field}`]: null },
+            $set: {
+              [`pos.${field}`]: null,
+              ...(VERIFY_SECRETS.includes(field) ? { "pos.verify": null } : {}),
+            },
             $unset: { [`pos.secretsChangedAt.${changedKey(field)}`]: "" },
             $inc: { "pos.rev": 1 },
           },
@@ -362,7 +415,7 @@ export function posRoutes({ db, client, c, auth }) {
       await transaction(client, async (session) => {
         await authorizeWrite(db, session, req.staff, "secrets");
         const pos = requirePos(await load(id, session), rev);
-        idle(pos);
+        await idle(pos, session);
         const done = await installations.updateOne(
           guarded(id, rev),
           { $unset: { pos: "" } },

@@ -35,10 +35,26 @@ import {
   openClientDb,
   pingClientMongo,
 } from "../backend/lib/client-mongo.js";
-import { buildContext, selfCheck } from "../backend/worker/context.js";
+import {
+  buildContext,
+  isolationProbe,
+  selfCheck,
+} from "../backend/worker/context.js";
 import { createLoop } from "../backend/worker/loop.js";
-import { cliEnv, runCli } from "../backend/worker/cli-runner.js";
-import { extractTgz, inspectTgz } from "../backend/worker/artifact.js";
+import {
+  cliEnv,
+  prepareDeployRoot,
+  runCli,
+} from "../backend/worker/cli-runner.js";
+import { EventEmitter } from "node:events";
+import { restoreBackup } from "../scripts/pos-db-restore.js";
+import { symlink, utimes } from "node:fs/promises";
+import { pruneBuilds } from "../backend/worker/fetch-build.js";
+import {
+  extractTgz,
+  inspectTgz,
+  tarProblemCode,
+} from "../backend/worker/artifact.js";
 import { runRetention } from "../backend/worker/retention.js";
 import { JOB_STEPS, buildRowId } from "../shared/deploy.js";
 import { createFakeS3 } from "./fake-s3.js";
@@ -123,7 +139,9 @@ async function makeEnv({ cache = true } = {}) {
     clock,
     s3fake,
     s3,
-    cache: cache ? createBuildCache({ s3, vaultKey: VAULT_KEY }) : null,
+    cache: cache
+      ? createBuildCache({ s3, vaultKey: VAULT_KEY, sleep: async () => {} })
+      : null,
     gh,
     vercel,
     health,
@@ -212,13 +230,18 @@ async function seedInstallation(
     status: "active",
     email: `${customerId}@example.test`,
   });
-  await env.db
-    .collection("staff")
-    .updateOne(
-      { _id: "staff-1" },
-      { $set: { email: "owner@example.test", name: "Owner" } },
-      { upsert: true },
-    );
+  await env.db.collection("staff").updateOne(
+    { _id: "staff-1" },
+    {
+      $set: {
+        email: "owner@example.test",
+        name: "Owner",
+        role: "owner",
+        status: "active",
+      },
+    },
+    { upsert: true },
+  );
   await env.db.collection("installations").insertOne({
     _id: id,
     customerId,
@@ -523,6 +546,14 @@ describe("lease takeover (a worker is killed and another one resumes)", () => {
       1,
       "the artifact outlives the crash",
     );
+    const crashedRow = await env.db
+      .collection("system_state")
+      .findOne({ kind: "build" });
+    assert.equal(
+      crashedRow.artifactId,
+      [...env.gh.state.artifacts.keys()][0],
+      "the row remembers the artifact",
+    );
     env.clock.t += 120000;
     const b = await makeWorker(env);
     await b.loop.drain();
@@ -608,15 +639,51 @@ describe("lease takeover (a worker is killed and another one resumes)", () => {
     assert.equal(cur.requestId, rid);
     assert.equal(cur.status, "failed");
     assert.equal(cur.error.code, "worker-stopped");
-    // A queued job older than ten minutes expires instead of running.
-    const id2 = await seedInstallation(env, { slug: "other" });
+    // A queued job never expires while the heartbeat is fresh, however old it is.
+    const id2 = await seedInstallation(env, {
+      slug: "other",
+      pos: { tenantId: "demo" },
+    });
     await enqueue(env, id2, {
-      requestedAt: new Date(env.clock.t - 11 * 60000),
+      requestedAt: new Date(env.clock.t - 3 * 3600000),
     });
     await w.loop.drain();
     cur = (await deployOf(env, id2)).current;
+    assert.equal(cur, null, "picked up and deployed, not expired");
+    assert.equal(env.gh.state.dispatches.length, 1);
+  });
+
+  it("expires queued work only after the heartbeat was stale for 10 minutes (not-picked-up)", async () => {
+    const env = await makeEnv();
+    const id = await seedInstallation(env);
+    await enqueue(env, id, { requestedAt: new Date(env.clock.t - 60000) });
+    const id2 = await seedInstallation(env, { slug: "other" });
+    const taskId = await enqueueTask(env, id2, "verify");
+    await env.db.collection("system_state").insertOne({
+      _id: "pos-worker",
+      at: new Date(env.clock.t - 11 * 60000),
+    });
+    const w = await makeWorker(env); // the boot sweep runs before its first heartbeat
+    await w.loop.drain();
+    const cur = (await deployOf(env, id)).current;
     assert.equal(cur.status, "expired");
+    assert.equal(cur.error.code, "not-picked-up");
+    const task = (await rowOf(env, id2)).pos.task;
+    assert.equal(task.id, taskId);
+    assert.equal(task.status, "expired");
+    assert.equal(task.error.code, "not-picked-up");
     assert.equal(env.gh.state.dispatches.length, 0);
+    // A 9-minute-old heartbeat is still fresh enough.
+    const env2 = await makeEnv();
+    const id3 = await seedInstallation(env2);
+    await enqueue(env2, id3);
+    await env2.db.collection("system_state").insertOne({
+      _id: "pos-worker",
+      at: new Date(env2.clock.t - 9 * 60000),
+    });
+    const w2 = await makeWorker(env2);
+    await w2.loop.drain();
+    assert.equal((await deployOf(env2, id3)).current, null);
   });
 });
 
@@ -626,6 +693,11 @@ describe("builder acceptance (builder security review)", () => {
       "a run on the wrong branch",
       (g) => (g.state.tweak.run = (r) => (r.headBranch = "dev")),
       "run-provenance",
+    ],
+    [
+      "a run that reports no head sha",
+      (g) => (g.state.tweak.run = (r) => (r.headSha = "")),
+      "manifest-mismatch",
     ],
     [
       "a run of another event",
@@ -2057,7 +2129,7 @@ describe("CLI runner", () => {
         "the parent's environment is never inherited",
       );
       assert.equal(seen.env.VAULT_KEY, undefined);
-      assert.equal(seen.env.HOME, path.join(dir, "home"));
+      assert.equal(seen.env.HOME, path.join(dir, "j", "cli", "home"));
       assert.equal(seen.env.NO_COLOR, "1");
       assert.equal(seen.env.VERCEL_TELEMETRY_DISABLED, "1");
     } finally {
@@ -2341,8 +2413,12 @@ describe("self-check", () => {
     const w = await makeWorker(env);
     const id = await seedInstallation(env);
     w.ctx.runCli = fakeCli(async (opts) => {
-      await mkdir(opts.env.HOME, { recursive: true });
-      await writeFile(path.join(opts.env.HOME, "leak.txt"), `token=${TOKEN}`);
+      // Outside the per-job directory (which is deleted): this one stays behind.
+      await mkdir(path.join(env.workDir, "cache"), { recursive: true });
+      await writeFile(
+        path.join(env.workDir, "cache", "leak.txt"),
+        `token=${TOKEN}`,
+      );
     }).runCli;
     const lines = [];
     const result = await selfCheck(w.ctx, {
@@ -2411,5 +2487,723 @@ describe("takeover after an automatic rollback", () => {
     assert.equal(deploy.current.status, "rolled-back");
     assert.equal(deploy.last, null, "the new deployment never became `last`");
     assert.equal(env.vercel.state.production, "dpl_live");
+  });
+});
+
+// ---- review fixes ------------------------------------------------------------------
+const configEntry = (map, name = "a") => ({
+  name: `.vercel/output/functions/${name}.func/.vc-config.json`,
+  data: JSON.stringify({ runtime: "nodejs22.x", filePathMap: map }),
+});
+const inspect = async (entries) => {
+  const dir = await mkdtemp(path.join(tmpdir(), "inspect-"));
+  try {
+    const file = path.join(dir, "o.tgz");
+    await writeFile(file, validOutput(SHA1, entries).tgz);
+    return await inspectTgz(file);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+};
+
+const fakeChild = () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.pid = 1;
+  child.kill = () => true;
+  setImmediate(() => child.emit("close", 0));
+  return child;
+};
+describe("H1: .vc-config.json filePathMap", () => {
+  const OK_FILE = { name: ".vercel/output/static/data.txt", data: "x" };
+  it("accepts a map that points at regular files inside the output", async () => {
+    const v = await inspect([
+      OK_FILE,
+      configEntry({ "data.txt": ".vercel/output/static/data.txt" }),
+    ]);
+    assert.equal(v.bad + v.findings, 0);
+    assert.equal(v.filePathMap, 0);
+  });
+  const bad = [
+    ["an absolute path", { x: "/proc/1/environ" }],
+    ["a path with ..", { x: "../../../../proc/1/environ" }],
+    ["a .. inside the output path", { x: ".vercel/output/../../etc/passwd" }],
+    ["a path outside the output root", { x: "node_modules/pkg/index.js" }],
+    ["a Windows drive path", { x: "C:/Windows/win.ini" }],
+    [
+      "a file that is not in the archive",
+      { x: ".vercel/output/static/nope.txt" },
+    ],
+    ["a directory", { x: ".vercel/output/static" }],
+    ["a non-string value", { x: 5 }],
+    ["an unexpected key", { "../evil": ".vercel/output/static/data.txt" }],
+    ["an absolute key", { "/etc/x": ".vercel/output/static/data.txt" }],
+  ];
+  for (const [name, map] of bad)
+    it(`rejects ${name}`, async () => {
+      const v = await inspect([OK_FILE, configEntry(map)]);
+      assert.ok(v.filePathMap > 0, name);
+      assert.ok(v.bad + v.findings > 0);
+      assert.equal(tarProblemCode(v), "artifact-filepathmap");
+    });
+  it("rejects a map target that is a symlink, a map that is not an object, and a broken config", async () => {
+    let v = await inspect([
+      {
+        name: ".vercel/output/static/link",
+        type: "symlink",
+        linkname: "data.txt",
+      },
+      OK_FILE,
+      configEntry({ x: ".vercel/output/static/link" }),
+    ]);
+    assert.ok(v.filePathMap > 0, "a link is not a regular file");
+    v = await inspect([
+      {
+        name: ".vercel/output/functions/a.func/.vc-config.json",
+        data: JSON.stringify({ filePathMap: ["x"] }),
+      },
+    ]);
+    assert.ok(v.filePathMap > 0);
+    v = await inspect([
+      {
+        name: ".vercel/output/functions/a.func/.vc-config.json",
+        data: "{not json",
+      },
+    ]);
+    assert.ok(v.badConfig > 0);
+  });
+  it("a hostile map in the builder's artifact fails the build with artifact-filepathmap and nothing is uploaded", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    env.gh.state.tweak.tgz = () =>
+      validOutput(SHA1, [configEntry({ x: "../../../../proc/1/environ" })]).tgz;
+    const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+    assert.equal(deploy.current.error.code, "artifact-filepathmap");
+    assert.equal(env.cli.calls.length, 0);
+    assert.equal(env.s3fake.liveKeys().length, 0);
+  });
+});
+
+describe("M1: symlinks and extraction", () => {
+  it("rejects link loops and writes through a link, accepts a clean chain", async () => {
+    let v = await inspect([
+      { name: ".vercel/output/a", type: "symlink", linkname: "b" },
+      { name: ".vercel/output/b", type: "symlink", linkname: "a" },
+    ]);
+    assert.ok(v.symlinkEscapes > 0, "a loop cannot be resolved");
+    v = await inspect([
+      { name: ".vercel/output/sub", type: "symlink", linkname: "static" },
+      { name: ".vercel/output/sub/evil.txt", data: "x" },
+    ]);
+    assert.ok(v.symlinkEscapes > 0, "an entry below a link writes through it");
+    v = await inspect([
+      { name: ".vercel/output/l1", type: "symlink", linkname: "l2" },
+      {
+        name: ".vercel/output/l2",
+        type: "symlink",
+        linkname: "static/index.html",
+      },
+    ]);
+    assert.equal(v.symlinkEscapes, 0);
+    v = await inspect([
+      { name: ".vercel/output/l1", type: "symlink", linkname: "l2" },
+      { name: ".vercel/output/l2", type: "symlink", linkname: "../.." },
+    ]);
+    assert.ok(v.symlinkEscapes > 0, "a chain that ends outside the output");
+  });
+  it(
+    "extraction refuses an existing symlink on the path and never writes outside",
+    { skip: platform() === "win32" },
+    async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "extract-"));
+      try {
+        const out = path.join(dir, "root");
+        const outside = path.join(dir, "outside");
+        await mkdir(out);
+        await mkdir(outside);
+        await symlink(outside, path.join(out, ".vercel"));
+        const file = path.join(dir, "o.tgz");
+        await writeFile(file, validOutput(SHA1).tgz);
+        await assert.rejects(
+          () => extractTgz(file, out),
+          (e) => e.code === "tar-invalid",
+        );
+        assert.deepEqual(await readdir(outside), []);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+  it("gives every job its own HOME under the job directory", async () => {
+    const a = cliEnv({
+      token: TOKEN,
+      workDir: "/work",
+      jobDir: "/work/jobs/a",
+    });
+    const b = cliEnv({
+      token: TOKEN,
+      workDir: "/work",
+      jobDir: "/work/jobs/b",
+    });
+    for (const key of [
+      "HOME",
+      "TMPDIR",
+      "XDG_DATA_HOME",
+      "XDG_CACHE_HOME",
+      "XDG_CONFIG_HOME",
+    ]) {
+      assert.ok(
+        a[key].startsWith(path.join("/work/jobs/a/cli") + path.sep),
+        key,
+      );
+      assert.notEqual(a[key], b[key]);
+    }
+  });
+});
+
+describe("M2: the CLI runs under another uid", () => {
+  it("spawns with the configured uid and gid, and the worker passes it", async () => {
+    let seen;
+    const spawn = (_cmd, _args, options) => {
+      seen = options;
+      return fakeChild();
+    };
+    await runCli({
+      args: ["x"],
+      cwd: tmpdir(),
+      env: {},
+      spawn,
+      cliPath: "x",
+      user: { uid: 10001, gid: 10001 },
+    });
+    assert.equal(seen.uid, 10001);
+    assert.equal(seen.gid, 10001);
+    assert.equal(seen.shell, false);
+    await runCli({ args: ["x"], cwd: tmpdir(), env: {}, spawn, cliPath: "x" });
+    assert.equal(
+      "uid" in seen,
+      false,
+      "no uid change when the worker is not root",
+    );
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    w.ctx.cliUser = { uid: 10001, gid: 10001 };
+    const id = await seedInstallation(env);
+    await deployOnce(env, w, id, { sha: SHA1 });
+    assert.deepEqual(env.cli.calls[0].user, { uid: 10001, gid: 10001 });
+    assert.equal(
+      await jobsDirEmpty(env),
+      true,
+      "the job dir is removed even with the uid switch",
+    );
+  });
+  it("self-check proves the isolation, and fails when the secrets are readable", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    w.ctx.runCli = async (o) => ({
+      code: 0,
+      category: null,
+      stdout: o.args[0] === "--version" ? `${CLI_VERSION}\n` : "x",
+    });
+    w.ctx.isolationProbe = async () => "ok";
+    let lines = [];
+    let result = await selfCheck(w.ctx, { print: (l) => lines.push(l) });
+    assert.ok(lines.includes("ok cli-isolation"));
+    assert.equal(result.ok, true);
+    w.ctx.isolationProbe = async () => "fail";
+    lines = [];
+    result = await selfCheck(w.ctx, { print: (l) => lines.push(l) });
+    assert.ok(lines.includes("fail cli-isolation"));
+    assert.equal(result.ok, false);
+    assert.equal(await isolationProbe({ cliUser: null }, "/x"), "skip");
+  });
+  it("the container definition drops privileges as designed", async () => {
+    const compose = await readFile("compose.production.yaml", "utf8");
+    const docker = await readFile("Dockerfile", "utf8");
+    const worker = compose.slice(compose.indexOf("  worker:"));
+    assert.match(worker, /user: "0:0"/);
+    assert.match(worker, /cap_drop: \[ALL\]/);
+    assert.match(worker, /cap_add: \[SETUID, SETGID, KILL\]/);
+    assert.match(worker, /no-new-privileges:true/);
+    assert.match(worker, /read_only: true/);
+    assert.match(worker, /core: 0/);
+    assert.match(worker, /mem_limit: 512m/);
+    for (const key of [
+      "BACKUP_KEY",
+      "ECOM_SERVICE_KEY",
+      "STORE_MONGODB_URI",
+      "POS_GITHUB_SOURCE_TOKEN",
+    ])
+      assert.match(worker, new RegExp(`${key}: ""`));
+    assert.doesNotMatch(
+      worker,
+      /AUTH_SECRET: [^w]/,
+      "the real AUTH_SECRET is replaced by a placeholder",
+    );
+    assert.match(docker, /--uid 10001/);
+    assert.match(docker, /chown root:root \/work/);
+    assert.doesNotMatch(docker, /chown node:node \/work/);
+  });
+});
+
+describe("M3: a failed cache store does not stop deploys", () => {
+  for (const [name, setup] of [
+    [
+      "S3 PUT denied (403)",
+      (env) =>
+        env.s3fake.fail("put", {
+          status: 403,
+          code: "AccessDenied",
+          times: -1,
+        }),
+    ],
+    [
+      "S3 PUT 5xx",
+      (env) =>
+        env.s3fake.fail("put", {
+          status: 500,
+          code: "InternalError",
+          times: -1,
+        }),
+    ],
+    [
+      "S3 PUT refused with 412 (contested)",
+      (env) =>
+        env.s3fake.fail("put", {
+          status: 412,
+          code: "PreconditionFailed",
+          times: -1,
+        }),
+    ],
+  ])
+    it(`deploys from the local copy when ${name}, and a Redeploy reuses it`, async () => {
+      const env = await makeEnv();
+      const w = await makeWorker(env);
+      const id = await seedInstallation(env);
+      setup(env);
+      const first = await deployOnce(env, w, id, { sha: SHA1 });
+      assert.equal(first.current, null, JSON.stringify(first.current?.error));
+      assert.equal(first.last.sha, SHA1);
+      assert.equal(first.last.build.source, "artifact");
+      assert.equal(first.last.build.objectKey, null);
+      assert.ok(env.logs.some((l) => l.event === "build-not-cached"));
+      assert.equal(
+        env.gh.state.artifacts.size,
+        1,
+        "the artifact is kept until the sweep",
+      );
+      const second = await deployOnce(env, w, id, {
+        kind: "redeploy",
+        sha: SHA1,
+      });
+      assert.equal(second.current, null);
+      assert.equal(env.gh.state.dispatches.length, 1, "no rebuild");
+      await assertClean(env, id);
+    });
+  it("falls back to the kept GitHub artifact when the local copy is gone", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    env.s3fake.fail("put", { status: 403, code: "AccessDenied", times: -1 });
+    await deployOnce(env, w, id, { sha: SHA1 });
+    await rm(path.join(env.workDir, "builds"), {
+      recursive: true,
+      force: true,
+    });
+    const second = await deployOnce(env, w, id, {
+      kind: "redeploy",
+      sha: SHA1,
+    });
+    assert.equal(second.current, null);
+    assert.equal(env.gh.state.dispatches.length, 1);
+  });
+});
+
+describe("L4: disk errors are not integrity failures; S3 downloads retry", () => {
+  it("a work-disk error fails the job without quarantining the cache entry", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    await deployOnce(env, w, id, { sha: SHA1 });
+    await rm(path.join(env.workDir, "builds"), {
+      recursive: true,
+      force: true,
+    });
+    const original = env.s3.getToFile;
+    env.s3.getToFile = async () => {
+      throw Object.assign(new Error("disk"), { s3Code: "WorkDisk" });
+    };
+    const second = await deployOnce(env, w, id, {
+      kind: "redeploy",
+      sha: SHA1,
+    });
+    assert.equal(second.current.error.code, "work-disk-error");
+    assert.equal(
+      env.s3fake.liveKeys().filter((k) => k.endsWith(".json")).length,
+      1,
+      "the manifest was not quarantined",
+    );
+    assert.equal(
+      env.gh.state.dispatches.length,
+      1,
+      "no rebuild for a disk problem",
+    );
+    env.s3.getToFile = original;
+  });
+  it("retries transient download errors", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    await deployOnce(env, w, id, { sha: SHA1 });
+    await rm(path.join(env.workDir, "builds"), {
+      recursive: true,
+      force: true,
+    });
+    const original = env.s3.getToFile.bind(env.s3);
+    let failures = 2;
+    env.s3.getToFile = async (...args) => {
+      if (failures-- > 0)
+        throw Object.assign(new Error("net"), {
+          s3Code: "Network",
+          status: 503,
+        });
+      return original(...args);
+    };
+    const second = await deployOnce(env, w, id, {
+      kind: "redeploy",
+      sha: SHA1,
+    });
+    assert.equal(second.current, null);
+    assert.equal(second.last.build.source, "cache");
+  });
+});
+
+describe("M4: errors after promotion never hide a live deployment", () => {
+  it("an alias timeout with the new deployment already serving ends as unhealthy with last/previous correct", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env, { t: { aliasMs: -1 } });
+    const id = await seedInstallation(env);
+    env.vercel.promote = async (pid, did) => {
+      env.vercel.state.production = did;
+      env.vercel.state.lastAlias = {
+        toDeploymentId: did,
+        jobStatus: "pending",
+        type: "promote",
+      };
+      return { status: 201 };
+    };
+    const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+    assert.equal(deploy.current.status, "unhealthy");
+    assert.equal(deploy.current.error.code, "alias-timeout");
+    assert.equal(
+      deploy.last.vercelDeploymentId,
+      "dpl_1",
+      "what is live is recorded",
+    );
+    assert.equal(deploy.previous.status, "pre-admin");
+    assert.equal(deploy.cutoverAt, null);
+  });
+  it("a provider error while checking production after a failed health check", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    env.health.bad.add("dpl_1");
+    let armed = false;
+    const get = env.health.get;
+    w.ctx.healthGet = async (host, p) => {
+      const res = await get(host, p);
+      if (res.status !== 200 && env.vercel.state.production === "dpl_1")
+        armed = true;
+      return res;
+    };
+    const project = env.vercel.project;
+    env.vercel.project = async (...args) => {
+      if (armed) {
+        armed = false;
+        throw new ProviderError("vercel", "network", { retryable: true });
+      }
+      return project(...args);
+    };
+    const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+    assert.equal(deploy.current.status, "unhealthy");
+    assert.equal(deploy.last.vercelDeploymentId, "dpl_1");
+    assert.equal(env.vercel.state.production, "dpl_1");
+  });
+  it("a finalize failure after a healthy deploy still records the live deployment", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    let failOnce = true;
+    const original = w.ctx.client.startSession.bind(w.ctx.client);
+    w.ctx.client.startSession = (...args) => {
+      const session = original(...args);
+      const run = session.withTransaction.bind(session);
+      session.withTransaction = async (fn, opts) => {
+        if (failOnce) {
+          failOnce = false;
+          throw new Error("mongo blip");
+        }
+        return run(fn, opts);
+      };
+      return session;
+    };
+    try {
+      const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+      assert.equal(deploy.last.vercelDeploymentId, "dpl_1");
+      assert.equal(deploy.current, null, "recovered as a healthy live deploy");
+    } finally {
+      w.ctx.client.startSession = original;
+    }
+  });
+});
+
+describe("L1 and L2: fallback keeps last correct; baseline health is retried", () => {
+  it("after an automatic rollback through the Hobby fallback, last names the new deployment", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    await deployOnce(env, w, id, { sha: SHA1 });
+    await deployOnce(env, w, id, { sha: SHA2 });
+    const before = await deployOf(env, id);
+    env.vercel.state.rollbackError = new ProviderError("vercel", "rejected", {
+      status: 402,
+    });
+    env.health.bad.add("dpl_3");
+    const deploy = await deployOnce(env, w, id, { sha: "3".repeat(40) });
+    assert.equal(deploy.current.status, "rolled-back");
+    assert.notEqual(
+      deploy.last.vercelDeploymentId,
+      before.last.vercelDeploymentId,
+    );
+    assert.equal(deploy.last.vercelDeploymentId, env.vercel.state.production);
+    assert.equal(deploy.last.sha, SHA2);
+  });
+  it("one failed baseline probe does not stop the automatic rollback", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    env.health.bad.add("dpl_1");
+    const get = env.health.get;
+    let first = true;
+    w.ctx.healthGet = async (host, p) => {
+      if (first && p === "/api/health") {
+        first = false;
+        return { status: 503, headers: {}, text: "" };
+      }
+      return get(host, p);
+    };
+    const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+    assert.equal(
+      deploy.current.status,
+      "rolled-back",
+      "the baseline counted as healthy",
+    );
+  });
+});
+
+describe("rollback contracts (c) and (d)", () => {
+  async function twoDeploysForRollback(env, w, id) {
+    await deployOnce(env, w, id, { sha: SHA1 });
+    return deployOf(env, id);
+  }
+  it("(d) an instant rollback to a pre-admin baseline works", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    const before = await twoDeploysForRollback(env, w, id);
+    assert.equal(before.previous.status, "pre-admin");
+    assert.equal(before.previous.sha, "");
+    await enqueue(env, id, {
+      kind: "rollback",
+      sha: "",
+      vercelDeploymentId: before.previous.vercelDeploymentId,
+    });
+    await w.loop.drain();
+    const after = await deployOf(env, id);
+    assert.equal(after.current, null, JSON.stringify(after.current?.error));
+    assert.equal(after.last.vercelDeploymentId, "dpl_live");
+    assert.equal(after.last.status, "rolled-back-to");
+    assert.equal(env.vercel.state.production, "dpl_live");
+  });
+  it("(d) a refused rollback (402) to a pre-admin baseline fails with a clear code", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    const before = await twoDeploysForRollback(env, w, id);
+    env.vercel.state.rollbackError = new ProviderError("vercel", "rejected", {
+      status: 402,
+    });
+    await enqueue(env, id, {
+      kind: "rollback",
+      sha: "",
+      vercelDeploymentId: before.previous.vercelDeploymentId,
+    });
+    await w.loop.drain();
+    const after = await deployOf(env, id);
+    assert.equal(after.current.error.code, "rollback-baseline-no-fallback");
+    assert.equal(env.vercel.state.production, before.last.vercelDeploymentId);
+  });
+  it("(c) the switch into the vercel step is atomic with a cancel request", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    const before = await twoDeploysForRollback(env, w, id);
+    await deployOnce(env, w, id, { sha: SHA2 });
+    const now = await deployOf(env, id);
+    const original = w.ctx.coll.installations.updateOne.bind(
+      w.ctx.coll.installations,
+    );
+    let armed = true;
+    w.ctx.coll.installations.updateOne = async (filter, update, options) => {
+      if (armed && update?.$set?.["pos.deploy.current.step"] === "vercel") {
+        armed = false;
+        await original(
+          { _id: id, "pos.deploy.current.status": "running" },
+          { $set: { "pos.deploy.current.cancelRequested": true } },
+        );
+      }
+      return original(filter, update, options);
+    };
+    await enqueue(env, id, {
+      kind: "rollback",
+      sha: SHA1,
+      vercelDeploymentId: now.previous.vercelDeploymentId,
+    });
+    await w.loop.drain();
+    const after = await deployOf(env, id);
+    assert.equal(after.current.status, "cancelled");
+    assert.equal(
+      env.vercel.calledWith("rollback").length,
+      0,
+      "nothing was switched",
+    );
+    assert.ok(before);
+  });
+});
+
+describe("L5/L6/L7: work volume, retention alerts, restore host check", () => {
+  it("prunes build directories to a total size cap, oldest first", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const base = path.join(env.workDir, "builds");
+    for (const [name, age] of [
+      ["old", 300],
+      ["mid", 200],
+      ["new", 100],
+    ]) {
+      await mkdir(path.join(base, name), { recursive: true });
+      await writeFile(path.join(base, name, "output.tgz"), Buffer.alloc(1000));
+      const t = new Date(Date.now() - age * 1000);
+      await utimes(path.join(base, name), t, t);
+    }
+    const removed = await pruneBuilds(w.ctx, 3600000, 2500);
+    assert.equal(removed, 1);
+    assert.deepEqual((await readdir(base)).sort(), ["mid", "new"]);
+  });
+  it("a rejected artifact leaves no zip or tgz behind", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    env.gh.state.tweak.manifest = (m) => ({
+      ...m,
+      buildEnvSha256: "0".repeat(64),
+    });
+    await deployOnce(env, w, id, { sha: SHA1 });
+    const left = [];
+    const walk = async (dir) => {
+      for (const e of await readdir(dir, { withFileTypes: true })) {
+        if (e.isDirectory()) await walk(path.join(dir, e.name));
+        else left.push(e.name);
+      }
+    };
+    await walk(path.join(env.workDir, "builds"));
+    assert.deepEqual(left, []);
+  });
+  it("tells the owner and the heartbeat when a live build could not be kept", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const now = env.clock.t;
+    await seedInstallation(env, {
+      deploy: {
+        last: {
+          requestId: "r1",
+          sha: "4".repeat(40),
+          vercelDeploymentId: "dpl_4",
+          status: "succeeded",
+          build: {
+            buildKey: "4".repeat(64),
+            objectKey: `builds/${"4".repeat(40)}/${"4".repeat(64)}/00000000-0000-4000-8000-000000000004.tgz.enc`,
+            touchedAt: new Date(now - 8 * 86400000),
+            source: "fresh",
+          },
+        },
+      },
+    });
+    const result = await runRetention(w.ctx);
+    assert.equal(result.missing, 1);
+    assert.ok(
+      env.notices.some(
+        (n) => /retention/i.test(n.subject) && n.email === "owner@example.test",
+      ),
+    );
+    const row = await env.db
+      .collection("system_state")
+      .findOne({ _id: "pos-worker" });
+    assert.equal(row.retention.missing, 1);
+    assertNoSecrets(env.notices, SECRETS, "notices");
+  });
+  it("the restore script normalises case and trailing dots before the Atlas check", async () => {
+    const file = path.join(tmpdir(), "none.jsonl.gz");
+    for (const host of ["C.MONGODB.NET", "c.mongodb.net.", "C.MongoDB.Net."])
+      await assert.rejects(
+        () => restoreBackup({ uri: `mongodb://u:p@${host}/x`, db: "s", file }),
+        /Atlas/,
+        host,
+      );
+  });
+});
+
+describe("deploy root writable by the CLI's uid (1777 on the root and .vercel only)", () => {
+  it("prepares the root like a real job, and the self-check runs the CLI from one", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "root-"));
+    try {
+      const root = path.join(dir, "root");
+      await prepareDeployRoot(root, { orgId: "team_1", projectId: "prj_1" });
+      if (platform() !== "win32") {
+        assert.equal((await stat(root)).mode & 0o7777, 0o1777);
+        assert.equal(
+          (await stat(path.join(root, ".vercel"))).mode & 0o7777,
+          0o1777,
+        );
+        assert.notEqual(
+          (await stat(path.join(root, "apps"))).mode & 0o7777,
+          0o1777,
+        );
+      }
+      assert.ok(existsSync(path.join(root, "apps", "cafe")));
+      assert.ok(existsSync(path.join(root, ".vercel", "project.json")));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    const cwds = [];
+    w.ctx.runCli = async (o) => {
+      cwds.push({
+        cwd: o.cwd,
+        ok:
+          existsSync(path.join(o.cwd, ".vercel", "project.json")) &&
+          existsSync(path.join(o.cwd, "apps", "cafe")),
+      });
+      return { code: 0, category: null, stdout: `${CLI_VERSION}\n` };
+    };
+    await selfCheck(w.ctx, { installationId: id, print: () => undefined });
+    assert.ok(
+      cwds.length >= 2 && cwds.every((c) => c.ok),
+      JSON.stringify(cwds),
+    );
   });
 });

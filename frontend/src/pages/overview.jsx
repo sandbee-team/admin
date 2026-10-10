@@ -203,6 +203,7 @@ export function Overview({ user }) {
                             href="/pos-clients"
                             title={item.title}
                             text={item.text}
+                            urgent={item.urgent}
                           />
                         ))}
                       {can(user.role, "recovery") && (
@@ -268,6 +269,19 @@ export function Overview({ user }) {
 // POS fleet problems worth a look, from the counts in the overview.
 function posAttention(pos) {
   const items = [];
+  // No POS clients at all: nothing to report.
+  if (pos.total === 0) return items;
+  if (pos.unhealthy)
+    items.push({
+      urgent: true,
+      title: "POS site may be down",
+      text: `${pos.unhealthy} client${pos.unhealthy === 1 ? "" : "s"} failed the health check and could not be restored`,
+    });
+  if (pos.rolledBack)
+    items.push({
+      title: "POS deploys rolled back",
+      text: `${pos.rolledBack} client${pos.rolledBack === 1 ? "" : "s"} rolled back after a failed health check (site is fine)`,
+    });
   if (pos.failed)
     items.push({
       title: "POS deploys failed",
@@ -283,7 +297,9 @@ function posAttention(pos) {
       title: "POS clients locked",
       text: `${pos.locked} locked against admin deploys`,
     });
-  if (!pos.workerOnline && (pos.failed || pos.unverified || pos.locked))
+  // Independent of the other items. `total` (when the API sends it) hides this
+  // for a setup with no POS clients at all.
+  if (!pos.workerOnline)
     items.push({
       title: "POS deploy worker offline",
       text: "Deploys cannot run until the worker is back",
@@ -305,9 +321,9 @@ function Metric({ icon: Icon, label, value, detail, href }) {
     </Link>
   );
 }
-function Attention({ icon: Icon, href, title, text }) {
+function Attention({ icon: Icon, href, title, text, urgent }) {
   return (
-    <Link href={href}>
+    <Link href={href} className={urgent ? "attention-urgent" : undefined}>
       <span className="attention-icon">
         <Icon size={17} />
       </span>

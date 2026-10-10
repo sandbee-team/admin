@@ -8,11 +8,12 @@ import { MAX_ATTEMPTS, sha7 } from "../../shared/deploy.js";
 import {
   JobFail,
   LeaseLost,
+  Released,
   ensureLive,
   failMessage,
   withLease,
 } from "./lease.js";
-import { jobDir, rmDir } from "./fetch-build.js";
+import { rmJob } from "./fetch-build.js";
 import { touchVersionBuild } from "./retention.js";
 import { WORKER_ACTOR, loadTarget, productionOf } from "./verify.js";
 import {
@@ -56,6 +57,7 @@ export async function runRollback(ctx, claim) {
         token: jr.target.token,
         teamId: jr.target.teamId,
       });
+      jr.recoverLive = (error) => recoverRollbackLive(jr, error);
       await jr.check();
       if (!jr.isDone("preflight")) await preflight(jr);
       const deploy = jr.target.pos.deploy ?? {};
@@ -67,7 +69,26 @@ export async function runRollback(ctx, claim) {
           url: jr.job.url ?? previous?.url ?? "",
         };
       } else {
-        await jr.begin("vercel");
+        // The switch into the vercel step is atomic with a cancel request (the
+        // API refuses to cancel a claimed rollback; this closes the race).
+        const vi = jr.idx("vercel");
+        const entered = await jr.slot.set(
+          {
+            step: "vercel",
+            [`steps.${vi}.state`]: "running",
+            [`steps.${vi}.startedAt`]: new Date(ctx.now()),
+            [`steps.${vi}.endedAt`]: null,
+            [`steps.${vi}.note`]: "",
+          },
+          { when: { status: "running", cancelRequested: { $ne: true } } },
+        );
+        if (!entered) {
+          await jr.reload();
+          throw new JobFail("cancelled", "Cancelled.", {
+            status: "cancelled",
+          });
+        }
+        await jr.reload();
         // Already switched by an earlier owner? Then only the alias is left.
         const project = await jr.vercel.project(jr.target.projectId, {
           signal,
@@ -105,10 +126,37 @@ export async function runRollback(ctx, claim) {
           "unhealthy",
           "The rolled-back version is not healthy.",
         );
-      await rmDir(jobDir(ctx, jr.rid));
+      await rmJob(ctx, jr.rid);
     },
     (error) => failJob(ctx, claim, run, error),
   );
+}
+// After production was switched, an error must not leave `last` stale.
+async function recoverRollbackLive(jr, error) {
+  const id = jr.job.vercelDeploymentId;
+  if (
+    !id ||
+    !jr.isDone("vercel") ||
+    !["health", "finalize"].includes(jr.job.step) ||
+    error instanceof LeaseLost ||
+    error instanceof Released
+  )
+    return false;
+  let project;
+  try {
+    project = await jr.vercel.project(jr.target.projectId);
+  } catch {
+    return false;
+  }
+  if (productionOf(project) !== id) return false;
+  const healthy = jr.isDone("health");
+  await finalizeRollback(jr, {
+    live: { id, url: jr.job.url ?? "" },
+    previous: jr.target.pos.deploy?.previous ?? null,
+    healthy,
+    res: { phase: "health" },
+  });
+  return healthy ? "ok" : "unhealthy";
 }
 async function finalizeRollback(jr, { live, previous, healthy, res }) {
   const { ctx, slot, job } = jr;

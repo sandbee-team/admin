@@ -13,6 +13,7 @@ export function usePoll(
       loading: true,
       error: "",
       status: 0,
+      updatedAt: 0,
     }),
     latest = useRef(0),
     timer = useRef(0),
@@ -25,10 +26,16 @@ export function usePoll(
     const abort = new AbortController();
     data.current = null;
     if (!path) {
-      setState({ data: null, loading: false, error: "", status: 0 });
+      setState({
+        data: null,
+        loading: false,
+        error: "",
+        status: 0,
+        updatedAt: 0,
+      });
       return;
     }
-    setState({ data: null, loading: true, error: "", status: 0 });
+    setState({ data: null, loading: true, error: "", status: 0, updatedAt: 0 });
     const schedule = () => {
       clearTimeout(timer.current);
       if (stopped) return;
@@ -45,7 +52,13 @@ export function usePoll(
         const next = await api(path, { signal: abort.signal });
         if (!stopped && mine === latest.current) {
           data.current = next;
-          setState({ data: next, loading: false, error: "", status: 0 });
+          setState({
+            data: next,
+            loading: false,
+            error: "",
+            status: 0,
+            updatedAt: Date.now(),
+          });
         }
       } catch (error) {
         if (!stopped && !abort.signal.aborted && mine === latest.current)
@@ -54,6 +67,7 @@ export function usePoll(
             loading: false,
             error: error.message,
             status: error.status ?? 0,
+            updatedAt: old.updatedAt,
           }));
       }
       schedule();
@@ -73,5 +87,6 @@ export function usePoll(
   }, [path, activeMs, idleMs]);
   // Re-reads now (after an action) and resumes the normal cadence.
   const refresh = useCallback(() => tick.current(), []);
-  return { ...state, refresh };
+  // `stale`: a later poll failed, so what is shown is older than it looks.
+  return { ...state, stale: Boolean(state.error && state.data), refresh };
 }

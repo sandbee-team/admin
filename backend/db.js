@@ -1,4 +1,5 @@
 import { MongoClient } from "mongodb";
+import { audit } from "./lib/audit.js";
 export async function connect(c) {
   const client = new MongoClient(c.MONGODB_URI, {
     maxPoolSize: 20,
@@ -15,11 +16,35 @@ export async function connect(c) {
         "MongoDB replica set required for atomic audits. Use the provided Compose setup or Atlas.",
       );
     await indexes(db);
+    await relockLegacyUnlocks(db);
     return { db, client };
   } catch (error) {
     await client.close();
     throw error;
   }
+}
+// One-time, idempotent: before Stage 2 any credentials role could save
+// deployLock:false through the config form. Only the owner-only unlock route
+// sets `pos.unlockedAt`, so an unlocked block without it is relocked once.
+export async function relockLegacyUnlocks(db) {
+  const now = new Date();
+  const done = await db
+    .collection("installations")
+    .updateMany(
+      { "pos.deployLock": false, "pos.unlockedAt": { $exists: false } },
+      { $set: { "pos.deployLock": true, "pos.relockedAt": now } },
+    );
+  if (done.modifiedCount > 0)
+    await audit(
+      db,
+      undefined,
+      undefined,
+      "pos.relocked",
+      "system",
+      "pos-migration",
+      `${done.modifiedCount} installations`,
+    );
+  return done.modifiedCount;
 }
 export async function indexes(db) {
   for (const name of [

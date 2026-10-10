@@ -53,6 +53,7 @@ export function createHeartbeat(ctx) {
           builderConfigured: Boolean(ctx.github?.configured().builder),
           builder: {
             sha: builder.sha,
+            protocol: builder.descriptor?.protocol ?? 0,
             nodeVersion: builder.descriptor?.nodeVersion ?? "",
             cliVersion: builder.descriptor?.cliVersion ?? "",
             ok: builder.ok,

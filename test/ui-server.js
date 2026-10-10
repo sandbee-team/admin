@@ -146,7 +146,23 @@ await db.collection("connections").insertOne({
 // Owners with a known authenticator key (the spec derives codes from it), one
 // per test, because a TOTP step can only be used once per account.
 const DEPLOY_KEY = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
-for (const name of ["a", "b", "c", "d", "e", "f", "g", "h"]) {
+for (const name of [
+  "a",
+  "b",
+  "c",
+  "d",
+  "e",
+  "f",
+  "g",
+  "h",
+  "i",
+  "j",
+  "k",
+  "l",
+  "m",
+  "n",
+  "o",
+]) {
   const _id = randomUUID();
   await db.collection("staff").insertOne({
     _id,
@@ -224,6 +240,7 @@ function job({
   step = "build",
   error = null,
   stalled = false,
+  claimed = false,
   requestedAt = new Date(),
   runUrl = null,
   requestId = randomUUID(),
@@ -265,7 +282,7 @@ function job({
       note: i === at && !bad ? (NOTES[name] ?? "") : "",
     })),
     lease: {
-      owner: status === "queued" ? null : "w1",
+      owner: status === "queued" && !claimed ? null : "w1",
       until: stalled ? ago(120000) : new Date(Date.now() + 60000),
       fence: 1,
     },
@@ -410,6 +427,32 @@ const SCENARIOS = {
           code: "backup-too-large",
           message: "Over the limit.",
         },
+      }),
+  },
+  preadmin: {
+    n: 16,
+    slug: "ui-preadmin",
+    customer: "Preadmin Cafe",
+    ...READY,
+    previous: () =>
+      version(8, {
+        status: "pre-admin",
+        sha: "",
+        branch: "",
+        commit: null,
+        build: null,
+      }),
+  },
+  unhealthy: {
+    n: 17,
+    slug: "ui-unhealthy",
+    customer: "Unhealthy Cafe",
+    ...READY,
+    current: () =>
+      job({
+        status: "unhealthy",
+        step: "health",
+        error: { step: "health", code: "health-failed", message: "x" },
       }),
   },
   gone: {
@@ -568,6 +611,7 @@ const buildCache = {
 };
 // The worker heartbeat (online unless a spec switches it off).
 let workerOnline = true;
+let builderMode = "ok";
 const beat = async () => {
   if (!workerOnline) return;
   await db.collection("system_state").updateOne(
@@ -578,14 +622,18 @@ const beat = async () => {
         workerId: "w1",
         version: "1.0.0",
         cliVersion: "39.1.0",
-        builderConfigured: true,
-        builder: {
-          sha: SHAS.c,
-          nodeVersion: "22.11.0",
-          cliVersion: "39.1.0",
-          ok: true,
-          checkedAt: new Date(),
-        },
+        builderConfigured: builderMode !== "noconf",
+        builder:
+          builderMode === "missing"
+            ? null
+            : {
+                sha: SHAS.c,
+                nodeVersion: "22.11.0",
+                cliVersion: "39.1.0",
+                ok: builderMode !== "notok",
+                checkedAt:
+                  builderMode === "stale" ? ago(2 * 3600000) : new Date(),
+              },
         lastBuildMs: 150000,
       },
     },
@@ -609,7 +657,15 @@ const app = createApp({
       JSON.stringify({ code }),
     ),
 });
-const server = app.listen(8108, "127.0.0.1");
+// `failing` makes matching API reads answer 503 (stale-banner specs).
+let failing = "";
+const server = createServer((req, res) => {
+  if (failing && req.url.includes(failing)) {
+    res.writeHead(503, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ error: "Service unavailable." }));
+  }
+  app(req, res);
+}).listen(8108, "127.0.0.1");
 // recovery.spec.js: stands in for the verify-key CLI (same task) on a loopback
 // control port, since the specs cannot reach the in-memory database.
 await verifyVaultKey(db, c.VAULT_KEY);
@@ -625,8 +681,24 @@ const control = createServer(async (req, res) => {
         ? Object.keys(SCENARIOS)
         : [scenario])
         await seedPos(name);
+    } else if (url.pathname === "/pos/freeze") {
+      await db.collection("system_state").updateOne(
+        { _id: "pos-deploy-freeze" },
+        {
+          $set: {
+            on: query("on") === "1",
+            reason: query("reason") ?? "",
+            by: { id: "u", name: "deploy owner" },
+            at: new Date(),
+          },
+        },
+        { upsert: true },
+      );
+    } else if (url.pathname === "/pos/fail") {
+      failing = query("match") ?? "";
     } else if (url.pathname === "/pos/worker") {
       workerOnline = query("state") !== "offline";
+      builderMode = query("builder") ?? "ok";
       if (workerOnline) await beat();
       else
         await db
@@ -649,7 +721,8 @@ const control = createServer(async (req, res) => {
         status === "clear"
           ? null
           : job({
-              kind: old?.kind,
+              kind: query("kind") ?? old?.kind,
+              claimed: query("claimed") === "1",
               branch: old?.branch,
               target: old?.sha,
               requestId: old?.requestId,

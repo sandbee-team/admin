@@ -7,7 +7,7 @@ import { ProviderError } from "../lib/provider-http.js";
 import { canonicalEnvValue, nextPublicOf } from "../lib/build-inputs.js";
 import { probeHealth, probeLogin } from "../lib/pos-health.js";
 import { NEXT_PUBLIC_KEYS } from "../../shared/deploy.js";
-import { isKnownCode } from "../../shared/deploy-errors.js";
+import { isKnownCode, providerFlag } from "../../shared/deploy-errors.js";
 import { audit } from "../lib/audit.js";
 import { transaction } from "../db.js";
 import { JobFail, LeaseLost, withLease } from "./lease.js";
@@ -65,8 +65,12 @@ export async function loadTarget(
     tenantId: pos.tenantId ?? "",
   };
 }
-export const providerCode = (error) =>
-  error instanceof ProviderError ? error.code : "failed";
+// A fixed code from shared/deploy-errors.js (never provider text).
+export const providerCode = (error) => {
+  const code =
+    error instanceof ProviderError ? providerFlag(error.code) : "failed";
+  return isKnownCode(code) ? code : "failed";
+};
 // Vercel user, project settings and env drift. Flags only: "ok" or a fixed
 // code; `names` lists KEY NAMES (never values) for the failure message.
 export async function inspectProject(vercel, target, { signal } = {}) {
@@ -256,7 +260,7 @@ export async function failTask(ctx, claim, error) {
     error instanceof JobFail
       ? error.code
       : error instanceof ProviderError
-        ? error.code
+        ? providerCode(error)
         : "internal";
   const message =
     error instanceof JobFail

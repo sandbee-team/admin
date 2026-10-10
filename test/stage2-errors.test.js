@@ -6,6 +6,7 @@ import {
   ERROR_CODES,
   describeCode,
   isKnownCode,
+  providerFlag,
 } from "../shared/deploy-errors.js";
 import { DEPLOY_STEPS } from "../shared/deploy.js";
 import { JobFail } from "../backend/worker/lease.js";
@@ -117,5 +118,86 @@ describe("error code table", () => {
     assert.throws(() => new JobFail("made up code", "x"));
     assert.throws(() => new AcceptError("not-in-table"));
     assert.doesNotThrow(() => new JobFail("frozen", "x"));
+  });
+});
+
+describe("provider, verify and task codes (API review L3)", () => {
+  const libs = [
+    "backend/lib/provider-http.js",
+    "backend/lib/github.js",
+    "backend/lib/vercel.js",
+    "backend/lib/cloudflare.js",
+  ].map((f) => readFileSync(f, "utf8"));
+  const providerCodes = () => {
+    const found = new Set();
+    for (const text of libs) {
+      for (const m of text.matchAll(
+        /ProviderError\(\s*"[a-z]+",\s*"([a-z-]+)"/g,
+      ))
+        found.add(m[1]);
+      for (const m of text.matchAll(/return "([a-z-]+)";/g)) found.add(m[1]);
+    }
+    for (const c of [
+      "timeout",
+      "network",
+      "aborted",
+      "bad-response",
+      "too-large",
+    ])
+      found.add(c);
+    found.delete("redirect-x");
+    return found;
+  };
+  it("every provider error code exists bare, prefixed per provider and as project-/env- flags", () => {
+    const codes = providerCodes();
+    assert.ok(codes.size >= 15, [...codes].join());
+    for (const code of codes) {
+      const bare = providerFlag(code);
+      assert.ok(isKnownCode(bare), `bare ${bare}`);
+      for (const p of ["github", "vercel", "cloudflare"])
+        assert.ok(isKnownCode(`${p}-${code}`), `${p}-${code}`);
+      assert.ok(isKnownCode(`project-${bare}`), `project-${bare}`);
+      assert.ok(isKnownCode(`env-${bare}`), `env-${bare}`);
+    }
+    assert.equal(providerFlag("too-large"), "response-too-large");
+    assert.notEqual(
+      ERROR_CODES["too-large"].title,
+      ERROR_CODES["response-too-large"].title,
+      "the two meanings are not mixed up",
+    );
+  });
+  it("every flag string verify.js can store is in the table", () => {
+    const text = readFileSync(`${dir}/verify.js`, "utf8");
+    const flags = new Set();
+    for (const m of text.matchAll(
+      /(?:out|flags)\.[a-z]+ = (?:[a-z]+ \? )?"([a-z-]+)"/g,
+    ))
+      flags.add(m[1]);
+    for (const m of text.matchAll(/: "([a-z]+(?:-[a-z]+)*)"/g)) flags.add(m[1]);
+    for (const m of text.matchAll(/\? "([a-z]+(?:-[a-z]+)*)"/g))
+      flags.add(m[1]);
+    for (const f of ["ok", "failed", "done"]) flags.delete(f);
+    const missing = [...flags].filter(
+      (c) => !isKnownCode(c) && !NOT_CODES.has(c) && !/^[a-z]+$/.test(c),
+    );
+    assert.deepEqual(missing, []);
+    for (const c of [
+      "settings",
+      "missing",
+      "drift",
+      "unhealthy",
+      "login-failed",
+      "not-set",
+      "not-atlas",
+      "auth-failed",
+      "unreachable",
+      "invalid",
+      "invalid",
+      "not-picked-up",
+      "work-disk-error",
+      "artifact-filepathmap",
+      "rollback-baseline-no-fallback",
+    ])
+      assert.ok(isKnownCode(c), c);
   });
 });

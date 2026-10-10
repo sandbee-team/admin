@@ -7,7 +7,6 @@ import {
   ACTIVE_STATES,
   ACTIVE_TASK_STATES,
   MAX_ATTEMPTS,
-  QUEUED_EXPIRY_MS,
 } from "../../shared/deploy.js";
 import { knownCode } from "../../shared/deploy-errors.js";
 
@@ -146,11 +145,69 @@ const claimed = (ctx, spec, doc, takeover) => ({
   takeover,
 });
 
+// Queue expiry (contract with the API): a QUEUED job never expires while the
+// worker heartbeat is fresh; it expires only when the heartbeat has been stale
+// for 10 minutes or more.
+export const QUEUE_STALE_MS = 10 * 60 * 1000;
+export async function heartbeatAgeMs(ctx) {
+  const row = await ctx.coll.state.findOne(
+    { _id: "pos-worker" },
+    { projection: { at: 1 } },
+  );
+  const at = row?.at ? new Date(row.at).getTime() : 0;
+  return ctx.now() - at;
+}
+// A missing row means "never ran": not stale (nothing was ever promised).
+export async function queueStale(ctx) {
+  const row = await ctx.coll.state.findOne(
+    { _id: "pos-worker" },
+    { projection: { at: 1 } },
+  );
+  return (
+    Boolean(row?.at) && ctx.now() - new Date(row.at).getTime() >= QUEUE_STALE_MS
+  );
+}
+// Boot sweep, run BEFORE the first heartbeat of this process: queued deploys
+// and tasks that waited through a long outage are expired (code not-picked-up).
+export async function expireStaleQueued(ctx) {
+  if (!(await queueStale(ctx))) return 0;
+  const now = new Date(ctx.now());
+  const { installations } = ctx.coll;
+  const jobs = await installations.updateMany(
+    { "pos.deploy.current.status": "queued" },
+    {
+      $set: {
+        "pos.deploy.current.status": "expired",
+        "pos.deploy.current.finishedAt": now,
+        "pos.deploy.current.error": {
+          step: "queued",
+          code: "not-picked-up",
+          message: "The worker was offline too long to pick this deploy up.",
+        },
+      },
+    },
+  );
+  const tasks = await installations.updateMany(
+    { "pos.task.status": "queued" },
+    {
+      $set: {
+        "pos.task.status": "expired",
+        "pos.task.finishedAt": now,
+        "pos.task.error": {
+          code: "not-picked-up",
+          message: "The worker was offline too long to pick this task up.",
+        },
+      },
+    },
+  );
+  return jobs.modifiedCount + tasks.modifiedCount;
+}
 // ---- deploy jobs: installations.pos.deploy.current --------------------------
 // -> {slot, doc (the claimed job), installationId, takeover} | null.
 export async function claimDeploy(ctx, { frozen = false } = {}) {
   const { installations } = ctx.coll;
   const now = new Date(ctx.now());
+  const stale = await queueStale(ctx);
   const rows = await installations
     .find(
       { "pos.deploy.current.status": { $in: ACTIVE_STATES } },
@@ -166,10 +223,7 @@ export async function claimDeploy(ctx, { frozen = false } = {}) {
       _id: row._id,
       "pos.deploy.current.requestId": job.requestId,
     };
-    if (
-      job.status === "queued" &&
-      now.getTime() - new Date(job.requestedAt).getTime() > QUEUED_EXPIRY_MS
-    ) {
+    if (job.status === "queued" && stale) {
       await installations.updateOne(
         { ...base, "pos.deploy.current.status": "queued" },
         {
@@ -178,8 +232,9 @@ export async function claimDeploy(ctx, { frozen = false } = {}) {
             "pos.deploy.current.finishedAt": now,
             "pos.deploy.current.error": {
               step: "queued",
-              code: "expired",
-              message: "The worker did not pick this deploy up in time.",
+              code: "not-picked-up",
+              message:
+                "The worker was offline too long to pick this deploy up.",
             },
           },
         },
@@ -258,6 +313,7 @@ export async function claimDeploy(ctx, { frozen = false } = {}) {
 export async function claimTask(ctx) {
   const { installations } = ctx.coll;
   const now = new Date(ctx.now());
+  const stale = await queueStale(ctx);
   const rows = await installations
     .find(
       { "pos.task.status": { $in: ACTIVE_TASK_STATES } },
@@ -270,10 +326,7 @@ export async function claimTask(ctx) {
     const task = row.pos?.task;
     if (!task?.id) continue;
     const base = { _id: row._id, "pos.task.id": task.id };
-    if (
-      task.status === "queued" &&
-      now.getTime() - new Date(task.requestedAt).getTime() > QUEUED_EXPIRY_MS
-    ) {
+    if (task.status === "queued" && stale) {
       await installations.updateOne(
         { ...base, "pos.task.status": "queued" },
         {
@@ -281,8 +334,8 @@ export async function claimTask(ctx) {
             "pos.task.status": "expired",
             "pos.task.finishedAt": now,
             "pos.task.error": {
-              code: "expired",
-              message: "The worker did not pick this task up in time.",
+              code: "not-picked-up",
+              message: "The worker was offline too long to pick this task up.",
             },
           },
         },

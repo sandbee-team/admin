@@ -1,6 +1,6 @@
 import { Badge, Button } from "../ui";
 import { dateTime } from "../../lib/api";
-import { sha7, when } from "./format";
+import { PRE_ADMIN, sha7, when } from "./format";
 const BUILT = {
   cache: "Reused a cached build",
   fresh: "Built fresh",
@@ -28,12 +28,18 @@ export function VersionCard({ title, version, empty, action }) {
       </div>
       {version ? (
         <>
-          <p className="version-commit">
-            <code>
-              {version.branch || "unknown branch"}@{sha7(version.sha)}
-            </code>
-          </p>
-          <p>{version.commit?.headline || "No commit message recorded."}</p>
+          {version.sha ? (
+            <>
+              <p className="version-commit">
+                <code>
+                  {version.branch || "unknown branch"}@{sha7(version.sha)}
+                </code>
+              </p>
+              <p>{version.commit?.headline || "No commit message recorded."}</p>
+            </>
+          ) : (
+            <p className="version-commit">{PRE_ADMIN}</p>
+          )}
           {version.commit?.authorName && (
             <p className="small subtle">
               {version.commit.authorName}

@@ -14,9 +14,11 @@ import { buildInputs, buildKeyOf } from "../backend/lib/build-inputs.js";
 import { createFakeGitHub, SRC, BLD, SHAS } from "./fakes/github.js";
 import { createFakeS3 } from "./fake-s3.js";
 import { storedCommit } from "../backend/lib/deploy-view.js";
+import { relockLegacyUnlocks } from "../backend/db.js";
 import {
   GATES,
   READINESS_IDS,
+  taskBlocks,
   buildRowId,
   jobBlocks,
   readinessOf,
@@ -39,7 +41,7 @@ const real = createGitHub({
   sourceRepo: SRC,
   sourceToken: SRC_TOKEN,
   builderRepo: BLD,
-  builderToken: BLD_TOKEN,
+  // No builder token: like production, where compose blanks it for the app.
   fetch: fake.fetch,
   sleep: async () => {},
 });
@@ -168,6 +170,7 @@ const heartbeat = (patch = {}) =>
         builderConfigured: true,
         builder: {
           sha: SHAS.c,
+          protocol: 1,
           nodeVersion: "22.11.0",
           cliVersion: "39.1.0",
           ok: true,
@@ -321,10 +324,39 @@ describe("readinessOf (pure)", () => {
       jobBlocks({ status: "queued", requestedAt: new Date(now) }, now),
       true,
     );
+    // Queue expiry (contract b): an old queued job is free only when the
+    // worker heartbeat has been stale for 10 minutes or more (or is missing).
+    const oldQueued = {
+      status: "queued",
+      requestedAt: new Date(now - 11 * 60000),
+    };
+    assert.equal(jobBlocks(oldQueued, now), true, "unknown heartbeat blocks");
+    assert.equal(jobBlocks(oldQueued, now, new Date(now - 1000)), true);
+    assert.equal(jobBlocks(oldQueued, now, new Date(now - 5 * 60000)), true);
+    assert.equal(jobBlocks(oldQueued, now, new Date(now - 11 * 60000)), false);
+    assert.equal(jobBlocks(oldQueued, now, null), false, "no heartbeat ever");
     assert.equal(
       jobBlocks(
+        { status: "queued", requestedAt: new Date(now - 60000) },
+        now,
+        new Date(now - 30 * 60000),
+      ),
+      true,
+      "a young queued job always blocks",
+    );
+    assert.equal(
+      taskBlocks(
         { status: "queued", requestedAt: new Date(now - 11 * 60000) },
         now,
+        new Date(now - 1000),
+      ),
+      true,
+    );
+    assert.equal(
+      taskBlocks(
+        { status: "queued", requestedAt: new Date(now - 11 * 60000) },
+        now,
+        null,
       ),
       false,
     );
@@ -715,13 +747,17 @@ describe("enqueue", () => {
       sha: SHAS.b,
       steps: [],
     });
+    // Contract (b): with a fresh heartbeat an old queued job still blocks.
     await setPos(id, {
       "pos.deploy.current": old({
         status: "queued",
         requestedAt: new Date(Date.now() - 11 * 60000),
       }),
     });
-    assert.equal((await post(id, "deploys", deployBody(slug))).status, 201);
+    assert.equal(
+      (await post(id, "deploys", deployBody(slug))).data.code,
+      "busy",
+    );
     await setPos(id, {
       "pos.deploy.current": old({
         status: "running",
@@ -851,10 +887,20 @@ describe("enqueue", () => {
     assert.equal((await audits(id, "pos.redeploy.requested")).length, 1);
     // Redeploy of the previous version.
     await setPos(id, { "pos.deploy.current": null });
+    assert.equal(
+      (
+        await post(id, "deploys", {
+          kind: "redeploy",
+          of: "previous",
+          confirm: true,
+        })
+      ).status,
+      400,
+    );
     const prev = await post(id, "deploys", {
       kind: "redeploy",
       of: "previous",
-      confirm: true,
+      confirm: (await doc(id)).pos.slug,
     });
     assert.equal(prev.status, 201);
     assert.equal((await doc(id)).pos.deploy.current.sha, SHA_PREV);
@@ -877,7 +923,28 @@ describe("enqueue", () => {
           confirm: true,
         })
       ).status,
+      400,
+      "redeploy of the previous version needs the typed slug",
+    );
+    const { slug } = await ctx.db
+      .collection("installations")
+      .findOne({ _id: id })
+      .then((d) => d.pos);
+    assert.equal(
+      (
+        await post(id, "deploys", {
+          kind: "redeploy",
+          of: "previous",
+          confirm: slug,
+        })
+      ).status,
       409,
+      "no previous version",
+    );
+    assert.equal(
+      (await post(id, "deploys", { kind: "redeploy", confirm: slug })).status,
+      400,
+      "the live redeploy confirms with true, not a slug",
     );
   });
   it("rollback only when a previous version exists; the job targets it", async () => {
@@ -1233,6 +1300,9 @@ describe("views are strict whitelists", () => {
     assert.deepEqual(Object.keys(res.data.pos).sort(), [
       "failed",
       "locked",
+      "rolledBack",
+      "total",
+      "unhealthy",
       "unverified",
       "workerOnline",
     ]);
@@ -1780,6 +1850,577 @@ describe("commit on the job and the build row", () => {
     assert.equal(JSON.stringify(row.commit).includes("@"), false);
     assertNoSecrets(row, SECRETS, "build row");
     await ctx.db.collection("system_state").deleteOne({ _id: row._id });
+  });
+});
+
+describe("API review fixes", () => {
+  const BLD_CALLS = () =>
+    fake.calls.filter((c) => c.path.startsWith(`/repos/${BLD}/`));
+  it("C1: with no builder token on the API, the heartbeat alone drives plan, prepare build and readiness", async () => {
+    const { id, slug } = await fresh();
+    assert.equal(real.configured().builder, false, "API has no builder token");
+    fake.calls.length = 0;
+    hits.add(sha(61));
+    fake.state.branches.push(
+      {
+        name: "c1-cached",
+        sha: sha(61),
+        message: "A",
+        date: "2026-10-06T10:00:00Z",
+      },
+      {
+        name: "c1-cold",
+        sha: sha(62),
+        message: "B",
+        date: "2026-10-06T11:00:00Z",
+      },
+    );
+    const state = await call(`/installations/${id}/pos/deploys`);
+    assert.equal(state.data.readiness.ready, true);
+    const builder = state.data.readiness.items.find((i) => i.id === "builder");
+    assert.equal(builder.state, "ok");
+    const plan = (b) =>
+      call(`/installations/${id}/pos/deploy-plan?branch=${b}`);
+    assert.equal((await plan("c1-cached")).data.cache.state, "cached");
+    assert.equal((await plan("c1-cold")).data.cache.state, "will-build");
+    const built = await post(id, "builds", { branch: "c1-cold", sha: sha(62) });
+    assert.equal(built.status, 201, JSON.stringify(built.data));
+    const queued = await post(
+      id,
+      "deploys",
+      deployBody(slug, { branch: "c1-cached", sha: sha(61) }),
+    );
+    assert.equal(queued.status, 201, JSON.stringify(queued.data));
+    const expected = buildKeyOf(
+      VAULT_KEY,
+      buildInputs({
+        pos: (await doc(id)).pos,
+        builderSha: SHAS.c,
+        builder: BUILDER,
+      }),
+    );
+    assert.equal((await doc(id)).pos.deploy.current.buildKey, expected);
+    assert.equal(BLD_CALLS().length, 0, "no builder repo call from the API");
+    await ctx.db.collection("system_state").deleteMany({ kind: "build" });
+  });
+  it("C1: a missing, failed, stale or token-less builder blocks with a clear reason", async () => {
+    const { id } = await fresh();
+    const item = async () =>
+      (
+        await call(`/installations/${id}/pos/deploys`)
+      ).data.readiness.items.find((i) => i.id === "builder");
+    const b = (extra) => ({
+      sha: SHAS.c,
+      protocol: 1,
+      nodeVersion: "22.11.0",
+      cliVersion: "39.1.0",
+      ok: true,
+      checkedAt: new Date(),
+      ...extra,
+    });
+    await heartbeat({ builderConfigured: false });
+    const got = await item();
+    assert.equal(got.state, "blocked");
+    assert.match(got.reason, /no builder token/);
+    await heartbeat({ builderConfigured: true, builder: b({ ok: false }) });
+    assert.match((await item()).reason, /failed/);
+    await heartbeat({
+      builder: b({ checkedAt: new Date(Date.now() - 40 * 60000) }),
+    });
+    assert.match((await item()).reason, /stale/);
+    // Plan: an unusable descriptor means the cache state is unavailable.
+    const plan = await call(`/installations/${id}/pos/deploy-plan?branch=main`);
+    assert.equal(plan.data.cache.state, "unavailable");
+    assert.equal(plan.data.buildKey8, "");
+    const bad = await post(id, "builds", { branch: "main", sha: SHAS.a });
+    assert.equal(bad.status, 409);
+    assert.equal(bad.data.code, "not-ready");
+  });
+  it("H1: a pre-admin previous (no sha) can still be rolled back to", async () => {
+    const { id, slug } = await fresh();
+    await setPos(id, {
+      "pos.deploy.last": version(1),
+      "pos.deploy.previous": {
+        ...version(2),
+        status: "pre-admin",
+        sha: "",
+        branch: "",
+        commit: null,
+        build: null,
+      },
+    });
+    const res = await post(id, "rollback", { confirm: slug });
+    assert.equal(res.status, 201, JSON.stringify(res.data));
+    const job = (await doc(id)).pos.deploy.current;
+    assert.equal(job.kind, "rollback");
+    assert.equal(job.vercelDeploymentId, "dpl_2");
+    assert.equal(job.sha, "");
+    assert.equal(job.commit, null);
+    assert.equal(res.data.current.sha, "");
+    assert.match(
+      (await audits(id, "pos.rollback.requested"))[0].detail,
+      /^pre-admin@- #/,
+    );
+    // The same version cannot be redeployed (no sha): the cache fallback is gone.
+    await setPos(id, { "pos.deploy.current": null });
+    assert.equal(
+      (
+        await post(id, "deploys", {
+          kind: "redeploy",
+          of: "previous",
+          confirm: slug,
+        })
+      ).status,
+      409,
+    );
+  });
+  it("M1: a claimed rollback cannot be cancelled; an unclaimed one and a deploy still can", async () => {
+    const { id, slug } = await fresh();
+    await setPos(id, {
+      "pos.deploy.last": version(1),
+      "pos.deploy.previous": version(2),
+    });
+    let res = await post(id, "rollback", { confirm: slug });
+    const rid = res.data.current.requestId;
+    const claimed = {
+      owner: "w1",
+      until: new Date(Date.now() + 30000),
+      fence: 1,
+    };
+    await setPos(id, {
+      "pos.deploy.current.status": "running",
+      "pos.deploy.current.step": "vercel",
+      "pos.deploy.current.lease": claimed,
+    });
+    res = await post(id, "deploys/cancel", { requestId: rid });
+    assert.equal(res.status, 409);
+    assert.equal(res.data.code, "not-cancellable");
+    assert.equal((await doc(id)).pos.deploy.current.status, "running");
+    // Not yet claimed: still cancellable.
+    await setPos(id, {
+      "pos.deploy.current.status": "queued",
+      "pos.deploy.current.step": "queued",
+      "pos.deploy.current.lease": { owner: null, until: null, fence: 0 },
+    });
+    assert.equal(
+      (await post(id, "deploys/cancel", { requestId: rid })).status,
+      200,
+    );
+    assert.equal((await doc(id)).pos.deploy.current.status, "cancelled");
+    // A claimed deploy before upload is unchanged: cancelling.
+    await setPos(id, { "pos.deploy.current": null });
+    const dep = await post(id, "deploys", deployBody(slug));
+    await setPos(id, {
+      "pos.deploy.current.status": "running",
+      "pos.deploy.current.step": "build",
+      "pos.deploy.current.lease": claimed,
+    });
+    res = await post(id, "deploys/cancel", {
+      requestId: dep.data.current.requestId,
+    });
+    assert.equal(res.data.current.status, "cancelling");
+  });
+  it("M2: an old queued task with a fresh heartbeat still blocks a new one", async () => {
+    const { id } = await fresh();
+    await setPos(id, {
+      "pos.task": {
+        id: randomUUID(),
+        kind: "verify",
+        status: "queued",
+        requestedAt: new Date(Date.now() - 20 * 60000),
+        lease: { owner: null, until: null, fence: 0 },
+      },
+    });
+    assert.equal((await post(id, "verify", {}, admin)).data.code, "busy");
+  });
+  it("M3: the boot migration relocks Stage 1 unlocked blocks once, audited, idempotently", async () => {
+    const legacy = (await fresh()).id;
+    await setPos(legacy, { "pos.deployLock": false }, { "pos.unlockedAt": "" });
+    const legit = (await fresh()).id;
+    await setPos(legit, {
+      "pos.deployLock": false,
+      "pos.unlockedAt": new Date(),
+    });
+    const locked = (await fresh({ ready: false })).id;
+    // Earlier tests left unlocked blocks without unlockedAt: counted too.
+    const before = await ctx.db.collection("installations").countDocuments({
+      "pos.deployLock": false,
+      "pos.unlockedAt": { $exists: false },
+    });
+    assert.ok(before >= 1);
+    const n = await relockLegacyUnlocks(ctx.db);
+    assert.equal(n, before);
+    assert.equal((await doc(legacy)).pos.deployLock, true);
+    assert.ok((await doc(legacy)).pos.relockedAt instanceof Date);
+    assert.equal(
+      (await doc(legit)).pos.deployLock,
+      false,
+      "owner unlocks are kept",
+    );
+    assert.equal((await doc(locked)).pos.deployLock, true);
+    const events = await ctx.db
+      .collection("audit_events")
+      .find({ action: "pos.relocked" })
+      .toArray();
+    assert.equal(events.length, 1);
+    assert.equal(events[0].detail, `${n} installations`);
+    assert.equal(events[0].actorId, "system");
+    assert.equal(await relockLegacyUnlocks(ctx.db), 0);
+    assert.equal(
+      await ctx.db
+        .collection("audit_events")
+        .countDocuments({ action: "pos.relocked" }),
+      1,
+    );
+  });
+  describe("M4 verify invalidation and busy tasks", () => {
+    const put = (id, config, session = admin) =>
+      doc(id).then((d) =>
+        call(`/installations/${id}/pos`, {
+          method: "PUT",
+          session,
+          body: { rev: d.pos.rev, config },
+        }),
+      );
+    it("config changes that verify checks drop pos.verify; unrelated ones keep it", async () => {
+      const { id, slug } = await fresh();
+      const res = await put(id, POS_CONFIG(slug));
+      assert.equal(res.status, 200, JSON.stringify(res.data));
+      assert.ok((await doc(id)).pos.verify, "identical config keeps verify");
+      const other = {
+        ...POS_CONFIG(slug),
+        posAdmin: { username: "someoneelse" },
+      };
+      assert.equal((await put(id, other)).status, 200);
+      assert.ok((await doc(id)).pos.verify, "posAdmin is not verified");
+      const base = POS_CONFIG(slug);
+      const changes = [
+        { host: "new.pos.example.com" },
+        { tenantId: "tenant_2" },
+        { rootDomain: "other.example.com" },
+        { vercel: { ...base.vercel, projectId: "prj_other" } },
+        { vercel: { ...base.vercel, orgId: "team_other" } },
+        {
+          cloudflare: {
+            ...base.cloudflare,
+            workerUrl: "https://w2.example.workers.dev",
+          },
+        },
+        { image: { ...base.image, publicBaseUrl: "https://img2.example.com" } },
+      ];
+      for (const change of changes) {
+        await setPos(id, { "pos.verify": OK_VERIFY() });
+        const done = await put(id, { ...base, ...change });
+        assert.equal(done.status, 200, JSON.stringify(done.data));
+        assert.equal(
+          (await doc(id)).pos.verify,
+          null,
+          JSON.stringify(Object.keys(change)),
+        );
+        assert.equal(done.data.pos.verify, null);
+        await put(id, base);
+      }
+    });
+    it("replacing or removing vercel.token, mongo.uri or cloudflare.token drops pos.verify; other secrets keep it", async () => {
+      const { id } = await fresh();
+      const secret = async (field, value, session = admin) =>
+        call(`/installations/${id}/pos/secret`, {
+          method: "PUT",
+          session,
+          body: { rev: (await doc(id)).pos.rev, field, value },
+        });
+      assert.equal(
+        (await secret("posAdmin.password", "Str0ng!password")).status,
+        200,
+      );
+      assert.ok((await doc(id)).pos.verify);
+      for (const [field, value] of [
+        ["vercel.token", "another-vercel-token-value-1"],
+        ["mongo.uri", "mongodb+srv://u:p@cluster.mongodb.net/db"],
+        ["cloudflare.token", "another-cloudflare-token-value"],
+      ]) {
+        await setPos(id, { "pos.verify": OK_VERIFY() });
+        const done = await secret(field, value);
+        assert.equal(done.status, 200, JSON.stringify(done.data));
+        assert.equal((await doc(id)).pos.verify, null, field);
+      }
+      await setPos(id, { "pos.verify": OK_VERIFY() });
+      await stepUp(owner);
+      const removed = await call(`/installations/${id}/pos/secret`, {
+        method: "DELETE",
+        body: { rev: (await doc(id)).pos.rev, field: "vercel.token" },
+      });
+      assert.equal(removed.status, 200, JSON.stringify(removed.data));
+      assert.equal((await doc(id)).pos.verify, null);
+      assertNoSecrets(removed.data, SECRETS, "secret removal");
+    });
+    it("an active task (verify, purge, backup) blocks config, token and removal edits with 409 busy", async () => {
+      const { id, slug } = await fresh();
+      for (const kind of ["verify", "purge", "db-backup"]) {
+        await setPos(id, {
+          "pos.task": {
+            id: randomUUID(),
+            kind,
+            status: "running",
+            requestedAt: new Date(),
+            lease: {
+              owner: "w",
+              until: new Date(Date.now() + 30000),
+              fence: 1,
+            },
+          },
+        });
+        const rev = (await doc(id)).pos.rev;
+        const cfg = await put(id, POS_CONFIG(slug));
+        assert.equal(cfg.status, 409, kind);
+        assert.equal(cfg.data.code, "busy");
+        for (const field of ["vercel.token", "mongo.uri"]) {
+          const s = await call(`/installations/${id}/pos/secret`, {
+            method: "PUT",
+            session: admin,
+            body: {
+              rev,
+              field,
+              value:
+                field === "mongo.uri"
+                  ? "mongodb+srv://u:p@c.mongodb.net/db"
+                  : "another-token-value-123",
+            },
+          });
+          assert.equal(s.status, 409, `${kind} ${field}`);
+          const d = await call(`/installations/${id}/pos/secret`, {
+            method: "DELETE",
+            body: { rev, field },
+          });
+          assert.equal(d.status, 409, `${kind} delete ${field}`);
+        }
+        assert.equal(
+          (
+            await call(`/installations/${id}/pos`, {
+              method: "DELETE",
+              body: { rev },
+            })
+          ).status,
+          409,
+        );
+      }
+      // Finished: editable again.
+      await setPos(id, { "pos.task.status": "succeeded" });
+      assert.equal((await put(id, POS_CONFIG(slug))).status, 200);
+    });
+  });
+  describe("L1 prepare build retry and ownership", () => {
+    const rowFor = (s) =>
+      ctx.db.collection("system_state").findOne({ kind: "build", sha: s });
+    it("a failed or cancelled row is reset by a new request; no stale error remains", async () => {
+      const { id } = await fresh();
+      fake.state.branches.push({
+        name: "l1-retry",
+        sha: sha(81),
+        message: "R",
+        date: "2026-10-06T10:00:00Z",
+      });
+      const ask = () =>
+        post(id, "builds", { branch: "l1-retry", sha: sha(81) });
+      assert.equal((await ask()).status, 201);
+      for (const status of ["failed", "cancelled"]) {
+        await ctx.db.collection("system_state").updateOne(
+          { kind: "build", sha: sha(81) },
+          {
+            $set: {
+              status,
+              error: { code: "build-failed" },
+              runId: 99,
+              attempt: 3,
+              waiters: ["x"],
+              prepared: null,
+            },
+          },
+        );
+        const retry = await ask();
+        assert.equal(
+          retry.status,
+          201,
+          `${status}: ${JSON.stringify(retry.data)}`,
+        );
+        const row = await rowFor(sha(81));
+        assert.equal(row.status, "queued");
+        assert.equal(row.error, null);
+        assert.equal(row.runId, null);
+        assert.equal(row.attempt, 0);
+        assert.deepEqual(row.waiters, []);
+        assert.equal(row.prepared.by.name, "owner");
+      }
+      assert.equal((await audits(id, "pos.build.requested")).length, 3);
+      await ctx.db.collection("system_state").deleteMany({ kind: "build" });
+    });
+    it("a row created by a deploy is marked prepared when the owner requests the same build", async () => {
+      const { id } = await fresh();
+      fake.state.branches.push({
+        name: "l1-join",
+        sha: sha(82),
+        message: "J",
+        date: "2026-10-06T10:00:00Z",
+      });
+      const built = buildKeyOf(
+        VAULT_KEY,
+        buildInputs({
+          pos: (await doc(id)).pos,
+          builderSha: SHAS.c,
+          builder: BUILDER,
+        }),
+      );
+      await ctx.db.collection("system_state").insertOne({
+        _id: buildRowId(sha(82), built),
+        kind: "build",
+        status: "building",
+        sha: sha(82),
+        buildKey: built,
+        inputs: {},
+        branch: "l1-join",
+        commit: null,
+        lease: { owner: "w", until: new Date(), fence: 1 },
+        attempt: 1,
+        runId: 5,
+        runUrl: null,
+        artifactId: null,
+        waiters: ["job-1"],
+        prepared: null,
+        error: null,
+        createdAt: new Date(),
+        finishedAt: null,
+      });
+      const res = await post(id, "builds", { branch: "l1-join", sha: sha(82) });
+      assert.equal(res.status, 200, JSON.stringify(res.data));
+      assert.deepEqual(res.data, {
+        build: {
+          state: "building",
+          sha7: sha(82).slice(0, 7),
+          key8: built.slice(0, 8),
+          existing: true,
+        },
+      });
+      const row = await rowFor(sha(82));
+      assert.equal(row.prepared.by.name, "owner");
+      assert.deepEqual(row.waiters, ["job-1"], "waiters untouched");
+      assert.equal(row.status, "building");
+      assert.equal((await audits(id, "pos.build.requested")).length, 1);
+      // Asking again does not re-mark or re-audit.
+      await post(id, "builds", { branch: "l1-join", sha: sha(82) });
+      assert.equal((await audits(id, "pos.build.requested")).length, 1);
+      await ctx.db.collection("system_state").deleteMany({ kind: "build" });
+    });
+  });
+  describe("fleet: light mode, states and counts", () => {
+    it("light=1 makes no GitHub or cache call; unhealthy and rolled-back are distinct states", async () => {
+      const a = await fresh(),
+        b = await fresh(),
+        c = await fresh(),
+        d = await fresh();
+      for (const [f, status] of [
+        [a, "unhealthy"],
+        [b, "rolled-back"],
+        [c, "failed"],
+        [d, "expired"],
+      ])
+        await setPos(f.id, {
+          "pos.deploy.last": version(1, { branch: "main" }),
+          "pos.deploy.current": {
+            status,
+            kind: "deploy",
+            requestedAt: new Date(),
+          },
+        });
+      fake.calls.length = 0;
+      lookups.length = 0;
+      const res = await call("/pos/fleet?light=1");
+      assert.equal(res.status, 200);
+      const row = (x) => res.data.rows.find((r) => r.installationId === x.id);
+      assert.equal(row(a).state, "unhealthy");
+      assert.equal(row(b).state, "rolled-back");
+      assert.equal(row(c).state, "failed");
+      assert.equal(row(d).state, "failed");
+      assert.equal(row(a).relation, "unknown");
+      assert.equal(row(a).behindBy, null);
+      assert.equal(fake.calls.length, 0, "no GitHub call in light mode");
+      assert.equal(lookups.length, 0, "no cache lookup in light mode");
+      assert.equal((await call("/pos/fleet?light=2")).status, 400);
+    });
+    it("fleet carries the cleaned global freeze state; overview has total and a real locked count", async () => {
+      const f = await fresh();
+      let res = await call("/pos/fleet?light=1");
+      assert.deepEqual(res.data.freeze, {
+        on: false,
+        reason: "",
+        by: null,
+        at: null,
+      });
+      await call("/pos/freeze", {
+        method: "POST",
+        body: { reason: "Stop‮ now\u0007 please" },
+      });
+      res = await call("/pos/fleet?light=1");
+      assert.equal(res.data.freeze.on, true);
+      assert.equal(res.data.freeze.reason, "Stop  now  please");
+      assert.equal(res.data.freeze.by.name, "owner");
+      assert.ok(res.data.freeze.at);
+      assert.deepEqual(Object.keys(res.data.freeze).sort(), [
+        "at",
+        "by",
+        "on",
+        "reason",
+      ]);
+      await call("/pos/unfreeze", { method: "POST" });
+      // Locked count follows pos.deployLock === true.
+      const count = async () => {
+        await new Promise((x) => setTimeout(x, 5200)); // overview cache is 5 s
+        return (await call("/overview", { session: viewer })).data.pos;
+      };
+      await setPos(f.id, { "pos.deployLock": true });
+      const locked = await count();
+      const total = await ctx.db
+        .collection("installations")
+        .countDocuments({ pos: { $exists: true } });
+      assert.equal(locked.total, total);
+      await setPos(f.id, {
+        "pos.deployLock": false,
+        "pos.unlockedAt": new Date(),
+      });
+      const after = await count();
+      assert.equal(
+        after.locked,
+        locked.locked - 1,
+        "an unlock drops the count",
+      );
+      // The M3 migration leaves an owner unlock alone.
+      await relockLegacyUnlocks(ctx.db);
+      assert.equal((await doc(f.id)).pos.deployLock, false);
+    });
+    it("the overview counts failed, unhealthy and rolled-back separately", async () => {
+      await ctx.db
+        .collection("installations")
+        .updateMany(
+          { "pos.deploy.current": { $ne: null } },
+          { $set: { "pos.deploy.current": null } },
+        );
+      const f = await fresh(),
+        u = await fresh(),
+        r = await fresh();
+      await setPos(f.id, {
+        "pos.deploy.current": { status: "failed", kind: "deploy" },
+      });
+      await setPos(u.id, {
+        "pos.deploy.current": { status: "unhealthy", kind: "deploy" },
+      });
+      await setPos(r.id, {
+        "pos.deploy.current": { status: "rolled-back", kind: "deploy" },
+      });
+      await new Promise((x) => setTimeout(x, 5200)); // the overview is cached for 5 s
+      const res = await call("/overview", { session: viewer });
+      assert.equal(res.data.pos.failed, 1);
+      assert.equal(res.data.pos.unhealthy, 1);
+      assert.equal(res.data.pos.rolledBack, 1);
+    });
   });
 });
 

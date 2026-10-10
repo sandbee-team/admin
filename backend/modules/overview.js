@@ -27,9 +27,12 @@ export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
         connections,
         latestRecovery,
         posFailed,
+        posUnhealthy,
+        posRolledBack,
         posUnverified,
         posLocked,
         posWorker,
+        posTotal,
       ] = await Promise.all([
         db
           .collection("customers")
@@ -78,9 +81,13 @@ export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
         ),
         // POS deploy attention: counts only, no installation detail.
         db.collection("installations").countDocuments({
-          "pos.deploy.current.status": {
-            $in: ["failed", "unhealthy", "rolled-back", "expired"],
-          },
+          "pos.deploy.current.status": { $in: ["failed", "expired"] },
+        }),
+        db.collection("installations").countDocuments({
+          "pos.deploy.current.status": "unhealthy",
+        }),
+        db.collection("installations").countDocuments({
+          "pos.deploy.current.status": "rolled-back",
         }),
         db.collection("installations").countDocuments({
           pos: { $exists: true },
@@ -92,11 +99,14 @@ export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
         db.collection("installations").countDocuments({
           pos: { $exists: true },
           status: { $ne: "retired" },
-          "pos.deployLock": { $ne: false },
+          "pos.deployLock": true,
         }),
         db
           .collection("system_state")
           .findOne({ _id: "pos-worker" }, { projection: { _id: 0, at: 1 } }),
+        db
+          .collection("installations")
+          .countDocuments({ pos: { $exists: true } }),
       ]);
       data = {
         customers,
@@ -108,7 +118,10 @@ export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
         connections,
         latestRecovery,
         pos: {
+          total: posTotal,
           failed: posFailed,
+          unhealthy: posUnhealthy,
+          rolledBack: posRolledBack,
           unverified: posUnverified,
           locked: posLocked,
           workerOnline:

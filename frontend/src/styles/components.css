@@ -754,3 +754,28 @@
     padding-inline: 16px;
   }
 }
+.plan-warnings {
+  margin: 0;
+  padding: var(--space-3) var(--space-4) var(--space-3) var(--space-5);
+  background: var(--warning-bg);
+  color: var(--warning);
+  border-radius: 12px;
+  font-size: 12px;
+}
+.stale-banner {
+  align-items: center;
+}
+.deploy-freeze .panel-foot {
+  flex-wrap: wrap;
+}
+
+.fleet-table tr.row-urgent td {
+  background: var(--danger-bg);
+}
+.fleet-table tr.row-urgent td:first-child {
+  box-shadow: inset 4px 0 0 var(--danger);
+}
+.attention-list a.attention-urgent {
+  background: var(--danger-bg);
+  box-shadow: inset 4px 0 0 var(--danger);
+}

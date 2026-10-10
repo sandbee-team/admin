@@ -4,8 +4,7 @@
 // run, accepts the artifact (REV2 2.6 / builder security review), seals it into
 // the S3 build cache and deletes the GitHub artifact once the manifest is
 // stored. Takeover resumes from runId; nothing is dispatched twice for a row.
-import { mkdir, unlink } from "node:fs/promises";
-import path from "node:path";
+import { mkdir } from "node:fs/promises";
 import { isKnownCode } from "../../shared/deploy-errors.js";
 import { ProviderError } from "../lib/provider-http.js";
 import { BuildCacheError } from "../lib/build-cache.js";
@@ -222,13 +221,13 @@ async function driveBuild(ctx, claim, signal) {
     buildId: row.buildId ?? buildId,
     sha,
     env: row.inputs.env,
-    builderSha: row.inputs.builder.sha,
     dir,
     signal,
   });
-  for (const junk of ["artifact.zip", "builder-manifest.json"])
-    await unlink(path.join(dir, junk)).catch(() => {});
   await writeSidecar(dir, accepted.info.output);
+  // Remember the artifact on the row right away: a takeover that finds the
+  // manifest already stored deletes it.
+  await slot.mustSet({ artifactId: accepted.artifactId });
   // A builder that moved on between key and dispatch: store under the key the
   // output was really made with (REV2 2.6).
   let storedKey = buildKey;
@@ -284,19 +283,25 @@ async function driveBuild(ctx, claim, signal) {
       });
     }
   }
-  if (stored) {
-    // The manifest is the commit point: only now is the GitHub artifact deleted.
-    await ctx.github.deleteArtifact(accepted.artifactId).catch(() => {});
-  }
   if (ctx.heartbeat)
     await ctx.heartbeat.recordBuildMs(ctx.now() - startedAt).catch(() => {});
-  if (stored && storedKey === buildKey) {
-    await slot.coll.deleteOne(slot.filterOf());
+  if (stored) {
+    // Row first (ready, naming the stored key), THEN the GitHub artifact: the
+    // manifest is the commit point and the row never points at a deleted
+    // artifact it still needs.
+    await readyRow({
+      artifactId: accepted.artifactId,
+      storedKey,
+      notCached: false,
+    });
+    await ctx.github.deleteArtifact(accepted.artifactId).catch(() => {});
+    if (storedKey === buildKey) await slot.coll.deleteOne(slot.filterOf());
+    else await slot.set({ artifactId: null });
   } else {
     await readyRow({
-      artifactId: stored ? null : accepted.artifactId,
-      storedKey: stored ? storedKey : null,
-      notCached: Boolean(ctx.cache) && !stored,
+      artifactId: accepted.artifactId,
+      storedKey: null,
+      notCached: Boolean(ctx.cache),
     });
   }
   ctx.log("build-ready", { id: id8, cached: stored });

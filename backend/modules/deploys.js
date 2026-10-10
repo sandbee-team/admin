@@ -19,7 +19,11 @@ import {
   blockedFor,
   buildRowId,
   isActiveState,
+  BUILDER_CHECK_MAX_AGE_MS,
+  isSha,
   jobBlocks,
+  taskBlocks,
+  workerStale,
   readinessOf,
   sha7,
   verifyStateOf,
@@ -40,6 +44,7 @@ import {
 } from "../lib/build-inputs.js";
 import { isConflict } from "../lib/s3.js";
 import {
+  cleanText,
   cutoverView,
   deployView,
   jobView,
@@ -81,17 +86,42 @@ const stepsFor = (kind) =>
     endedAt: null,
     note: "",
   }));
+// {on, reason, by, at}: reason is free text typed by the owner, so it is
+// cleaned (control and bidi characters) and capped; nothing else is exposed.
+const freezeView = (row) => {
+  const on = row?.on === true;
+  const text = cleanText(row?.reason, 200);
+  return {
+    on,
+    reason: on ? text : "",
+    by: on
+      ? {
+          id: String(row.by?.id ?? "").slice(0, 64),
+          name: String(row.by?.name ?? "").slice(0, 120),
+        }
+      : null,
+    at: on ? (row.at ?? null) : null,
+  };
+};
 const leaseless = () => ({ owner: null, until: null, fence: 0 });
 // A slot is free when empty, finished, expired while queued, or its lease has
 // been dead for DEAD_LEASE_MS (mirrors jobBlocks in shared/deploy.js).
-const freeSlot = (path, active, now) => ({
+const freeSlot = (path, active, now, workerAt) => ({
   $or: [
     { [path]: null },
     { [`${path}.status`]: { $nin: active } },
-    {
-      [`${path}.status`]: "queued",
-      [`${path}.requestedAt`]: { $lt: new Date(now - QUEUED_EXPIRY_MS) },
-    },
+    // A queued item only counts as expired when the worker has been silent
+    // for QUEUED_EXPIRY_MS (shared/deploy.js queuedExpired).
+    ...(workerStale(workerAt, now)
+      ? [
+          {
+            [`${path}.status`]: "queued",
+            [`${path}.requestedAt`]: {
+              $lt: new Date(now - QUEUED_EXPIRY_MS),
+            },
+          },
+        ]
+      : []),
     {
       [`${path}.status`]: { $in: active.filter((s) => s !== "queued") },
       [`${path}.lease.until`]: { $lt: new Date(now - DEAD_LEASE_MS) },
@@ -108,10 +138,8 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
     createGitHub({
       sourceRepo: c.POS_GITHUB_SOURCE_REPO,
       sourceToken: c.POS_GITHUB_SOURCE_TOKEN,
-      builderRepo: c.POS_GITHUB_BUILDER_REPO,
-      builderToken: c.POS_GITHUB_BUILDER_TOKEN,
-      workflow: c.POS_BUILDER_WORKFLOW,
-      ref: c.POS_BUILDER_REF,
+      // The API never talks to the builder repo: its descriptor comes from
+      // the worker heartbeat (the app container has no builder token).
     });
   const cacheStore =
     buildCache === undefined
@@ -183,7 +211,10 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
         installationId: row._id,
         customerId: row.customerId,
         worker,
-        sources: gh.configured(),
+        sources: {
+          source: gh.configured().source,
+          builder: worker?.builderConfigured === true,
+        },
         cacheConfigured: Boolean(cacheStore),
         authenticator: Boolean(staff?.totp?.enabledAt),
         freeze,
@@ -208,19 +239,33 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
     );
 
   // ---- GitHub and build cache ------------------------------------------------
-  async function builderInfo() {
-    return remember("builder", async () => {
-      const head = await gh.builderHead();
-      return {
-        sha: head.sha,
-        builder: parseBuilderJson(await gh.builderFile(head.sha)),
-      };
-    });
-  }
-  // {key, inputs} or null when the builder descriptor cannot be read yet.
-  async function buildKeyFor(pos) {
+  const workerRow = () => state.findOne({ _id: "pos-worker" });
+  // The builder descriptor the worker last verified, from its heartbeat; null
+  // when absent, not ok, or stale.
+  function builderOf(worker, now = Date.now()) {
+    const b = worker?.builder;
+    if (!b || b.ok !== true || !isSha(b.sha)) return null;
+    const checked = new Date(b.checkedAt ?? NaN).getTime();
+    if (!Number.isFinite(checked) || now - checked >= BUILDER_CHECK_MAX_AGE_MS)
+      return null;
     try {
-      const info = await builderInfo();
+      return {
+        sha: b.sha,
+        builder: parseBuilderJson({
+          protocol: b.protocol ?? 1,
+          nodeVersion: b.nodeVersion,
+          cliVersion: b.cliVersion,
+        }),
+      };
+    } catch {
+      return null;
+    }
+  }
+  // {key, inputs} or null when the builder descriptor is not usable.
+  async function buildKeyFor(pos, worker) {
+    try {
+      const info = builderOf(worker);
+      if (!info) return null;
       const inputs = buildInputs({
         pos,
         builderSha: info.sha,
@@ -312,17 +357,13 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
         readiness: view,
         worker: workerView(worker),
         cache: { configured: Boolean(cacheStore) },
-        freeze: {
-          on: freeze?.on === true,
-          reason: freeze?.on ? String(freeze.reason ?? "").slice(0, 200) : "",
-          at: freeze?.on ? (freeze.at ?? null) : null,
-        },
+        freeze: freezeView(freeze),
         locked: pos.deployLock !== false,
         verifyState: verifyStateOf(pos.verify),
         verify: verifyView(pos.verify),
         task: taskView(pos.task),
         cutoverAt: cutoverView(pos.deploy),
-        ...deployView(pos.deploy),
+        ...deployView(pos.deploy, Date.now(), worker?.at ?? null),
       });
     },
   );
@@ -337,7 +378,9 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
     } catch (error) {
       throw failure(error);
     }
-    const key = row ? (await buildKeyFor(row.pos))?.key : null;
+    const key = row
+      ? (await buildKeyFor(row.pos, await workerRow()))?.key
+      : null;
     const branches = await Promise.all(
       list.map(async (b) => ({
         name: b.name,
@@ -378,9 +421,9 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
           );
         throw failure(error);
       }
-      const built = await buildKeyFor(row.pos);
+      const worker = await workerRow();
+      const built = await buildKeyFor(row.pos, worker);
       const cache = await cacheState(head.sha, built?.key);
-      const worker = await state.findOne({ _id: "pos-worker" });
       const last = row.pos.deploy?.last;
       res.json({
         branch,
@@ -409,13 +452,21 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
   );
 
   // ---- enqueue ---------------------------------------------------------------
+  const heartbeatAt = async (session) =>
+    (
+      await state.findOne(
+        { _id: "pos-worker" },
+        { session, projection: { at: 1 } },
+      )
+    )?.at ?? null;
   async function claimDeploySlot(session, row, job, now) {
+    const workerAt = await heartbeatAt(session);
     const done = await installations.updateOne(
       {
         _id: row._id,
         "pos.rev": row.pos.rev,
         "pos.deployLock": false,
-        ...freeSlot("pos.deploy.current", ACTIVE_STATES, now),
+        ...freeSlot("pos.deploy.current", ACTIVE_STATES, now, workerAt),
       },
       { $set: { "pos.deploy.current": job } },
       { session },
@@ -425,7 +476,7 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
         { _id: row._id },
         { session, projection: { pos: 1 } },
       );
-      if (jobBlocks(now2?.pos?.deploy?.current))
+      if (jobBlocks(now2?.pos?.deploy?.current, Date.now(), workerAt))
         throw busyError("A deploy is already running for this installation.");
       throw staleError("POS settings changed. Reload and try again.");
     }
@@ -477,6 +528,9 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
       const pos = row.pos;
       const redeploy = input.kind === "redeploy";
       if (!redeploy) typed(input.confirm, pos.slug);
+      // Redeploying the PREVIOUS version changes production like a rollback.
+      else if (input.of === "previous") typed(input.confirm, pos.slug);
+      else ensure(input.confirm === true, 400, "Confirm the redeploy.");
       let branch = input.branch,
         sha = input.sha,
         commit = null;
@@ -494,7 +548,7 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
       }
       const early = await readiness(row, req.staff);
       gate(early.view, "deploy");
-      if (jobBlocks(pos.deploy?.current))
+      if (jobBlocks(pos.deploy?.current, Date.now(), early.worker?.at ?? null))
         throw busyError("A deploy is already running for this installation.");
       await consume(db, `deploy:${id}`, 30, 3600000);
       // Never accept an arbitrary sha: re-resolve the branch and check it.
@@ -507,7 +561,7 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
           commit = null;
         }
       }
-      const built = await buildKeyFor(pos);
+      const built = await buildKeyFor(pos, early.worker);
       const job = await transaction(client, async (session) => {
         await authorizeWrite(db, session, req.staff, "deploy");
         const fresh = await loadRow(id, session);
@@ -550,15 +604,16 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
       const pos = row.pos;
       typed(input.confirm, pos.slug);
       const previous = pos.deploy?.previous;
+      // Instant rollback needs only the Vercel deployment id: a pre-admin
+      // baseline (no sha) is fine; only the cached-build fallback is lost.
       ensure(
-        pos.deploy?.last &&
-          previous?.vercelDeploymentId &&
-          /^[0-9a-f]{40}$/.test(previous.sha ?? ""),
+        pos.deploy?.last && previous?.vercelDeploymentId,
         409,
         "There is no previous version to roll back to.",
       );
-      gate((await readiness(row, req.staff)).view, "rollback");
-      if (jobBlocks(pos.deploy?.current))
+      const early = await readiness(row, req.staff);
+      gate(early.view, "rollback");
+      if (jobBlocks(pos.deploy?.current, Date.now(), early.worker?.at ?? null))
         throw busyError("A deploy is already running for this installation.");
       await consume(db, `rollback:${id}`, 30, 3600000);
       const job = await transaction(client, async (session) => {
@@ -574,8 +629,8 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
         const now = Date.now();
         const next = newJob({
           kind: "rollback",
-          branch: target.branch,
-          sha: target.sha,
+          branch: target.branch ?? "",
+          sha: isSha(target.sha) ? target.sha : "",
           buildKey: target.build?.buildKey,
           commit: storedCommit(target.commit, target.sha, target.branch),
           staff: req.staff,
@@ -590,7 +645,7 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
           "pos.rollback.requested",
           "installations",
           id,
-          `${target.branch}@${sha7(target.sha)} #${next.requestId.slice(0, 8)}`,
+          `${target.branch || "pre-admin"}@${sha7(target.sha) || "-"} #${next.requestId.slice(0, 8)}`,
           req,
         );
         return next;
@@ -610,6 +665,15 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
         const row = await loadRow(id, session);
         const job = row.pos.deploy?.current;
         ensure(job?.requestId === requestId, 404, "No such deploy.");
+        // A claimed rollback has started switching production: no cancel.
+        if (job.kind === "rollback" && job.lease?.owner) {
+          const error = new HttpError(
+            409,
+            "A rollback in progress cannot be cancelled.",
+          );
+          error.apiCode = "not-cancellable";
+          throw error;
+        }
         if (job.status === "cancelling") return jobView(job);
         ensure(
           isActiveState(job.status),
@@ -792,11 +856,12 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
     error: null,
   });
   async function claimTaskSlot(session, id, task, now, extra = {}) {
+    const workerAt = await heartbeatAt(session);
     const done = await installations.updateOne(
       {
         _id: id,
         ...extra,
-        ...freeSlot("pos.task", ACTIVE_TASK_STATES, now),
+        ...freeSlot("pos.task", ACTIVE_TASK_STATES, now, workerAt),
       },
       { $set: { "pos.task": task } },
       { session },
@@ -941,10 +1006,11 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
       const row = await loadRow(id);
       if (!cacheStore)
         throw conflict("cache-off", "Prepare build needs the build cache.");
-      gate((await readiness(row, req.staff)).view, "build");
+      const early = await readiness(row, req.staff);
+      gate(early.view, "build");
       await consume(db, `build:${req.staff._id}`, 10, 3600000);
       await verifySha(branch, sha);
-      const built = await buildKeyFor(row.pos);
+      const built = await buildKeyFor(row.pos, early.worker);
       if (!built) {
         const error = new HttpError(503, "The builder is not readable.", true);
         error.apiCode = "builder-unavailable";
@@ -963,59 +1029,95 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
       }
       const _id = buildRowId(sha, built.key);
       const now = new Date();
+      const summary = (status, extra = {}) => ({
+        build: {
+          state: status,
+          sha7: sha7(sha),
+          key8: key8(built.key),
+          ...extra,
+        },
+      });
+      const fresh = () => ({
+        _id,
+        kind: "build",
+        status: "queued",
+        sha,
+        buildKey: built.key,
+        inputs: built.inputs,
+        branch,
+        commit: storedCommit(commit, sha, branch),
+        lease: leaseless(),
+        attempt: 0,
+        runId: null,
+        runUrl: null,
+        artifactId: null,
+        waiters: [],
+        prepared: { by: person(req.staff), at: now },
+        error: null,
+        createdAt: now,
+        finishedAt: null,
+      });
+      const logRequest = (session) =>
+        audit(
+          db,
+          session,
+          req.staff,
+          "pos.build.requested",
+          "installations",
+          id,
+          `${branch}@${sha7(sha)} ${key8(built.key)}`,
+          req,
+        );
+      // A row that is already queued or running is joined: mark it as
+      // prepared by the owner (so cancelling a deploy that created it does not
+      // cancel this request) and report it.
+      async function joinExisting() {
+        const existing = await state.findOne({ _id });
+        if (!existing) return null;
+        if (
+          !existing.prepared &&
+          !["failed", "cancelled"].includes(existing.status)
+        ) {
+          const marked = await transaction(client, async (session) => {
+            await authorizeWrite(db, session, req.staff, "deploy");
+            const done = await state.updateOne(
+              { _id, prepared: null },
+              { $set: { prepared: { by: person(req.staff), at: now } } },
+              { session },
+            );
+            if (done.matchedCount === 1) await logRequest(session);
+            return done.matchedCount === 1;
+          });
+          void marked;
+        }
+        return summary(existing.status, { existing: true });
+      }
+      const current = await state.findOne({ _id });
+      if (current && !["failed", "cancelled"].includes(current.status))
+        return res.json(await joinExisting());
       try {
         await transaction(client, async (session) => {
           await authorizeWrite(db, session, req.staff, "deploy");
-          await state.insertOne(
-            {
-              _id,
-              kind: "build",
-              status: "queued",
-              sha,
-              buildKey: built.key,
-              inputs: built.inputs,
-              branch,
-              commit: storedCommit(commit, sha, branch),
-              lease: leaseless(),
-              attempt: 0,
-              runId: null,
-              runUrl: null,
-              artifactId: null,
-              waiters: [],
-              prepared: { by: person(req.staff), at: now },
-              error: null,
-              createdAt: now,
-              finishedAt: null,
-            },
-            { session },
-          );
-          await audit(
-            db,
-            session,
-            req.staff,
-            "pos.build.requested",
-            "installations",
-            id,
-            `${branch}@${sha7(sha)} ${key8(built.key)}`,
-            req,
-          );
+          if (current) {
+            // A failed or cancelled row must not block a retry: reset it.
+            const reset = await state.replaceOne(
+              { _id, status: current.status },
+              fresh(),
+              { session },
+            );
+            if (reset.matchedCount !== 1)
+              throw busyError("This build changed. Try again.");
+          } else await state.insertOne(fresh(), { session });
+          await logRequest(session);
         });
       } catch (error) {
-        if (error?.code !== 11000) throw error;
-        // Single flight: this build is already queued or running.
-        const existing = await state.findOne({ _id });
-        return res.json({
-          build: {
-            state: existing?.status ?? "queued",
-            sha7: sha7(sha),
-            key8: key8(built.key),
-            existing: true,
-          },
-        });
+        if (error?.code !== 11000 && error?.apiCode !== "busy") throw error;
+        // Single flight: another request created or changed the row first.
+        const joined = await joinExisting();
+        if (!joined) throw error;
+        return res.json(joined);
       }
-      res.status(201).json({
-        build: { state: "queued", sha7: sha7(sha), key8: key8(built.key) },
-      });
+      res.status(201).json(summary("queued"));
     },
   );
 
@@ -1131,8 +1233,11 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
 
   // ---- fleet ---------------------------------------------------------------------
   router.get("/pos/fleet", auth.permit("credentials"), async (req, res) => {
-    const { customerId } = deploySchemas.fleet.parse(req.query);
-    await consume(db, `fleet:${req.staff._id}`, 240, 3600000);
+    const { customerId, light } = deploySchemas.fleet.parse(req.query);
+    // Polled every 15 s by up to three views (4/min each): sized for that.
+    await consume(db, `fleet:${req.staff._id}`, 1200, 3600000);
+    const worker = await workerRow();
+    const freeze = await state.findOne({ _id: "pos-deploy-freeze" });
     const product = await db
       .collection("products")
       .findOne({ slug: "pos" }, { projection: { _id: 1 } });
@@ -1183,7 +1288,7 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
       ...new Set(rows.map((r) => r.pos.deploy?.last?.branch).filter(Boolean)),
     ];
     await Promise.all(
-      branchesNeeded.map(async (branch) => {
+      (light ? [] : branchesNeeded).map(async (branch) => {
         try {
           heads.set(branch, await headOf(branch));
         } catch (error) {
@@ -1205,7 +1310,8 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
         const head = last ? heads.get(last.branch) : undefined;
         let relation = "none",
           behindBy = null;
-        if (last && head === "gone") relation = "branch-gone";
+        if (last && light) relation = "unknown";
+        else if (last && head === "gone") relation = "branch-gone";
         else if (last && head === null) relation = "unknown";
         else if (last && head) {
           try {
@@ -1228,23 +1334,27 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
         }
         let cached = null;
         if (relation === "behind" && cacheStore) {
-          const built = await buildKeyFor(pos);
+          const built = await buildKeyFor(pos, worker);
           if (built)
             cached = (await cacheState(head.sha, built.key)).state === "cached";
         }
         const verified = verifyStateOf(pos.verify, now) === "ok";
-        const bad = ["failed", "unhealthy", "rolled-back", "expired"];
-        const status = jobBlocks(current, now)
+        // unhealthy = the site may be down; rolled-back = the site is fine.
+        const status = jobBlocks(current, now, worker?.at ?? null)
           ? "deploying"
-          : current && bad.includes(current.status)
-            ? "failed"
-            : pos.deployLock !== false
-              ? "locked"
-              : !verified
-                ? "unverified"
-                : last
-                  ? "live"
-                  : "not-deployed";
+          : current?.status === "unhealthy"
+            ? "unhealthy"
+            : current?.status === "rolled-back"
+              ? "rolled-back"
+              : current && ["failed", "expired"].includes(current.status)
+                ? "failed"
+                : pos.deployLock !== false
+                  ? "locked"
+                  : !verified
+                    ? "unverified"
+                    : last
+                      ? "live"
+                      : "not-deployed";
         const live = versionView(last, now);
         return {
           installationId: row._id,
@@ -1254,7 +1364,7 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
           host: pos.host ?? "",
           installationStatus: row.status,
           state: status,
-          locked: pos.deployLock !== false,
+          locked: pos.deployLock === true,
           live: live
             ? {
                 branch: live.branch,
@@ -1275,7 +1385,11 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
         };
       }),
     );
-    res.json({ rows: out, limited: rows.length === 100 });
+    res.json({
+      rows: out,
+      limited: rows.length === 100,
+      freeze: freezeView(freeze),
+    });
   });
   return router;
 }

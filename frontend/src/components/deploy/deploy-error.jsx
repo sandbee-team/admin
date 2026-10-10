@@ -2,7 +2,7 @@ import { TriangleAlert } from "lucide-react";
 import { Button } from "../ui";
 import { UI_STEPS } from "../../../../shared/deploy";
 import { dateTime } from "../../lib/api";
-import { commitLine, describeError, sha7 } from "./format";
+import { commitLine, describeError, sha7, versionRef } from "./format";
 const stepLabel = (name) =>
   UI_STEPS.find((ui) => ui.steps.includes(name))?.label || name;
 const NOUN = { deploy: "deploy", redeploy: "redeploy", rollback: "rollback" };
@@ -13,12 +13,11 @@ export function DeployError({
   owner,
   busy,
   onDismiss,
+  previous,
   onRedeployPrevious,
 }) {
   const noun = NOUN[job.kind] || "deploy",
-    restored = last
-      ? `${last.branch}@${sha7(last.sha)}`
-      : "the previous version";
+    restored = last?.sha ? versionRef(last) : "the previous version";
   const title =
     job.status === "rolled-back"
       ? `Health check failed — rolled back to ${restored}`
@@ -31,7 +30,7 @@ export function DeployError({
             : `The ${noun} failed`;
   const detail =
     job.status === "rolled-back"
-      ? "The new version did not pass its health check, so the previous version was put back. Customers are not affected."
+      ? `The new version failed its health check and was rolled back to ${restored}. It may have been live for up to about a minute.`
       : job.status === "unhealthy"
         ? "The new version failed its health check and the previous version could not be restored automatically. Check the site now."
         : job.status === "cancelled"
@@ -71,9 +70,13 @@ export function DeployError({
             <div>
               <dt>Branch</dt>
               <dd>
-                <code>
-                  {job.branch}@{sha7(job.sha)}
-                </code>
+                {job.sha ? (
+                  <code>
+                    {job.branch}@{sha7(job.sha)}
+                  </code>
+                ) : (
+                  <span>The version before admin took over</span>
+                )}
               </dd>
             </div>
             {job.error?.step && (
@@ -108,11 +111,14 @@ export function DeployError({
                 Open GitHub run ↗
               </a>
             )}
-            {owner && job.kind === "rollback" && job.status === "failed" && (
-              <Button variant="secondary" onClick={onRedeployPrevious}>
-                Redeploy previous commit (cached)
-              </Button>
-            )}
+            {owner &&
+              job.kind === "rollback" &&
+              job.status === "failed" &&
+              previous?.sha && (
+                <Button variant="secondary" onClick={onRedeployPrevious}>
+                  Redeploy previous commit (cached)
+                </Button>
+              )}
             {owner ? (
               <Button variant="secondary" busy={busy} onClick={onDismiss}>
                 Dismiss

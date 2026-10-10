@@ -2,6 +2,7 @@
 // serialises per Vercel account; build 2; task 1), a poll every few seconds, the
 // daily retention sweep, boot clean-up and a graceful stop.
 import { readdir, rm } from "node:fs/promises";
+import { removeJobDir } from "./cli-runner.js";
 import path from "node:path";
 import { ACTIVE_STATES } from "../../shared/deploy.js";
 import {
@@ -9,6 +10,7 @@ import {
   claimBuild,
   claimDeploy,
   claimTask,
+  expireStaleQueued,
   failMessage,
   withLease,
 } from "./lease.js";
@@ -44,6 +46,10 @@ export function createLoop(ctx) {
       )
       .finally(() => lanes[lane].running.delete(tracked));
     lanes[lane].running.add(tracked);
+    ctx.activeJobs = (ctx.activeJobs ?? 0) + 1;
+    tracked.finally(() => {
+      ctx.activeJobs -= 1;
+    });
   }
   const free = (lane) => lanes[lane].running.size < lanes[lane].cap;
   const runTask = (claim) => {
@@ -107,7 +113,10 @@ export function createLoop(ctx) {
       started++;
       start(
         "deploy",
-        (claim.doc.kind === "rollback" ? runRollback : runDeploy)(ctx, claim),
+        (claim.doc.kind === "rollback" ? runRollback : runDeploy)(
+          ctx,
+          claim,
+        ).finally(() => pruneBuilds(ctx).catch(() => undefined)),
       );
     }
     while (free("build")) {
@@ -139,6 +148,8 @@ export function createLoop(ctx) {
     Object.values(lanes).flatMap((lane) => [...lane.running]);
   // Boot clean-up: scratch space, orphaned job directories, old builds.
   async function boot() {
+    // Before our own first heartbeat: what is queued after a long outage expires.
+    await expireStaleQueued(ctx).catch(() => 0);
     await ensureLayout(ctx.workDir);
     const d = dirs(ctx.workDir);
     await rm(d.tmp, { recursive: true, force: true }).catch(() => {});
@@ -175,10 +186,7 @@ export function createLoop(ctx) {
       );
       for (const name of names)
         if (!keep.has(name))
-          await rm(path.join(d.jobs, name), {
-            recursive: true,
-            force: true,
-          }).catch(() => {});
+          await removeJobDir(ctx.cliUser ?? null, path.join(d.jobs, name));
     }
     await pruneBuilds(ctx);
     if (ctx.heartbeat) {

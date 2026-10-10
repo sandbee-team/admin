@@ -16,6 +16,9 @@ import { JobFail } from "./lease.js";
 import { acceptBuild, sha256File } from "./artifact.js";
 
 export const MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024;
+// Each other running job (build or deploy) may still write about this much.
+export const LANE_RESERVE_BYTES = 300 * 1024 * 1024;
+export const MAX_BUILDS_BYTES = 1024 * 1024 * 1024;
 export const LOCAL_REUSE_MS = 60 * 60 * 1000;
 export const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -51,9 +54,15 @@ export async function ensureSpace(ctx) {
   } catch {
     free = Infinity; // an unreadable statfs must not block work
   }
-  if (free < MIN_FREE_BYTES)
+  // Space is reserved per running lane: every OTHER active job may still grow.
+  const others = Math.max(0, (ctx.activeJobs ?? 0) - 1);
+  if (free < MIN_FREE_BYTES + others * LANE_RESERVE_BYTES)
     throw new JobFail("no-space", "The work volume is almost full.");
 }
+import { removeJobDir } from "./cli-runner.js";
+// Deletes a job directory, including what the CLI's uid wrote under <job>/cli.
+export const rmJob = (ctx, requestId) =>
+  removeJobDir(ctx.cliUser ?? null, jobDir(ctx, requestId));
 export async function rmDir(dir) {
   await rm(dir, { recursive: true, force: true }).catch(() => {});
 }
@@ -86,33 +95,42 @@ export async function fetchBuild(ctx, { sha, buildKey, row, signal }) {
   const dir = buildDir(ctx, sha, buildKey);
   await mkdir(dir, { recursive: true });
   if (ctx.cache) {
-    let found;
+    let found = null;
     try {
       found = await ctx.cache.lookup({ sha, buildKey });
     } catch {
-      return { state: "gone" };
+      found = null; // cache unreachable: try the local copy / artifact below
     }
-    if (found.state === "invalid")
+    if (found?.state === "invalid")
       return { state: "invalid", reason: found.reason };
-    if (found.state !== "hit") return { state: "gone" };
-    const { manifest } = found;
-    const reuse = await localTgz(dir, {
-      bytes: manifest.output.bytes,
-      sha256: manifest.output.sha256,
-    });
-    if (reuse) return { state: "ok", path: reuse, manifest, reused: true };
-    const got = await ctx.cache.fetch({
-      sha,
-      buildKey,
-      destPath: path.join(dir, "output.tgz"),
-    });
-    if (got.state === "hit")
-      return { state: "ok", path: got.path, manifest: got.manifest };
-    if (got.state === "invalid")
-      return { state: "invalid", reason: got.reason };
-    return { state: "gone" };
+    if (found?.state === "hit") {
+      const { manifest } = found;
+      const reuse = await localTgz(dir, {
+        bytes: manifest.output.bytes,
+        sha256: manifest.output.sha256,
+      });
+      if (reuse) return { state: "ok", path: reuse, manifest, reused: true };
+      const got = await ctx.cache.fetch({
+        sha,
+        buildKey,
+        destPath: path.join(dir, "output.tgz"),
+      });
+      if (got.state === "hit")
+        return { state: "ok", path: got.path, manifest: got.manifest };
+      if (got.state === "invalid")
+        return { state: "invalid", reason: got.reason };
+      // Our own disk failing is not an integrity problem: no quarantine.
+      if (got.reason === "work-disk-error")
+        throw new JobFail(
+          "work-disk-error",
+          "The work volume could not be written.",
+        );
+      // Anything else (S3 trouble, entry gone): fall through to the local
+      // verified copy and the kept GitHub artifact.
+    }
+    // A miss, a store that failed or was contested, or a cache outage: the
+    // build lane kept a verified local copy and the GitHub artifact.
   }
-  // Cache off: the build lane kept the verified tgz (and the GitHub artifact).
   const reuse = await localTgz(dir, {});
   if (reuse) return { state: "ok", path: reuse, manifest: null, reused: true };
   if (!row?.artifactId || !row.runId || !row.buildId) return { state: "gone" };
@@ -122,7 +140,6 @@ export async function fetchBuild(ctx, { sha, buildKey, row, signal }) {
       buildId: row.buildId,
       sha,
       env: row.inputs.env,
-      builderSha: row.inputs.builder.sha,
       dir,
       signal,
     });
@@ -134,8 +151,13 @@ export async function fetchBuild(ctx, { sha, buildKey, row, signal }) {
     throw error;
   }
 }
-// Removes build directories older than an hour (the sweep and boot).
-export async function pruneBuilds(ctx, maxAgeMs = LOCAL_REUSE_MS) {
+// Removes build directories older than an hour and, beyond that, the oldest
+// ones until the total is under `maxBytes` (the sweep, boot and after a deploy).
+export async function pruneBuilds(
+  ctx,
+  maxAgeMs = LOCAL_REUSE_MS,
+  maxBytes = MAX_BUILDS_BYTES,
+) {
   const base = dirs(ctx.workDir).builds;
   let names = [];
   try {
@@ -143,6 +165,7 @@ export async function pruneBuilds(ctx, maxAgeMs = LOCAL_REUSE_MS) {
   } catch {
     return 0;
   }
+  const kept = [];
   let removed = 0;
   for (const name of names) {
     const dir = path.join(base, name);
@@ -151,10 +174,28 @@ export async function pruneBuilds(ctx, maxAgeMs = LOCAL_REUSE_MS) {
       if (Date.now() - info.mtimeMs > maxAgeMs) {
         await rmDir(dir);
         removed++;
-      }
+      } else kept.push({ dir, at: info.mtimeMs, size: await dirSize(dir) });
     } catch {
       // Gone already.
     }
   }
+  kept.sort((a, b) => a.at - b.at);
+  let total = kept.reduce((n, k) => n + k.size, 0);
+  for (const k of kept) {
+    if (total <= maxBytes) break;
+    await rmDir(k.dir);
+    total -= k.size;
+    removed++;
+  }
   return removed;
+}
+async function dirSize(dir) {
+  let total = 0;
+  try {
+    for (const name of await readdir(dir))
+      total += (await stat(path.join(dir, name))).size;
+  } catch {
+    // Unreadable: counts as nothing.
+  }
+  return total;
 }

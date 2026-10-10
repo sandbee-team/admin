@@ -21,6 +21,7 @@ import {
   NEXT_PUBLIC_KEYS,
 } from "../../shared/deploy.js";
 
+export const cleanText = (value, max) => clean(value, max);
 const clean = (value, max) =>
   String(value ?? "")
     .replace(
@@ -101,7 +102,7 @@ const errorView = (error) =>
     : null;
 // The running or last unsuccessful job. `stalled` = a started job whose lease
 // has expired (the worker restarted; the panel says "resuming").
-export function jobView(job, now = Date.now()) {
+export function jobView(job, now = Date.now(), workerAt) {
   if (!job) return null;
   const until = date(job.lease?.until);
   return {
@@ -120,7 +121,7 @@ export function jobView(job, now = Date.now()) {
       ["running", "cancelling"].includes(job.status) &&
       Boolean(until) &&
       until.getTime() < now,
-    blocking: jobBlocks(job, now),
+    blocking: jobBlocks(job, now, workerAt),
     runUrl: runLink(job.runUrl, job.requestedAt, now),
     vercelDeploymentId: clean(job.vercelDeploymentId, 80),
     cancelRequested: job.cancelRequested === true,
@@ -228,8 +229,8 @@ export function taskView(task) {
       : null,
   };
 }
-export const deployView = (deploy, now = Date.now()) => ({
-  current: jobView(deploy?.current, now),
+export const deployView = (deploy, now = Date.now(), workerAt) => ({
+  current: jobView(deploy?.current, now, workerAt),
   last: versionView(deploy?.last, now),
   previous: versionView(deploy?.previous, now),
 });

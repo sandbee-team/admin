@@ -12,6 +12,25 @@ const cacheChip = (branch, cacheOn) =>
       {cacheOn ? "Build state unknown" : "Build cache off"}
     </span>
   );
+// Things worth a second look before shipping this branch (also repeated in
+// the confirm dialog).
+export function planWarnings(p) {
+  const r = p?.relation,
+    out = [];
+  if (r?.status === "behind")
+    out.push(
+      `This branch is ${r.aheadBy} commit${r.aheadBy === 1 ? "" : "s"} older than the live version. Deploying goes back in time.`,
+    );
+  if (r?.status === "diverged")
+    out.push(
+      "This branch has a different history from the live version (diverged).",
+    );
+  if (p?.settingsChanged)
+    out.push(
+      "Settings changed since the live build, so a new build is needed.",
+    );
+  return out;
+}
 // The "what will happen" lines for one branch, from the deploy plan.
 export function PlanSummary({ plan, live }) {
   if (plan.error) return <ErrorBox retry={plan.reload}>{plan.error}</ErrorBox>;

@@ -117,6 +117,43 @@ export async function runRetention(ctx, { signal } = {}) {
     }
   }
   await pruneBuilds(ctx);
+  // A live build that could not be kept (or is already gone) is a risk to the
+  // owner's rollback: surface it in the heartbeat row and by e-mail (counts only).
+  await ctx.coll.state
+    .updateOne(
+      { _id: "pos-worker" },
+      {
+        $set: {
+          retention: {
+            at: new Date(now),
+            checked: result.checked,
+            copied: result.copied,
+            missing: result.missing,
+            failed: result.failed,
+          },
+        },
+      },
+      { upsert: true },
+    )
+    .catch(() => undefined);
+  if ((result.failed || result.missing) && ctx.notify) {
+    try {
+      const owners = await ctx.db
+        .collection("staff")
+        .find({ role: "owner", status: "active" }, { projection: { email: 1 } })
+        .toArray();
+      for (const owner of owners)
+        if (owner.email)
+          await ctx
+            .notify(owner.email, {
+              subject: "POS build retention needs attention",
+              text: `The daily build retention sweep could not keep ${result.failed} live build(s) and found ${result.missing} already expired. A rollback or redeploy of those clients will need a fresh build.`,
+            })
+            .catch(() => undefined);
+    } catch {
+      // Best effort.
+    }
+  }
   return result;
 }
 // Claims the daily sweep (one worker at a time, at most once a day).

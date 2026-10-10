@@ -50,15 +50,30 @@ export function groupSteps(steps, now) {
     };
   }).filter(Boolean);
 }
-export function DeployProgress({ job, owner, onCancel, cancelling }) {
-  const now = useNow(true),
+export function DeployProgress({
+  job,
+  owner,
+  onCancel,
+  cancelling,
+  workerOnline = true,
+  staleAt = 0,
+}) {
+  // While the panel cannot reach the server, timers stop instead of implying
+  // progress we cannot see.
+  const live = useNow(!staleAt),
+    now = staleAt || live,
     groups = groupSteps(job.steps, now),
     running = groups.find((g) => g.state === "running"),
+    // A rollback that a worker has claimed cannot be cancelled.
     cancellable =
       job.status === "queued" ||
-      (job.status === "running" && CANCELLABLE_STEPS.includes(job.step));
+      (job.status === "running" &&
+        job.kind !== "rollback" &&
+        CANCELLABLE_STEPS.includes(job.step));
   const status = job.stalled
-    ? "Worker restarted — resuming."
+    ? workerOnline
+      ? "Worker restarted — resuming."
+      : "The deploy worker is offline — the job will resume when it is back."
     : job.status === "queued"
       ? "Waiting for the worker to pick this up."
       : job.status === "cancelling"
@@ -76,9 +91,13 @@ export function DeployProgress({ job, owner, onCancel, cancelling }) {
         <div>
           <h2 id="progress-title">
             {VERB[job.kind] || "Deploying"}{" "}
-            <code>
-              {job.branch}@{sha7(job.sha)}
-            </code>
+            {job.sha ? (
+              <code>
+                {job.branch}@{sha7(job.sha)}
+              </code>
+            ) : (
+              <span>the version before admin took over</span>
+            )}
           </h2>
           {job.commit?.headline && (
             <p className="progress-commit">
@@ -138,23 +157,27 @@ export function DeployProgress({ job, owner, onCancel, cancelling }) {
           </li>
         ))}
       </ol>
-      {owner && job.status !== "cancelling" && (
-        <div className="panel-foot">
-          {cancellable ? (
-            <span>Stop this deploy before anything is uploaded.</span>
-          ) : (
-            <span>Too late to cancel: the upload has started.</span>
-          )}
-          <Button
-            variant="secondary"
-            disabled={!cancellable}
-            busy={cancelling}
-            onClick={onCancel}
-          >
-            Cancel deploy
-          </Button>
-        </div>
-      )}
+      {owner &&
+        job.status !== "cancelling" &&
+        !(job.kind === "rollback" && !cancellable) && (
+          <div className="panel-foot">
+            {cancellable ? (
+              <span>Stop this deploy before anything is uploaded.</span>
+            ) : job.kind === "rollback" ? (
+              <span>A rollback cannot be cancelled once it has started.</span>
+            ) : (
+              <span>Too late to cancel: the upload has started.</span>
+            )}
+            <Button
+              variant="secondary"
+              disabled={!cancellable}
+              busy={cancelling}
+              onClick={onCancel}
+            >
+              Cancel deploy
+            </Button>
+          </div>
+        )}
     </section>
   );
 }

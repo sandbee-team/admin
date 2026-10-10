@@ -7,12 +7,14 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import {
   chmod,
+  lstat,
   mkdir,
   open,
   readFile,
   realpath,
   stat,
   symlink,
+  unlink,
 } from "node:fs/promises";
 import path from "node:path";
 import { Transform } from "node:stream";
@@ -219,6 +221,10 @@ const emptyCounts = () => ({
   forbiddenPaths: 0,
   envFiles: 0,
   claudeMd: 0,
+  // .vc-config.json: a filePathMap can make the CLI upload files that are not
+  // part of the output (H1), and an unreadable config is refused outright.
+  filePathMap: 0,
+  badConfig: 0,
 });
 const BAD_KEYS = [
   "hardlinks",
@@ -231,6 +237,8 @@ const BAD_KEYS = [
   "outsideOutput",
   "limitExceeded",
   "malformed",
+  "filePathMap",
+  "badConfig",
 ];
 const FINDING_KEYS = [
   "maps",
@@ -302,7 +310,7 @@ const TYPES = {
 // Streams a .tgz and calls `onEntry({name, type, size, linkname})` for every
 // entry; it may return a sink {write(buf), end()} to receive the file data.
 // Returns the counts. Never buffers an entry's data.
-async function walkTgz(file, onEntry, { signal } = {}) {
+async function walkTgz(file, onEntry, { signal, finalize } = {}) {
   const v = emptyCounts();
   const input = createReadStream(file, { highWaterMark: 65536 });
   const gunzip = zlib.createGunzip();
@@ -452,28 +460,182 @@ async function walkTgz(file, onEntry, { signal } = {}) {
   }
   if (!ended && (hdr.length || remaining || meta)) v.malformed++;
   if (v.entries < 1) v.malformed++;
+  if (finalize && !v.malformed) await finalize(v);
   v.bad = sum(v, BAD_KEYS);
   v.findings = sum(v, FINDING_KEYS);
   return v;
 }
 // Validation only: counts, no extraction. `bad` > 0 or `findings` > 0 = reject.
-export const inspectTgz = (file, options) => walkTgz(file, () => null, options);
+const MAX_CONFIG_BYTES = 256 * 1024;
+const MAX_CONFIGS = 5000;
+const inOut = (p) => p === OUT || p.startsWith(`${OUT}/`);
+// Follows symlinks (chains, and links in a parent directory) using only the
+// archive's own entry set. -> final posix path, or null when it cannot be
+// resolved or leaves the output root.
+function resolveInArchive(entries, start) {
+  let current = start;
+  for (let round = 0; round < 40; round++) {
+    const parts = current.split("/");
+    let changed = false;
+    for (let k = 1; k <= parts.length; k++) {
+      const prefix = parts.slice(0, k).join("/");
+      const e = entries.get(prefix);
+      if (e?.type !== "symlink") continue;
+      if (!e.linkname || e.linkname.startsWith("/")) return null;
+      const target = path.posix.normalize(
+        path.posix.join(path.posix.dirname(prefix), e.linkname),
+      );
+      current = path.posix.normalize([target, ...parts.slice(k)].join("/"));
+      changed = true;
+      break;
+    }
+    if (!changed) return inOut(current) ? current : null;
+    if (!inOut(current)) return null;
+  }
+  return null;
+}
+// Whole-archive checks that need every entry: symlink chains, writes through a
+// link, and the filePathMap of every .vc-config.json (the pinned CLI reads
+// files named there from the deploy root; in prebuilt mode it only checks that
+// they stay under that root, so anything outside the output is refused here).
+function archiveChecks(v, entries, configs) {
+  for (const [name, e] of entries) {
+    if (e.type === "symlink" && !resolveInArchive(entries, name))
+      v.symlinkEscapes++;
+    const parts = name.split("/");
+    for (let k = 1; k < parts.length; k++)
+      if (entries.get(parts.slice(0, k).join("/"))?.type === "symlink") {
+        v.symlinkEscapes++;
+        break;
+      }
+  }
+  for (const config of configs) {
+    if (config.tooBig) {
+      v.badConfig++;
+      continue;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(config.text);
+    } catch {
+      v.badConfig++;
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      v.badConfig++;
+      continue;
+    }
+    const map = parsed.filePathMap;
+    if (map === undefined || map === null) continue;
+    if (typeof map !== "object" || Array.isArray(map)) {
+      v.filePathMap++;
+      continue;
+    }
+    for (const [key, value] of Object.entries(map)) {
+      const keyOk =
+        key.length > 0 &&
+        key.length <= 1000 &&
+        !NAME_BAD.test(key) &&
+        !key.startsWith("/") &&
+        !key.split("/").some((p) => p === ".." || p === "");
+      let ok = false;
+      if (
+        keyOk &&
+        typeof value === "string" &&
+        value.length > 0 &&
+        value.length <= 1000 &&
+        !NAME_BAD.test(value) &&
+        !value.startsWith("/") &&
+        !/^[A-Za-z]:/.test(value) &&
+        !value.split("/").includes("..")
+      ) {
+        const target = path.posix.normalize(value);
+        // The target itself must be a regular file (a link is not), reached
+        // without passing through any link.
+        ok =
+          inOut(target) &&
+          entries.get(target)?.type === "file" &&
+          resolveInArchive(entries, target) === target;
+      }
+      if (!ok) v.filePathMap++;
+    }
+  }
+}
+// Validation only: counts, no extraction. `bad` > 0 or `findings` > 0 = reject.
+export function inspectTgz(file, options = {}) {
+  const entries = new Map();
+  const configs = [];
+  return walkTgz(
+    file,
+    (entry) => {
+      const name = entry.name.endsWith("/")
+        ? entry.name.slice(0, -1)
+        : entry.name;
+      entries.set(name, { type: entry.type, linkname: entry.linkname });
+      if (
+        entry.type === "file" &&
+        inOut(name) &&
+        name.split("/").pop() === ".vc-config.json"
+      ) {
+        if (configs.length >= MAX_CONFIGS) return null;
+        const record = { text: "", tooBig: entry.size > MAX_CONFIG_BYTES };
+        configs.push(record);
+        const chunks = [];
+        return {
+          write: (buf) => {
+            if (!record.tooBig) chunks.push(Buffer.from(buf));
+          },
+          end: () => {
+            record.text = Buffer.concat(chunks).toString("utf8");
+          },
+          abort: () => {},
+        };
+      }
+      return null;
+    },
+    { ...options, finalize: (v) => archiveChecks(v, entries, configs) },
+  );
+}
+// The specific code for a rejected archive.
+export const tarProblemCode = (v) =>
+  v.filePathMap ? "artifact-filepathmap" : "tar-invalid";
 
 // Extracts into `dest` (an existing directory), refusing anything that would
 // land outside it or write through a symlink. Validate with inspectTgz first.
 export async function extractTgz(file, dest, options = {}) {
+  // Whole-archive validation first (chains, links in parents, filePathMap).
+  const pre = await inspectTgz(file, options);
+  if (pre.bad || pre.findings) throw new AcceptError(tarProblemCode(pre));
   const root = await realpath(dest);
-  const verified = new Set([root]);
   const inside = (p) => p === root || p.startsWith(root + path.sep);
-  async function safeParent(target) {
-    const parent = path.dirname(target);
-    if (verified.has(parent)) return;
-    await mkdir(parent, { recursive: true });
-    const real = await realpath(parent);
-    if (!inside(real) || real !== parent) throw new AcceptError("tar-invalid");
-    verified.add(parent);
+  const verified = new Set([root]);
+  const links = [];
+  // Creates every directory component by hand: each existing component is
+  // lstat'ed and must be a real directory (never a symlink); nothing is ever
+  // created through mkdir -p, so a link cannot redirect a later entry.
+  async function ensureDir(target) {
+    if (verified.has(target)) return;
+    if (!inside(target)) throw new AcceptError("tar-invalid");
+    const parts = path.relative(root, target).split(path.sep);
+    let current = root;
+    for (const part of parts) {
+      current = path.join(current, part);
+      if (verified.has(current)) continue;
+      let info = null;
+      try {
+        info = await lstat(current);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      if (info === null) {
+        await mkdir(current);
+        await chmod(current, 0o755);
+      } else if (info.isSymbolicLink() || !info.isDirectory())
+        throw new AcceptError("tar-invalid");
+      verified.add(current);
+    }
   }
-  const v = await walkTgz(
+  await walkTgz(
     file,
     async (entry) => {
       if (
@@ -486,14 +648,13 @@ export async function extractTgz(file, dest, options = {}) {
       const target = path.resolve(root, entry.name);
       if (!inside(target) || target === root) return null;
       if (entry.type === "dir") {
-        await safeParent(target);
-        await mkdir(target, { recursive: true });
-        verified.add(target);
+        await ensureDir(target);
         return null;
       }
-      await safeParent(target);
+      await ensureDir(path.dirname(target));
       if (entry.type === "symlink") {
         await symlink(entry.linkname, target);
+        links.push(target);
         return null;
       }
       const handle = await open(target, "wx", 0o644);
@@ -510,8 +671,18 @@ export async function extractTgz(file, dest, options = {}) {
     },
     options,
   );
-  if (v.bad || v.findings) throw new AcceptError("tar-invalid");
-  return v;
+  // Afterwards every link must really resolve inside the extracted root.
+  for (const link of links) {
+    let real;
+    try {
+      real = await realpath(link);
+    } catch (error) {
+      if (error?.code === "ENOENT") continue; // dangling: nothing to read
+      throw error;
+    }
+    if (!inside(real)) throw new AcceptError("tar-invalid");
+  }
+  return pre;
 }
 export async function sha256File(file) {
   const hash = createHash("sha256");
@@ -552,9 +723,22 @@ const count = (n) => (Number.isSafeInteger(n) && n >= 0 ? n : 0);
 //   ctx: {github, c{POS_BUILDER_REF, POS_BUILDER_WORKFLOW}, cliVersion, vaultKey}
 //   build: {runId, buildId, sha, env (dispatched build_env), builderSha}
 // -> {tgzPath, artifactId, run, builder (descriptor), builderSha, manifest, output, scan, tar}
-export async function acceptBuild(
+// The downloaded zip and the builder manifest never outlive the call; a
+// rejected build also leaves no tgz behind.
+export async function acceptBuild(ctx, args) {
+  try {
+    return await acceptBuildInner(ctx, args);
+  } catch (error) {
+    await unlink(path.join(args.dir, "output.tgz")).catch(() => {});
+    throw error;
+  } finally {
+    for (const junk of ["artifact.zip", "builder-manifest.json"])
+      await unlink(path.join(args.dir, junk)).catch(() => {});
+  }
+}
+async function acceptBuildInner(
   ctx,
-  { runId, buildId, sha, env, builderSha, dir, signal },
+  { runId, buildId, sha, env, dir, signal },
 ) {
   const { github } = ctx;
   let run;
@@ -649,7 +833,7 @@ export async function acceptBuild(
     bad("manifest-mismatch");
   if (!/^[0-9a-f]{40}$/.test(manifest.builderSha ?? ""))
     bad("manifest-mismatch");
-  if (run.headSha && run.headSha !== manifest.builderSha)
+  if (!run.headSha || run.headSha !== manifest.builderSha)
     bad("manifest-mismatch");
   if (
     !manifest.scan ||
@@ -686,7 +870,7 @@ export async function acceptBuild(
   )
     bad("manifest-mismatch");
   const v = await inspectTgz(tgzPath, { signal });
-  if (v.bad || v.findings) bad("tar-invalid");
+  if (v.bad || v.findings) bad(tarProblemCode(v));
   if (
     v.files !== count(out.files) ||
     v.symlinks !== count(out.symlinks) ||

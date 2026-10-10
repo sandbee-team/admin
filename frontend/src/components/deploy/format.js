@@ -18,6 +18,11 @@ export const clock = (ms) => {
     seconds = String(total % 60).padStart(2, "0");
   return `${minutes}:${seconds}`;
 };
+export const PRE_ADMIN =
+  "Version before admin took over (deployed outside admin)";
+// branch@sha7, or a plain label for a pre-admin baseline (no sha, no link).
+export const versionRef = (item) =>
+  item?.sha ? `${item.branch || "unknown"}@${sha7(item.sha)}` : PRE_ADMIN;
 export const minutes = (ms) => Math.max(1, Math.round(ms / 60000));
 export const ITEM_TITLES = {
   worker: "Deploy worker online",
@@ -53,7 +58,7 @@ export const errorText = (error) => describeError(error).plainMessage;
 export function commitLine(item) {
   const c = item?.commit;
   return [
-    `${item?.branch || c?.branch || "unknown"}@${sha7(item?.sha || c?.sha)}`,
+    versionRef({ ...item, sha: item?.sha || c?.sha }),
     c?.headline,
     c?.authorName,
     c?.date ? when(c.date) : "",

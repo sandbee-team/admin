@@ -5,6 +5,7 @@ import { withStepUp } from "../step-up";
 import { Link } from "../../lib/router";
 import { api, dateTime } from "../../lib/api";
 import { usePoll } from "../../hooks/use-poll";
+import { StaleBanner } from "./stale-banner";
 import { describeError } from "./format";
 const active = (data) => ["queued", "running"].includes(data?.task?.status);
 const mb = (bytes) => `${(bytes / 1048576).toFixed(1)} MB`;
@@ -60,6 +61,7 @@ export function BackupPanel({ installationId, customerId, owner }) {
         </div>
       </div>
       <div className="backup-body">
+        <StaleBanner poll={poll} />
         {problem && <ErrorBox>{problem}</ErrorBox>}
         {poll.error && !data && (
           <ErrorBox retry={poll.refresh}>{poll.error}</ErrorBox>
