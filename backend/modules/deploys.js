@@ -56,6 +56,7 @@ import {
   versionView,
   workerView,
 } from "../lib/deploy-view.js";
+import { fleetUsageStalled, fleetUsageView } from "../lib/usage-view.js";
 import { busyError } from "./pos.js";
 
 export { deployView };
@@ -1263,6 +1264,16 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
                 "pos.image.publicBaseUrl": 1,
                 "pos.image.cloudName": 1,
                 "pos.cloudflare.workerUrl": 1,
+                // Usage summary (Phase 2): never `mail` or the check lease.
+                "pos.usage.watch": 1,
+                "pos.usage.check.status": 1,
+                "pos.usage.check.requestedAt": 1,
+                "pos.usage.check.finishedAt": 1,
+                "pos.usage.last.at": 1,
+                "pos.usage.last.level": 1,
+                "pos.usage.last.site": 1,
+                "pos.usage.last.mongo.maxPct": 1,
+                "pos.usage.last.cloudflare": 1,
               },
             },
           )
@@ -1382,13 +1393,24 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
           behindBy,
           branchGone: relation === "branch-gone",
           cached,
+          usage: fleetUsageView(pos.usage, row.status),
         };
       }),
     );
+    // From the heartbeat row read above and the rows already loaded (no extra
+    // query): the panel stops fast polling for usage checks while nobody
+    // would run them.
+    const workerOnline = workerView(worker, now).online;
     res.json({
       rows: out,
       limited: rows.length === 100,
       freeze: freezeView(freeze),
+      workerOnline,
+      usageStalled: fleetUsageStalled(
+        rows.map((row) => row.pos.usage),
+        workerOnline,
+        now,
+      ),
     });
   });
   return router;

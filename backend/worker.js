@@ -4,6 +4,8 @@
 //   node backend/worker.js                          the loop
 //   node backend/worker.js --health                 container health: /work/heartbeat < 60 s old
 //   node backend/worker.js --self-check [--installation=<id>]
+//   node backend/worker.js --self-check --usage=<id> [--mail-test]
+//                                                   one usage check, no writes
 import { stat } from "node:fs/promises";
 import path from "node:path";
 
@@ -46,6 +48,16 @@ const notify = c.SMTP_HOST ? notifier(c) : undefined;
 const ctx = await buildContext({ c, db, client, s3, cache, notify });
 
 const selfIndex = argv.indexOf("--self-check");
+const usageId = argv.find((a) => a.startsWith("--usage="))?.slice(8);
+if (selfIndex >= 0 && usageId) {
+  const { usageSelfCheck } = await import("./worker/usage.js");
+  const done = await usageSelfCheck(ctx, {
+    installationId: usageId,
+    mailTest: argv.includes("--mail-test"),
+  });
+  await client.close();
+  process.exit(done.ok ? 0 : 1);
+}
 if (selfIndex >= 0) {
   const installation = argv
     .find((a) => a.startsWith("--installation="))

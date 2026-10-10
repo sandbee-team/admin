@@ -11,6 +11,26 @@ import { backupKeyInfo } from "../config.js";
 import { drillState, latestKeyChecks } from "../lib/recovery-tasks.js";
 // IP and user agent are for staff who manage the team only.
 const withoutNetwork = ({ ip, userAgent, ...row }) => row;
+const count = (value) =>
+  Number.isSafeInteger(value) && value >= 0 ? value : 0;
+const when = (value) =>
+  value instanceof Date && !Number.isNaN(value.getTime()) ? value : null;
+// Phase 2 Attention: watched clients by the level of their latest check.
+const usageSummary = (row) => ({
+  watched: count(row?.watched),
+  critical: count(row?.critical),
+  warning: count(row?.warning),
+  lastCheckAt: when(row?.lastCheckAt),
+});
+// The daily build retention sweep (backend/worker/retention.js): counts only.
+const retentionSummary = (retention) => ({
+  failed: count(retention?.failed),
+  missing: count(retention?.missing),
+  at: when(retention?.at),
+});
+const levelCount = (level) => ({
+  $sum: { $cond: [{ $eq: ["$pos.usage.last.level", level] }, 1, 0] },
+});
 export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
   const router = Router();
   router.use(auth.requireAuth);
@@ -33,6 +53,7 @@ export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
         posLocked,
         posWorker,
         posTotal,
+        usageRows,
       ] = await Promise.all([
         db
           .collection("customers")
@@ -103,10 +124,39 @@ export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
         }),
         db
           .collection("system_state")
-          .findOne({ _id: "pos-worker" }, { projection: { _id: 0, at: 1 } }),
+          .findOne(
+            { _id: "pos-worker" },
+            { projection: { _id: 0, at: 1, retention: 1 } },
+          ),
         db
           .collection("installations")
           .countDocuments({ pos: { $exists: true } }),
+        // Usage attention: counts and one date only, no installation detail.
+        // Watched and not retired, the same list "Check watched clients" uses.
+        db
+          .collection("installations")
+          .aggregate(
+            [
+              {
+                $match: {
+                  "pos.usage.watch": true,
+                  pos: { $exists: true },
+                  status: { $ne: "retired" },
+                },
+              },
+              {
+                $group: {
+                  _id: null,
+                  watched: { $sum: 1 },
+                  critical: levelCount("critical"),
+                  warning: levelCount("warning"),
+                  lastCheckAt: { $max: "$pos.usage.last.at" },
+                },
+              },
+            ],
+            { maxTimeMS: 4000 },
+          )
+          .toArray(),
       ]);
       data = {
         customers,
@@ -128,6 +178,8 @@ export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
             posWorker?.at instanceof Date &&
             Date.now() - posWorker.at.getTime() < WORKER_ONLINE_MS,
         },
+        usage: usageSummary(usageRows[0]),
+        retention: retentionSummary(posWorker?.retention),
         asOf: new Date(),
       };
       cache.set("overview", data);

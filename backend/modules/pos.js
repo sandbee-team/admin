@@ -117,6 +117,8 @@ export const posView = (pos) => ({
   ),
   importedAt: pos.importedAt ?? null,
 });
+// The secret the usage check sends to the POS host (bound by pos.statsHost).
+export const STATS_TOKEN_FIELD = "generated.healthStatsToken";
 export const newPos = (config) => ({
   rev: 1,
   slug: config.slug,
@@ -312,6 +314,11 @@ export function posRoutes({ db, client, c, auth }) {
               [`pos.${field}`]: encrypt(value, c.VAULT_KEY, aadOf(id, field)),
               [`pos.secretsChangedAt.${changedKey(field)}`]: new Date(),
               ...(VERIFY_SECRETS.includes(field) ? { "pos.verify": null } : {}),
+              // Phase 2: the usage check sends this token only to the web
+              // address it was saved for (a later host change does not move it).
+              ...(field === STATS_TOKEN_FIELD
+                ? { "pos.statsHost": pos.host ?? null }
+                : {}),
             },
             $inc: { "pos.rev": 1 },
           },
@@ -352,6 +359,7 @@ export function posRoutes({ db, client, c, auth }) {
             $set: {
               [`pos.${field}`]: null,
               ...(VERIFY_SECRETS.includes(field) ? { "pos.verify": null } : {}),
+              ...(field === STATS_TOKEN_FIELD ? { "pos.statsHost": null } : {}),
             },
             $unset: { [`pos.secretsChangedAt.${changedKey(field)}`]: "" },
             $inc: { "pos.rev": 1 },

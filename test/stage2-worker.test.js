@@ -102,9 +102,17 @@ before(async () => {
   client = new MongoClient(repl.getUri());
   await client.connect();
 });
+// Every per-env work dir is removed at the end (they used to pile up in the
+// system temp folder and fill the disk, which the worker refuses as no-space).
+const workDirs = [];
 after(async () => {
   await client?.close();
   await repl?.stop();
+  await Promise.all(
+    workDirs.map((dir) =>
+      rm(dir, { recursive: true, force: true }).catch(() => undefined),
+    ),
+  );
 });
 
 // ---- environment ------------------------------------------------------------------
@@ -145,6 +153,7 @@ async function makeEnv({ cache = true } = {}) {
     },
   });
   const workDir = await mkdtemp(path.join(tmpdir(), "worker-test-"));
+  workDirs.push(workDir);
   const env = {
     db,
     clock,

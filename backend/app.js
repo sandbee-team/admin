@@ -17,6 +17,7 @@ import { deployRoutes } from "./modules/deploys.js";
 import { dbBackupRoutes } from "./modules/db-backup.js";
 import { posImportRoutes } from "./modules/pos-import.js";
 import { ecomRoutes } from "./modules/ecom.js";
+import { usageRoutes } from "./modules/usage.js";
 import { consume } from "./lib/limiter.js";
 import { ensure } from "./lib/errors.js";
 // The one route that takes a raw (streamed) body instead of JSON.
@@ -108,6 +109,7 @@ export function createApp(deps) {
   app.use("/api", deployRoutes(context));
   app.use("/api", dbBackupRoutes(context));
   app.use("/api", posImportRoutes(context));
+  app.use("/api", usageRoutes(context));
   app.use("/api", recordRoutes(context));
   app.use("/api", (_req, res) =>
     res.status(404).json({ error: "API route not found." }),

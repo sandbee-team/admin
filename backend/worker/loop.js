@@ -1,6 +1,7 @@
-// The worker loop: three lanes (deploy 1 = deploys and rollbacks, which also
-// serialises per Vercel account; build 2; task 1), a poll every few seconds, the
-// daily retention sweep, boot clean-up and a graceful stop.
+// The worker loop: four lanes (deploy 1 = deploys and rollbacks, which also
+// serialises per Vercel account; build 2; task 1; usage 1 = the owner-triggered
+// usage checks, one client at a time), a poll every few seconds, the daily
+// retention sweep, boot clean-up and a graceful stop.
 import { readdir, rm } from "node:fs/promises";
 import { removeJobDir } from "./cli-runner.js";
 import path from "node:path";
@@ -20,9 +21,15 @@ import { runRollback } from "./rollback.js";
 import { failTask, runVerify } from "./verify.js";
 import { runPurge, runPurgePreview } from "./purge.js";
 import { claimRetention, runRetention } from "./retention.js";
+import {
+  claimUsage,
+  expireStaleChecks,
+  mailBatchSummary,
+  runUsageCheck,
+} from "./usage.js";
 import { dirs, ensureLayout, pruneBuilds } from "./fetch-build.js";
 
-export const LANES = { deploy: 1, build: 2, task: 1 };
+export const LANES = { deploy: 1, build: 2, task: 1, usage: 1 };
 export function createLoop(ctx) {
   const lanes = Object.fromEntries(
     Object.entries(LANES).map(([name, cap]) => [
@@ -46,6 +53,9 @@ export function createLoop(ctx) {
       )
       .finally(() => lanes[lane].running.delete(tracked));
     lanes[lane].running.add(tracked);
+    // activeJobs sizes the free-disk check of deploys/builds; a usage check
+    // uses no disk, so it does not count.
+    if (lane === "usage") return;
     ctx.activeJobs = (ctx.activeJobs ?? 0) + 1;
     tracked.finally(() => {
       ctx.activeJobs -= 1;
@@ -142,6 +152,13 @@ export function createLoop(ctx) {
         start("task", runRetentionClaim(row));
       }
     }
+    // Usage checks: only what the owner queued, never on a schedule.
+    while (free("usage")) {
+      const claim = await claimUsage(ctx);
+      if (!claim) break;
+      started++;
+      start("usage", runUsageCheck(ctx, claim));
+    }
     return started;
   }
   const running = () =>
@@ -150,6 +167,7 @@ export function createLoop(ctx) {
   async function boot() {
     // Before our own first heartbeat: what is queued after a long outage expires.
     await expireStaleQueued(ctx).catch(() => 0);
+    const stale = await expireStaleChecks(ctx).catch(() => ({ batches: [] }));
     await ensureLayout(ctx.workDir);
     const d = dirs(ctx.workDir);
     await rm(d.tmp, { recursive: true, force: true }).catch(() => {});
@@ -194,6 +212,10 @@ export function createLoop(ctx) {
       await ctx.heartbeat.beat();
       ctx.heartbeat.start();
     }
+    // After the first heartbeat (slow SMTP must not fail the health check):
+    // batches cut short by the expiry still mail what their finished checks found.
+    for (const batchId of stale.batches)
+      await mailBatchSummary(ctx, batchId).catch(() => false);
   }
   return {
     lanes,

@@ -21,7 +21,7 @@ export class ClientMongoError extends Error {
   constructor(code) {
     super(`Client database check failed (${code})`);
     this.name = "ClientMongoError";
-    this.code = code; // invalid | not-atlas | auth-failed | unreachable
+    this.code = code; // invalid | not-atlas | auth-failed | unreachable | stats-failed
   }
 }
 const AUTH_CODES = new Set([13, 18]);
@@ -62,6 +62,35 @@ export async function openClientDb(
           ? "invalid"
           : "unreachable",
     );
+  }
+}
+// Storage of the URI's database (the cafe's: it connects without a dbName):
+// {dataSize, indexSize} in bytes from dbStats. The client is always closed.
+// Throws ClientMongoError (invalid | not-atlas | auth-failed | unreachable |
+// stats-failed); nothing from the driver or the URI reaches the error.
+export async function clientDbStats(uri, options = {}) {
+  const opened = await openClientDb(uri, options);
+  try {
+    let stats;
+    try {
+      stats = await opened.db.command({ dbStats: 1 });
+    } catch (error) {
+      throw new ClientMongoError(
+        AUTH_CODES.has(error?.code) ? "auth-failed" : "stats-failed",
+      );
+    }
+    const dataSize = stats?.dataSize;
+    const indexSize = stats?.indexSize;
+    if (
+      ![dataSize, indexSize].every(
+        (value) =>
+          typeof value === "number" && Number.isFinite(value) && value >= 0,
+      )
+    )
+      throw new ClientMongoError("stats-failed");
+    return { dataSize, indexSize };
+  } finally {
+    await opened.client.close().catch(() => {});
   }
 }
 // "ok" | "invalid" | "not-atlas" | "auth-failed" | "unreachable"

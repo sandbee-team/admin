@@ -13,8 +13,8 @@ import {
 import path from "node:path";
 import { createGitHub } from "../lib/github.js";
 import { createVercel } from "../lib/vercel.js";
-import { verifyToken } from "../lib/cloudflare.js";
-import { pingClientMongo } from "../lib/client-mongo.js";
+import { tokenStatus, verifyToken } from "../lib/cloudflare.js";
+import { clientDbStats, pingClientMongo } from "../lib/client-mongo.js";
 import { HEARTBEAT_MS, LEASE_MS } from "../../shared/deploy.js";
 import { runDbBackup } from "./db-backup.js";
 import { createHeartbeat } from "./heartbeat.js";
@@ -50,6 +50,8 @@ export const DEFAULT_TIMING = {
   metaDelayMs: 5000,
   purgeDelayMs: 500,
   retentionCheckMs: 60000,
+  usageRetryMs: 5000, // between the up-to-3 site probes of one usage check
+  usageBudgetMs: 60000, // abort budget for one usage check (driver timeouts stay)
 };
 // Log lines carry an event name and short plain fields only (ids8, codes).
 export function makeLog(sink = (line) => console.info(line)) {
@@ -120,13 +122,20 @@ export async function buildContext({
     s3,
     cache,
     notify,
-    vercelFor: ({ token, teamId }) => createVercel({ token, teamId }),
+    vercelFor: ({ token, teamId, sleep }) =>
+      createVercel({ token, teamId, ...(sleep ? { sleep } : {}) }),
     runCli,
     // The uid the Vercel CLI runs as (only when the worker itself is root).
     cliUser: getuid() === 0 ? { uid: CLI_UID, gid: CLI_UID } : null,
     healthGet: undefined,
     cloudflareVerify: verifyToken,
     pingMongo: (uri) => pingClientMongo(uri),
+    // Usage checks (Phase 2): the site probe transport (default getText), the
+    // Cloudflare fetch, token status and the direct dbStats fallback.
+    usageGet: undefined,
+    cloudflareFetch: undefined,
+    cloudflareStatus: tokenStatus,
+    mongoStats: (uri) => clientDbStats(uri),
     sleep: sleepReal,
     now: () => Date.now(),
     uuid: randomUUID,

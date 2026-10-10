@@ -124,7 +124,29 @@ export class SafeHttpsError extends Error {
     this.code = code;
   }
 }
-// GET https://<host><path> -> {status, headers, text}. `send` is the test seam.
+// An optional query is a few short fixed-shape pairs only (e.g. {stats: "1"}).
+const QUERY_KEY = /^[a-z]{1,20}$/;
+const QUERY_VALUE = /^[A-Za-z0-9._-]{1,40}$/;
+function queryString(query) {
+  if (query === undefined) return "";
+  const entries =
+    query && typeof query === "object" && !Array.isArray(query)
+      ? Object.entries(query)
+      : [];
+  if (
+    entries.length < 1 ||
+    entries.length > 4 ||
+    !entries.every(
+      ([key, value]) =>
+        QUERY_KEY.test(key) &&
+        typeof value === "string" &&
+        QUERY_VALUE.test(value),
+    )
+  )
+    throw new SafeHttpsError("bad-path");
+  return `?${new URLSearchParams(entries)}`;
+}
+// GET https://<host><path>[?query] -> {status, headers, text}. `send` is the test seam.
 export async function getText(
   host,
   path,
@@ -132,6 +154,7 @@ export async function getText(
     timeoutMs = 10000,
     maxBytes = 65536,
     headers = {},
+    query,
     signal,
     lookup = guardedLookup,
     send = realSend,
@@ -148,7 +171,7 @@ export async function getText(
   return send({
     hostname: host,
     port: 443,
-    path,
+    path: path + queryString(query),
     method: "GET",
     headers: { "user-agent": "sandbee-admin-health", ...headers },
     lookup,
@@ -171,6 +194,8 @@ export async function getJson(host, path, options = {}) {
   return { status: result.status, headers: result.headers, json };
 }
 function realSend({ timeoutMs, maxBytes, signal, ...options }) {
+  // An abort listener added to an already-aborted signal never fires.
+  if (signal?.aborted) return Promise.reject(new SafeHttpsError("aborted"));
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, value) => {

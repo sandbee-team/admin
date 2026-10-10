@@ -12,7 +12,12 @@ import { audit } from "../lib/audit.js";
 import { parseImport, importDigest } from "../lib/pos-import.js";
 import { transaction } from "../db.js";
 import { authorizeWrite } from "./records.js";
-import { newPos, aadOf as posAad, changedKey } from "./pos.js";
+import {
+  STATS_TOKEN_FIELD,
+  newPos,
+  aadOf as posAad,
+  changedKey,
+} from "./pos.js";
 import { aadOf as accountAad } from "./accounts.js";
 
 const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -226,6 +231,8 @@ export function posImportRoutes({ db, client, c, auth, cache }) {
           );
           pos.secretsChangedAt[changedKey(field)] = now;
         }
+        // Phase 2: the health stats token is bound to the imported host.
+        if (parsed.secrets[STATS_TOKEN_FIELD]) pos.statsHost = pos.host ?? null;
         if (created) {
           const data = schemas.installations.parse({
             name: parsed.installationName,

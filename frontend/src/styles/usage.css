@@ -1,0 +1,329 @@
+/* Phase 2 usage checks: the installation Usage tab, the fleet usage columns
+   and the meter. Tokens only (tokens.css); light theme like the rest. */
+.usage-stack {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.usage-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+  min-width: 0;
+}
+.usage-wide {
+  grid-column: 1 / -1;
+}
+.usage-body {
+  display: grid;
+  gap: var(--space-3);
+  align-content: start;
+  padding: 0 23px 23px;
+  font-size: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.usage-body .error-box,
+.usage-body .notice,
+.usage-note {
+  margin: 0;
+}
+.usage-note {
+  align-items: flex-start;
+}
+.usage-note svg {
+  margin-top: 3px;
+}
+.usage-note p {
+  line-height: 1.5;
+}
+.usage-watch {
+  display: grid;
+  gap: var(--space-1);
+}
+.usage-check-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.usage-check-row .button {
+  white-space: normal;
+}
+.usage-check-status {
+  font-weight: 500;
+}
+.usage-subtitle {
+  font-size: 12px;
+  font-weight: 600;
+}
+.usage-source {
+  font-weight: 500;
+}
+
+/* Lists of facts (label above value). */
+.usage-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+.usage-facts dt,
+.usage-token-list dt {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.usage-facts dd {
+  margin: 2px 0 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+/* Alerts of the last check. */
+.usage-alerts,
+.usage-clusters {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+.usage-alerts li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--line);
+}
+.usage-alerts li:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.usage-alerts li > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* Clusters: one meter each. */
+.usage-clusters {
+  gap: var(--space-4);
+}
+.usage-cluster {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.usage-cluster-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+.usage-cluster-head strong {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+/* Meter: a single ratio against a limit. The fill carries the level, the
+   track is the light step of the same ramp, hairline marks at 75 % and 90 %.
+   The value is always written in text tokens beside it. */
+.usage-meter {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.usage-meter-bar {
+  position: relative;
+  height: 16px;
+}
+.usage-meter-track {
+  position: absolute;
+  inset: 3px 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.usage-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width var(--motion-fast) var(--ease);
+}
+.usage-meter-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  margin-left: -0.5px;
+  background: var(--line-strong);
+}
+.usage-meter-warning .usage-meter-track {
+  background: var(--warning-bg);
+}
+.usage-meter-warning .usage-meter-fill {
+  background: var(--warning);
+}
+.usage-meter-critical .usage-meter-track {
+  background: var(--danger-bg);
+}
+.usage-meter-critical .usage-meter-fill {
+  background: var(--danger);
+}
+.usage-meter-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+/* Tokens. */
+.usage-token-list {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+}
+.usage-token-list > div {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: baseline;
+}
+.usage-token-list dd {
+  margin: 0;
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.usage-token-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.usage-token-state strong {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.usage-token-action {
+  color: var(--muted);
+}
+
+/* Vercel Hobby: reference text, said plainly. */
+.usage-honest {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+/* POS clients page: toolbar and usage columns. */
+.usage-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  margin-bottom: var(--space-3);
+}
+.usage-toolbar-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+.usage-toolbar-action .button {
+  white-space: normal;
+}
+.usage-batch-status {
+  margin: 0;
+  font-weight: 500;
+}
+.usage-toolbar + .error-box,
+.usage-toolbar + .error-box + .error-box {
+  margin-bottom: var(--space-3);
+}
+.fleet-table td.usage-watch-cell {
+  text-align: center;
+}
+/* The usage columns made the fleet table wider than a desktop screen: keep
+   the customer in view while it scrolls sideways. Same backgrounds as the row
+   (panel, hover surface, urgent danger-bg from components.css). */
+@media (min-width: 601px) {
+  .fleet-table th:first-child,
+  .fleet-table td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+  }
+  .fleet-table td:first-child {
+    background: var(--panel);
+  }
+  .fleet-table tbody tr:not(.row-urgent):hover td:first-child {
+    background: var(--surface);
+  }
+  /* Keyboard focus never lands under the sticky customer column: the column
+     is capped at this width and the scroll position keeps that much clear
+     when a focused control is scrolled into view. */
+  .usage-fleet-wrap {
+    --fleet-sticky-width: 240px;
+    scroll-padding-inline-start: var(--fleet-sticky-width);
+  }
+  .usage-fleet-wrap .fleet-table th:first-child,
+  .usage-fleet-wrap .fleet-table td:first-child {
+    max-width: var(--fleet-sticky-width);
+  }
+}
+/* Live regions that are always in the page, so a notice placed in them later
+   is announced; while empty they take no room (nor a grid gap). */
+.usage-live:empty {
+  position: absolute;
+}
+.usage-level {
+  font-weight: 500;
+  color: var(--ink);
+}
+.usage-level-warning {
+  color: var(--warning);
+  font-weight: 600;
+}
+.usage-level-critical {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+@media (max-width: 900px) {
+  .usage-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 600px) {
+  .usage-body {
+    padding-inline: 16px;
+  }
+  .usage-token-list > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .usage-alerts li {
+    flex-wrap: wrap;
+  }
+  .usage-toolbar {
+    align-items: flex-start;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .usage-meter-fill {
+    transition: none;
+  }
+}

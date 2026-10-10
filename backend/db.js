@@ -17,6 +17,7 @@ export async function connect(c) {
       );
     await indexes(db);
     await relockLegacyUnlocks(db);
+    await bindLegacyStatsHosts(db);
     return { db, client };
   } catch (error) {
     await client.close();
@@ -40,6 +41,30 @@ export async function relockLegacyUnlocks(db) {
       undefined,
       undefined,
       "pos.relocked",
+      "system",
+      "pos-migration",
+      `${done.modifiedCount} installations`,
+    );
+  return done.modifiedCount;
+}
+// One-time, idempotent (Phase 2): the usage check sends the health stats token
+// only to pos.statsHost, the host it was saved for. Blocks saved before Phase 2
+// have no binding; they are bound once to their current host.
+export async function bindLegacyStatsHosts(db) {
+  const done = await db.collection("installations").updateMany(
+    {
+      "pos.generated.healthStatsToken": { $type: "object" },
+      "pos.host": { $type: "string" },
+      "pos.statsHost": { $exists: false },
+    },
+    [{ $set: { "pos.statsHost": "$pos.host" } }],
+  );
+  if (done.modifiedCount > 0)
+    await audit(
+      db,
+      undefined,
+      undefined,
+      "pos.stats-bound",
       "system",
       "pos-migration",
       `${done.modifiedCount} installations`,
@@ -119,6 +144,15 @@ export async function indexes(db) {
         { "pos.task.status": 1 },
         { partialFilterExpression: { "pos.task.status": { $exists: true } } },
       ),
+    // Phase 2: the usage-check queue (one slot per installation).
+    db.collection("installations").createIndex(
+      { "pos.usage.check.status": 1 },
+      {
+        partialFilterExpression: {
+          "pos.usage.check.status": { $exists: true },
+        },
+      },
+    ),
     db
       .collection("system_state")
       .createIndex(

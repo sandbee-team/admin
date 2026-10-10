@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import { LayoutDashboard, Lock, LockOpen, Rocket, Server } from "lucide-react";
+import {
+  Activity,
+  LayoutDashboard,
+  Lock,
+  LockOpen,
+  Rocket,
+  Server,
+} from "lucide-react";
 import { useResource } from "../hooks/use-resource";
 import {
   Resource,
@@ -24,6 +31,7 @@ import { can } from "../../../shared/policy";
 import { checksFor } from "../../../shared/product-models";
 import { RecordEditor } from "./record-editor";
 import { InstallationDeploy } from "./installation-deploy";
+import { InstallationUsage } from "./installation-usage";
 import { Link } from "../lib/router";
 export function InstallationWorkspace({ id, section = "", user }) {
   const resource = useResource(`/installations/${id}`),
@@ -40,6 +48,7 @@ export function InstallationWorkspace({ id, section = "", user }) {
         ? [
             ["pos", "POS setup", Server],
             ["deploy", "Deploy", Rocket],
+            ["usage", "Usage", Activity],
           ]
         : []),
     ];
@@ -88,6 +97,16 @@ export function InstallationWorkspace({ id, section = "", user }) {
                 <div className="panel">
                   <Empty icon={Rocket} title="Deploy is restricted">
                     Your role cannot open deploy status. Ask an owner or admin.
+                  </Empty>
+                </div>
+              )
+            ) : section === "usage" && isPos ? (
+              can(user.role, "credentials") ? (
+                <InstallationUsage installation={installation} user={user} />
+              ) : (
+                <div className="panel">
+                  <Empty icon={Activity} title="Usage is restricted">
+                    Your role cannot open usage checks. Ask an owner or admin.
                   </Empty>
                 </div>
               )

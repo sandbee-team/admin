@@ -14,6 +14,12 @@ import { encrypt } from "../backend/lib/crypto.js";
 import { createGitHub } from "../backend/lib/github.js";
 import { aadOf, newPos } from "../backend/modules/pos.js";
 import { JOB_STEPS } from "../shared/deploy.js";
+import {
+  MONGO_LIMIT_BYTES,
+  WORKER_FREE_REQUESTS,
+  evaluateAlerts,
+  utcDay,
+} from "../shared/usage.js";
 import { createFakeGitHub, BLD, SRC, SHAS } from "./fakes/github.js";
 const repl = await MongoMemoryReplSet.create({
   replSet: { count: 1, storageEngine: "wiredTiger" },
@@ -164,6 +170,10 @@ for (const name of [
   "o",
   "p",
   "q",
+  // usage.spec.js
+  "r",
+  "s",
+  "t",
 ]) {
   const _id = randomUUID();
   await db.collection("staff").insertOne({
@@ -311,6 +321,155 @@ const READY = {
   last: () => version(9),
   previous: () => version(8),
 };
+// ---- Phase 2 usage fixtures (usage.spec.js) ---------------------------------
+// The stored shape of docs/PHASE2-PLAN.md §3 as the worker writes it: cluster
+// `label` (never `tag`), token expiry in ms, and alerts keyed by type plus the
+// level from the same pure evaluateAlerts the worker uses.
+const DAY = 86400000;
+const MIB = 1048576;
+const cluster = (name, role, bytes, extra = {}) => ({
+  name,
+  role,
+  label: null,
+  active: false,
+  paused: false,
+  state: "ok",
+  usedPct: Math.round((bytes / MONGO_LIMIT_BYTES) * 10000) / 10000,
+  bytes,
+  ...extra,
+});
+const share = (fraction) => Math.round(fraction * MONGO_LIMIT_BYTES);
+const storage = (source, statsCode, clusters) => ({
+  source,
+  code: "ok",
+  statsCode,
+  clusters,
+  maxPct: Math.max(...clusters.map((c) => c.usedPct)),
+});
+const cfCount = (requests, yesterday, now) => ({
+  code: "ok",
+  day: utcDay(now),
+  requests,
+  errors: 3,
+  pct: Math.round((requests / WORKER_FREE_REQUESTS) * 10000) / 10000,
+  yesterday: { day: utcDay(now - DAY), requests: yesterday },
+});
+const cfNone = (code) => ({
+  code,
+  day: null,
+  requests: null,
+  errors: null,
+  pct: null,
+  yesterday: null,
+});
+const siteUp = (latencyMs) => ({
+  state: "up",
+  code: "ok",
+  httpStatus: 200,
+  latencyMs,
+  probes: 1,
+  deployActive: false,
+});
+const USAGE_RESULTS = {
+  healthy: (now) => ({
+    site: siteUp(142),
+    mongo: storage("health", "ok", [cluster("core", "core", 128 * MIB)]),
+    cloudflare: cfCount(12000, 15400, now),
+    credentials: {
+      vercel: { code: "ok", expiresAt: null },
+      cloudflare: { code: "ok", expiresAt: now + 120 * DAY },
+    },
+  }),
+  // 466 MB core (91 %, critical) + a 30 % active ledger; Workers at 80 %.
+  full: (now) => ({
+    ...USAGE_RESULTS.healthy(now),
+    mongo: storage("health", "ok", [
+      cluster("core", "core", 466 * MIB),
+      cluster("ledger-a", "ledger", share(0.3), { label: "A", active: true }),
+    ]),
+    cloudflare: cfCount(80000, 61000, now),
+  }),
+  // Paused by Vercel: no stats, so the direct check measured the core only.
+  paused: () => ({
+    site: {
+      state: "paused",
+      code: "paused",
+      httpStatus: 503,
+      latencyMs: 88,
+      probes: 1,
+      deployActive: false,
+    },
+    mongo: storage("direct", "stats-unavailable", [
+      cluster("core", "core", share(0.4)),
+    ]),
+    cloudflare: cfNone("cf-not-set"),
+    credentials: {
+      vercel: { code: "ok", expiresAt: null },
+      cloudflare: { code: "token-not-set", expiresAt: null },
+    },
+  }),
+  // Stats token refused, so a direct check; the Cloudflare token cannot read
+  // analytics; the Vercel token expires in 10 days (warning).
+  denied: (now) => ({
+    site: siteUp(95),
+    mongo: storage("direct", "stats-denied", [
+      cluster("core", "core", share(0.2)),
+    ]),
+    cloudflare: cfNone("cf-denied"),
+    credentials: {
+      vercel: { code: "ok", expiresAt: now + 10 * DAY - 3600000 },
+      cloudflare: { code: "ok", expiresAt: null },
+    },
+  }),
+};
+// `now` dates the counts (today's Worker requests); `ageMs` only the check.
+function usageLast(kind, now, ageMs = 0) {
+  const measured = USAGE_RESULTS[kind](now);
+  const { alerts, level } = evaluateAlerts(measured, now);
+  return {
+    ...measured,
+    alerts,
+    level,
+    at: new Date(now - ageMs),
+    durationMs: 4200,
+  };
+}
+const usageCheck = (status, at, extra = {}) => ({
+  id: randomUUID(),
+  status,
+  batchId: null,
+  requestedAt: new Date(at - 6000),
+  by: { id: "u", name: "deploy owner" },
+  lease: { owner: "w1", until: new Date(at + 90000), fence: 1 },
+  attempt: 1,
+  startedAt: status === "queued" ? null : new Date(at - 5000),
+  finishedAt: ["queued", "running"].includes(status) ? null : new Date(at),
+  error: null,
+  ...extra,
+});
+const usageScenario = (
+  n,
+  slug,
+  customer,
+  { watch, result, ageMs = 600000 },
+) => ({
+  n,
+  slug,
+  customer,
+  ...READY,
+  usageResult: result ?? "healthy",
+  usage: () => {
+    const now = Date.now();
+    return result
+      ? {
+          watch,
+          check: usageCheck("done", now - ageMs),
+          last: usageLast(result, now, ageMs),
+          mail: {},
+        }
+      : { watch };
+  },
+});
 const SCENARIOS = {
   ready: { n: 1, slug: "ui-ready", customer: "Ready Cafe", ...READY },
   deploy: { n: 2, slug: "ui-deploy", customer: "Deploy Cafe", ...READY },
@@ -488,6 +647,28 @@ const SCENARIOS = {
     last: () => version(9, { branch: "old-branch" }),
     previous: () => null,
   },
+  // usage.spec.js (Phase 2).
+  usageok: usageScenario(21, "ui-usage-ok", "Usage Ok Cafe", {
+    watch: true,
+    result: "healthy",
+  }),
+  usagefull: usageScenario(22, "ui-usage-full", "Full Cafe", {
+    watch: true,
+    result: "full",
+  }),
+  usagepaused: usageScenario(23, "ui-usage-paused", "Paused Cafe", {
+    watch: false,
+    result: "paused",
+    ageMs: 2 * 3600000,
+  }),
+  usagedenied: usageScenario(24, "ui-usage-denied", "Denied Cafe", {
+    watch: true,
+    result: "denied",
+    ageMs: 3 * 3600000,
+  }),
+  usagenever: usageScenario(25, "ui-usage-never", "Never Cafe", {
+    watch: true,
+  }),
 };
 const task = (status, extra = {}) => ({
   id: randomUUID(),
@@ -550,6 +731,7 @@ async function seedPos(name) {
       aadOf(id, "mongo.uri"),
     );
   pos.task = spec.task?.() ?? null;
+  if (spec.usage) pos.usage = spec.usage();
   if (spec.token)
     pos.vercel.token = encrypt(
       "vercel-secret-token-1234567890",
@@ -744,6 +926,88 @@ const control = createServer(async (req, res) => {
         await db
           .collection("system_state")
           .updateOne({ _id: "pos-worker" }, { $set: { at: ago(10 * 60000) } });
+    } else if (url.pathname === "/pos/usage-check") {
+      // /pos/usage-check?scenario=NAME&status=queued|running|failed|expired
+      // [&code=]: the check slot as the worker leaves it at that point.
+      const id = nid("d", SCENARIOS[scenario].n);
+      const row = await db.collection("installations").findOne({ _id: id });
+      const status = query("status") ?? "running";
+      const now = Date.now();
+      const old = row.pos.usage?.check ?? usageCheck("queued", now);
+      const ended = !["queued", "running"].includes(status);
+      await db.collection("installations").updateOne(
+        { _id: id },
+        {
+          $set: {
+            "pos.usage.check": {
+              ...old,
+              status,
+              startedAt:
+                status === "queued" ? null : (old.startedAt ?? new Date(now)),
+              finishedAt: ended ? new Date(now) : null,
+              error: ended
+                ? {
+                    code:
+                      query("code") ??
+                      (status === "expired" ? "not-picked-up" : "internal"),
+                  }
+                : null,
+            },
+          },
+        },
+      );
+    } else if (url.pathname === "/pos/usage-finish") {
+      // Finishes every queued or running check the way the worker does: the
+      // scenario's result overwrites pos.usage.last and the slot is done.
+      const now = Date.now();
+      const rows = await db
+        .collection("installations")
+        .find(
+          { "pos.usage.check.status": { $in: ["queued", "running"] } },
+          { projection: { "pos.usage.check": 1 } },
+        )
+        .toArray();
+      for (const row of rows) {
+        const name = Object.keys(SCENARIOS).find(
+          (key) => nid("d", SCENARIOS[key].n) === row._id,
+        );
+        await db.collection("installations").updateOne(
+          { _id: row._id },
+          {
+            $set: {
+              "pos.usage.last": usageLast(
+                SCENARIOS[name]?.usageResult ?? "healthy",
+                now,
+              ),
+              "pos.usage.check.status": "done",
+              "pos.usage.check.startedAt":
+                row.pos.usage.check.startedAt ?? new Date(now - 4000),
+              "pos.usage.check.finishedAt": new Date(now),
+              "pos.usage.check.error": null,
+            },
+          },
+        );
+      }
+    } else if (url.pathname === "/pos/retention") {
+      // /pos/retention?failed=N&missing=N&hours=H | ?clear=1: the daily build
+      // retention sweep's summary in the heartbeat row.
+      await db.collection("system_state").updateOne(
+        { _id: "pos-worker" },
+        query("clear") === "1"
+          ? { $unset: { retention: "" } }
+          : {
+              $set: {
+                retention: {
+                  at: ago(Number(query("hours") ?? 1) * 3600000),
+                  checked: 5,
+                  copied: 2,
+                  missing: Number(query("missing") ?? 0),
+                  failed: Number(query("failed") ?? 0),
+                },
+              },
+            },
+        { upsert: true },
+      );
     } else if (url.pathname === "/pos/task") {
       const id = nid("d", SCENARIOS[scenario].n);
       await db

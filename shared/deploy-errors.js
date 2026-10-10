@@ -498,6 +498,12 @@ const PROVIDER = {
     "The provider refused access for this token.",
     "Check the token's permissions.",
   ],
+  // Cloudflare GraphQL answers a missing permission inside a 200 (usage checks).
+  denied: [
+    "Permission missing",
+    "The token lacks a permission this request needs.",
+    "Check the token's permissions.",
+  ],
   "not-found": [
     "Not found",
     "The provider could not find the item.",

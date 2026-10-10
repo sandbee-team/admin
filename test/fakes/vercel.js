@@ -45,6 +45,7 @@ export function createFakeVercel({
       },
     },
     pages: null, // optional [{deployments, next}] for pagination
+    token: { id: "tok_1", name: "sandbee-admin" }, // GET /v5/user/tokens/current
   };
   async function fetch(url, init = {}) {
     const u = new URL(url);
@@ -63,6 +64,9 @@ export function createFakeVercel({
       if (rule.left > 0) rule.left--;
       return rule.respond();
     }
+    // Token metadata is per token, never per team (no teamId check).
+    if (u.pathname === "/v5/user/tokens/current")
+      return json(200, state.token ? { token: state.token } : {});
     if (teamId && query.teamId !== teamId)
       return json(403, { error: { code: "forbidden" } });
     let m;

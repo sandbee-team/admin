@@ -14,11 +14,14 @@ import {
   RefreshCw,
   PanelRightOpen,
   Rocket,
+  Activity,
+  Archive,
 } from "lucide-react";
 import { useResource } from "../hooks/use-resource";
 import { Resource, Badge, Empty, TextLink } from "../components/ui";
 import { Link, navigate } from "../lib/router";
 import { dateTime } from "../lib/api";
+import { when } from "../components/deploy/format";
 import { can } from "../../../shared/policy";
 import { LifecycleReport } from "../components/dashboard/lifecycle-report";
 import { WorkspaceBrief } from "../components/dashboard/workspace-brief";
@@ -206,6 +209,21 @@ export function Overview({ user }) {
                             urgent={item.urgent}
                           />
                         ))}
+                      {can(user.role, "credentials") &&
+                        usageAttention(
+                          data.usage,
+                          data.retention,
+                          data.pos,
+                        ).map((item) => (
+                          <Attention
+                            key={item.title}
+                            icon={item.icon}
+                            href="/pos-clients"
+                            title={item.title}
+                            text={item.text}
+                            urgent={item.urgent}
+                          />
+                        ))}
                       {can(user.role, "recovery") && (
                         <Attention
                           icon={ShieldCheck}
@@ -303,6 +321,61 @@ function posAttention(pos) {
     items.push({
       title: "POS deploy worker offline",
       text: "Deploys cannot run until the worker is back",
+    });
+  return items;
+}
+// Phase 2 usage checks and the daily build-cache retention sweep, from the
+// overview counts (watched clients only; nothing here runs a check).
+const DAY_MS = 86400000;
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const ageOf = (value, now) => {
+  const time = value ? new Date(value).getTime() : NaN;
+  return Number.isFinite(time) ? now - time : Infinity;
+};
+function usageAttention(usage, retention, pos, now = Date.now()) {
+  const items = [];
+  const checked = usage?.lastCheckAt ? when(usage.lastCheckAt, now) : "";
+  // Each client's own latest check: lastCheckAt is only the newest of them,
+  // so no age is put next to these counts.
+  if (usage?.critical > 0)
+    items.push({
+      urgent: true,
+      icon: Activity,
+      title: "POS usage critical",
+      text: `${plural(usage.critical, "client")} critical in their latest check.`,
+    });
+  if (usage?.warning > 0)
+    items.push({
+      icon: Activity,
+      title: "POS usage warning",
+      text: `${plural(usage.warning, "client")} near a free-tier limit in their latest check.`,
+    });
+  // Checks run only when asked: say so when the watch list has gone quiet.
+  if (usage?.watched > 0 && ageOf(usage.lastCheckAt, now) > 7 * DAY_MS)
+    items.push({
+      icon: Activity,
+      title: "Usage not checked recently",
+      text: checked
+        ? `Last check ${checked} — run Check watched clients.`
+        : "No watched client has been checked yet — run Check watched clients.",
+    });
+  const lost = (retention?.failed ?? 0) + (retention?.missing ?? 0);
+  if (lost > 0)
+    items.push({
+      urgent: true,
+      icon: Archive,
+      title: "Build-cache retention failed",
+      text: `${plural(lost, "build")} could not be kept. Open POS clients.`,
+    });
+  else if (
+    retention?.at &&
+    pos?.workerOnline &&
+    ageOf(retention.at, now) > 2 * DAY_MS
+  )
+    items.push({
+      icon: Archive,
+      title: "Build-cache retention has not run",
+      text: `Last sweep ${when(retention.at, now)}; it should run daily while the worker is online.`,
     });
   return items;
 }

@@ -3,7 +3,8 @@
 Status: Stage 1 LIVE on admin.sandbee.in since 2026-10-09 (commit `8949777`); full-codebase review
 fixes LIVE since 2026-10-10 (commit `1617d30`: 204 unit/API tests, 18 Playwright ×3 green; owner
 smoke-checked accounts, files and Recovery after deploy).
-Stage 2 (2026-10-10): W0 builder (pos-builder main @ 60ceb7b), W1 adapters + sealed build cache, W3 API, W2 deploy worker (separate `worker` container; Vercel CLI as uid 10001), W4 client DB backup and W5 guided Deploy UI + POS clients page implemented, reviewed (4 independent reviews; all critical/high/medium fixed) and verified (539 unit/API tests with 5 Linux-only skipped on Windows, 35 Playwright ×3 green); **LIVE on the server since 2026-10-10 (main @ 08241e5)**. Release evidence: full suite on Linux in a container on the server 542/543 pass, 0 fail; app + worker healthy; worker `--self-check` all ok on the real server incl. `cli-isolation` (uid 10001 cannot read the worker's /proc environ) and, with the demo installation, `token-honoured`, `token-not-in-cmdline`, `token-not-on-disk`; first real demo deploy built on GitHub, sealed into S3, uploaded prebuilt, promoted and health-checked; a Redeploy succeeded. Bugs found only by the live run and fixed with tests: extraction errors swallowed (partial trees), self-check dir modes, Node.js 24.x project setting blocking verify (now a warning; runtime guaranteed by the build), and go-live confirmation waiting on `lastAliasRequest` (absent after promote — now production target / PROMOTED) plus "unhealthy" without a health result (now `health-unknown`). Release steps: docs/DEPLOYMENT.md (see docs/POS-STAGE2-PLAN.md, POS-STAGE2-REV2.md). Stage 3 and Phases 2-3 not started. Owner: single operator.
+Stage 2 (2026-10-10): W0 builder (pos-builder main @ 60ceb7b), W1 adapters + sealed build cache, W3 API, W2 deploy worker (separate `worker` container; Vercel CLI as uid 10001), W4 client DB backup and W5 guided Deploy UI + POS clients page implemented, reviewed (4 independent reviews; all critical/high/medium fixed) and verified (539 unit/API tests with 5 Linux-only skipped on Windows, 35 Playwright ×3 green); **LIVE on the server since 2026-10-10 (main @ 08241e5)**. Release evidence: full suite on Linux in a container on the server 542/543 pass, 0 fail; app + worker healthy; worker `--self-check` all ok on the real server incl. `cli-isolation` (uid 10001 cannot read the worker's /proc environ) and, with the demo installation, `token-honoured`, `token-not-in-cmdline`, `token-not-on-disk`; first real demo deploy built on GitHub, sealed into S3, uploaded prebuilt, promoted and health-checked; a Redeploy succeeded. Bugs found only by the live run and fixed with tests: extraction errors swallowed (partial trees), self-check dir modes, Node.js 24.x project setting blocking verify (now a warning; runtime guaranteed by the build), and go-live confirmation waiting on `lastAliasRequest` (absent after promote — now production target / PROMOTED) plus "unhealthy" without a health result (now `health-unknown`). Release steps: docs/DEPLOYMENT.md (see docs/POS-STAGE2-PLAN.md, POS-STAGE2-REV2.md). Stage 3 and Phase 3 not started. Owner: single operator.
+Phase 2 (2026-10-11): on-demand usage checks (D31-D37, `docs/PHASE2-PLAN.md` rev 2 + §18 as built) — watch list + "Check watched clients" / "Check now", one check at a time on the worker's `usage` lane, only the current result stored (`pos.usage.last`); site up/down/latency/paused, storage per cluster vs 512 MB (cafe health stats, else direct dbStats of the core cluster), Cloudflare Worker requests today/yesterday, token expiry; Usage tab, POS clients columns, Attention items and one summary email per batch (24 h de-duplication). Implemented with TDD in units U1-U4, 3 independent read-only reviews + 2 re-review rounds + a focused pass (all critical/high/medium fixed, stats token bound to its host = D37), verified on Windows (`npm test` 0 fail, 6 Linux-only skipped; `npm run build`; Playwright 40/40). Release pending: Linux suite on the server, deploy, `--self-check --usage`, Cloudflare Account Analytics:Read per client token.
 Open owner items: (1) set `deployLock: true` in the local `F:\lucifer\clients\demo.json` now that demo deploys from admin (transition rule — the local console must not upload source again); (2) run "Remove old source deployments" (purge preview → execute) for demo so the earlier CLI source uploads disappear from its Vercel account; (3) enter Lucifer by hand (customer → POS installation → POS setup with the `lucifer007` profile ids, a new dedicated Vercel token, the MONGODB_URI from the Vercel project env, accounts); (4) delete the throwaway spike Vercel account and the `SPIKE_VERCEL_TOKEN` secret if not done; `F:\lucifer\clients\` clean-up later (D14).
 Started 2026-10-09. Update the Decisions table whenever the owner changes a rule.
 
@@ -51,6 +52,14 @@ then usage analytics (Phase 2) and T&C e-signature (Phase 3).
 | D27 | Builder token `pos-builder-actions` gains Contents: read on pos-builder only. |
 | D28 | (owner, 2026-10-10) In-app client DB backup cap 20 MB compressed; automatic rollback when the post-deploy health check fails; pos-builder run/log retention 7 days; deploy, rollback, purge and "prepare build" are owner-only (`deploy` permission). |
 | D29 | Spike evidence (run #2): prebuilt output in the client's Vercel exposes no source — files API counts ts/tsx/map/apps-hub/packages-shared-src/scripts all 0. |
+| D30 | (recorded in `docs/POS-STAGE2-REV2.md` §7) Builder sanitises output before packaging: deletes all `*.map` and `.env.example`; any other `.env*`, any app-path secret pattern, or any non-allowlisted node_modules secret pattern fails the build. |
+| D31 | (owner, 2026-10-11, Phase 2 — `docs/PHASE2-PLAN.md` rev 2) Usage checks run **on demand only**: the owner keeps a per-client **watch list** and triggers "Check watched clients" (POS clients page) or "Check now" (one client). Each trigger queues one check per client; the worker runs them **one at a time** on its own `usage` lane (concurrency 1). No schedule, no background watching. |
+| D32 | Only the **current** result per client is stored (`installations.pos.usage.last`, overwritten by every check). No history, no daily points, no new collection, no "full in ~N days" projection (owner: "only current"). |
+| D33 | Storage = `(dataSize+indexSize)/512 MiB` per cluster (core + ledgers + standbys) from the cafe's `GET /api/health?stats=1` with `x-stats-token`; fallback `dbStats` through `pos.mongo.uri` = core cluster only, labelled as such. No Atlas Admin API. |
+| D34 | Vercel: up/down, latency and paused (503 `DEPLOYMENT_PAUSED`) from our own probe only; no bandwidth/CPU/invocation numbers (no Hobby usage API) — reference limits only. Cloudflare: account-wide Worker requests today (UTC) and yesterday via GraphQL `workersInvocationsAdaptive`; needs Account Analytics:Read on the client token (notice, not alert, without it). |
+| D35 | Levels per check: storage and Worker requests 75 % warning / 90 % critical; site down = 3 consecutive failed probes inside one check (not raised during a deploy/rollback); paused critical at once; token invalid/expired/≤ 3 days critical, ≤ 14 days warning. Shown in the Attention panel; build-cache retention failure added to it. |
+| D36 | (owner) One summary email when a "Check watched clients" batch finishes, only if a client is warning/critical, de-duplicated per client per alert type per 24 h (one warning→critical escalation allowed); a single "Check now" sends no email. Owner/admin (`credentials`) may watch and trigger. |
+| D37 | (review fix, 2026-10-11) The health stats token is sent only to `pos.statsHost`, the web address it was saved for. Only the secrets writes (secret PUT/DELETE, the import) and a one-time boot migration set it; a host change through the config form never moves it, so a `credentials` user cannot redirect a secret to another host. |
 
 Box memory measured 2026-10-09: 3834 MB total, 2383 MB available, 2 GB swap; all containers
 together ≈ 680 MB (largest: sandbee-platform-demo 388 MB; admin 48 MB of 512 MB).
@@ -286,16 +295,18 @@ their tests (~250 in `npm run test:go-live`).
   upload source again. Local files are deleted only after Stage 3 is verified.
 - Until Stage 2, do not share Vercel logins with clients (source is visible there).
 
-## 9. Phase 2 — usage analytics (summary)
+## 9. Phase 2 — usage checks (summary; full plan `docs/PHASE2-PLAN.md` rev 2, D31-D36)
 
-- Mongo usage = `(dataSize+indexSize)/512MB` from the cafe's existing `GET /api/health?stats=1`
-  with `x-stats-token` (imported `healthStatsToken`); fallback `dbStats` via the client URI.
-- Vercel: up/down + latency probes, paused detection (`503 DEPLOYMENT_PAUSED`); Hobby has NO
-  usage API (Query API/Drains are Pro-only) — bandwidth/CPU only as an estimate later.
-- Cloudflare Worker requests/day via GraphQL `workersInvocationsAdaptive` (token needs Account
-  Analytics Read).
-- Alerts at 75% / 90%, 3 consecutive health failures, paused, token expiry; Attention panel + email.
-- Storage: one small daily point per client (M0 budget), no raw logs.
+- On demand only: watch list per client + "Check watched clients" / "Check now"; the worker runs
+  one check at a time (`usage` lane) and stores only the latest result in `pos.usage.last`.
+- Mongo usage = `(dataSize+indexSize)/512 MiB` per cluster from the cafe's `GET /api/health?stats=1`
+  with `x-stats-token` (imported `healthStatsToken`); fallback `dbStats` via the client URI (core only).
+- Vercel: up/down (3 probes), latency, paused (`503 DEPLOYMENT_PAUSED`); Hobby has NO usage API
+  (Query API/Drains are Pro-only), so bandwidth/CPU are not shown.
+- Cloudflare Worker requests today/yesterday via GraphQL `workersInvocationsAdaptive` (token needs
+  Account Analytics Read); Vercel/Cloudflare token expiry.
+- Levels 75 % / 90 %, site down, paused, token expiry; Attention panel + one summary email per batch
+  (24 h de-duplication); build-cache retention failure in the Attention panel.
 
 ## 10. Phase 3 — T&C e-signature (summary)
 

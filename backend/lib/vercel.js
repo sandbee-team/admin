@@ -62,6 +62,21 @@ export function createVercel({
         defaultTeamId: text(json?.user?.defaultTeamId, 100) || null,
       };
     },
+    // Expiry of the token itself (usage checks). Token metadata is per token,
+    // so no team id is sent. -> {expiresAt: ms | null (never expires)}.
+    async tokenInfo({ signal } = {}) {
+      const { json } = await request({
+        provider: "vercel",
+        path: "/v5/user/tokens/current",
+        token,
+        fetch: fetchImpl,
+        sleep,
+        signal,
+      });
+      if (!json?.token || typeof json.token !== "object")
+        throw new ProviderError("vercel", "bad-response");
+      return { expiresAt: time(json.token.expiresAt) };
+    },
     async project(projectId, { signal } = {}) {
       const { json } = await call(`/v9/projects/${id(projectId)}`, { signal });
       const last = json?.lastAliasRequest;

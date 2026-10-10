@@ -14,8 +14,10 @@ import { JobFail } from "../backend/worker/lease.js";
 import { AcceptError } from "../backend/worker/artifact.js";
 
 const dir = "backend/worker";
+// usage.js stores Phase 2 usage codes, a separate table (shared/usage-codes.js)
+// with its own static scan in test/phase2-worker.test.js.
 const sources = readdirSync(dir)
-  .filter((f) => f.endsWith(".js"))
+  .filter((f) => f.endsWith(".js") && f !== "usage.js")
   .map((f) => [f, readFileSync(`${dir}/${f}`, "utf8")]);
 const NOT_CODES = new Set([
   ...DEPLOY_STEPS,

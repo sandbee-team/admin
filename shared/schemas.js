@@ -620,3 +620,12 @@ export const deploySchemas = {
     })
     .strict(),
 };
+
+// ---- POS usage checks (Phase 2) ---------------------------------------------
+// The checks run in the worker; these bodies only toggle the watch list and
+// enqueue. No field selects what to check: that is fixed by the worker.
+export const usageSchemas = {
+  watch: z.object({ watch: z.boolean() }).strict(),
+  check: z.object({}).strict(),
+  batch: z.object({}).strict(),
+};

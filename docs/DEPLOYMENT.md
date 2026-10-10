@@ -110,6 +110,26 @@ Remove-Item Env:RESTORE_MONGODB_URI
 
 The URI is read from the environment only. The script refuses an Atlas host (unless `--allow-atlas`), refuses a target database that already holds collections (unless `--force`), and verifies the document counts against the backup's trailer. Backups over 20 MB compressed are refused at creation: use `mongodump` locally for those.
 
+## Phase 2 release checklist (usage checks)
+
+Phase 2 adds on-demand usage checks (docs/PHASE2-PLAN.md rev 2): the owner ticks **Watch** for the clients to include and presses **Check watched clients** (POS clients page) or **Check now** (a client's Usage tab). The worker checks one client at a time — site up/down/paused and latency, MongoDB storage per cluster vs 512 MB, Cloudflare Worker requests today vs 100,000, Vercel/Cloudflare token expiry — and stores only the latest result. Nothing runs on a schedule. No new container, volume, `.env` variable or npm dependency.
+
+1. **Dump first.** `mongodump` of `sandbee_admin` (data is additive: `installations.pos.usage`).
+2. **Cloudflare permission (per client, once).** In the client's Cloudflare dashboard → My Profile (or Manage Account) → API Tokens → the token admin holds → Edit → add **Account → Account Analytics → Read** → Continue → Update. The token value does not change, so nothing is re-entered in admin. Without it the Usage tab shows "Analytics permission missing" (no alert).
+3. **Linux suite on the server:** `bash scripts/test-linux.sh` must end with 0 failures.
+4. **Build and start:** `cd ~/admin && git pull && unset RELEASE_TAG && docker compose -f compose.production.yaml up -d --build`, `docker image prune -f`, then `docker compose -f compose.production.yaml ps` (both healthy).
+5. **Live self-check** (one check of one client, writes nothing, prints codes and numbers only; `--mail-test` sends one fixed test email without client data to every active owner):
+
+   ```sh
+   docker compose -f compose.production.yaml exec worker node backend/worker.js --self-check --usage=<demo installation id> --mail-test
+   ```
+
+   Expected: `ok site up …`, `ok storage health core=…%`, `ok cloudflare today=… yesterday=…` (or `fail cloudflare cf-denied` until step 2 is done), `ok vercel-token …`, `ok cloudflare-token …`, `ok mail-test sent=1`.
+6. **In the panel:** POS clients → tick **Watch** for demo → **Check watched clients** → the row shows Queued, then the result within about 15 s; open demo → Usage tab. If any client is warning/critical, one summary email arrives.
+7. **Release rollback:** `git checkout 71e3745 && docker compose -f compose.production.yaml up -d --build`; `pos.usage` stays in the database and is ignored by older code.
+
+Operating notes: checks only happen when you trigger them, so run **Check watched clients** regularly (for example weekly) to catch token expiry or a paused site. A check takes about 3-15 s per client and calls the client's site 2-3 times (plain probes, then one stats request). The health stats token is bound to the host it was saved for (existing installations are bound once at the first start, audit `pos.stats-bound`), so after a host change save the token again in POS setup. `docker compose -f compose.production.yaml logs worker` shows `usage-check` lines with the level and duration only.
+
 ## Reverse proxy (Caddy)
 
 Production terminates TLS in Caddy (`/opt/edge/Caddyfile`) and proxies to Admin on a separate local port, which keeps the other live applications untouched:
