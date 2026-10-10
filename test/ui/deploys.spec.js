@@ -16,6 +16,7 @@ const SCENARIO = {
   failed: 6,
   stalled: 7,
   rolledback: 8,
+  settings: 18,
 };
 const iid = (name) =>
   `00000000-0000-4000-8000-d${String(SCENARIO[name]).padStart(11, "0")}`;
@@ -555,4 +556,22 @@ test("an admin sees status read-only and a viewer cannot open deploy pages", asy
       .getByRole("navigation", { name: "Installation navigation" })
       .getByRole("link", { name: "Deploy", exact: true }),
   ).toHaveCount(0);
+});
+
+test("verify shows the failing project setting with actual and expected, and a Node.js warning", async ({
+  page,
+}) => {
+  test.setTimeout(60000);
+  await control("reset?scenario=settings");
+  await ownerIn(page, "p");
+  await page.goto(deployUrl("settings"));
+  const issues = page.locator(".verify-issues");
+  await expect(issues).toContainText(
+    "Root Directory is 'src', expected 'apps/cafe'",
+  );
+  await expect(issues).toContainText("Settings, Build and Deployment");
+  await expect(issues).toContainText(
+    "Node.js version is 24.x on Vercel; admin deploys run on Node 22 from the build (only local-console builds use the project setting).",
+  );
+  await expect(page.locator(".verify-flags")).toContainText("Project settings");
 });

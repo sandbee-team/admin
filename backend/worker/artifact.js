@@ -225,6 +225,8 @@ const emptyCounts = () => ({
   // part of the output (H1), and an unreadable config is refused outright.
   filePathMap: 0,
   badConfig: 0,
+  // A function whose runtime is not the builder's Node.js major (or "edge").
+  runtimeMismatch: 0,
 });
 const BAD_KEYS = [
   "hardlinks",
@@ -239,6 +241,7 @@ const BAD_KEYS = [
   "malformed",
   "filePathMap",
   "badConfig",
+  "runtimeMismatch",
 ];
 const FINDING_KEYS = [
   "maps",
@@ -535,7 +538,7 @@ function refOk(entries, value, base = "") {
     resolveInArchive(entries, target) === target
   );
 }
-function archiveChecks(v, entries, configs, overflow = 0) {
+function archiveChecks(v, entries, configs, overflow = 0, nodeMajor = null) {
   // More configs than we inspect: the rest is unchecked, so refuse.
   v.badConfig += overflow;
   for (const [name, e] of entries) {
@@ -571,6 +574,14 @@ function archiveChecks(v, entries, configs, overflow = 0) {
       if (!refOk(entries, ref, path.posix.dirname(config.name)))
         v.filePathMap++;
       continue;
+    }
+    // The runtime of a prebuilt function is taken from this file by the CLI
+    // (deploy: Lambda({...functionConfig})), not from the Vercel project's
+    // setting, so it is guaranteed here: nodejs<builder major>.x or edge.
+    if (nodeMajor) {
+      const runtime = parsed.runtime;
+      if (!(runtime === "edge" || runtime === `nodejs${nodeMajor}.x`))
+        v.runtimeMismatch++;
     }
     const map = parsed.filePathMap;
     if (map === undefined || map === null) continue;
@@ -634,13 +645,20 @@ export function inspectTgz(file, options = {}) {
     },
     {
       ...options,
-      finalize: (v) => archiveChecks(v, entries, configs, overflow),
+      finalize: (v) =>
+        archiveChecks(v, entries, configs, overflow, options.nodeMajor ?? null),
     },
   );
 }
 // The specific code for a rejected archive.
 export const tarProblemCode = (v) =>
-  v.filePathMap ? "artifact-filepathmap" : "tar-invalid";
+  v.filePathMap
+    ? "artifact-filepathmap"
+    : v.runtimeMismatch
+      ? "artifact-runtime"
+      : "tar-invalid";
+export const nodeMajorOf = (version) =>
+  /^(\d+)/.exec(String(version ?? ""))?.[1] ?? null;
 
 // Extracts into `dest` (an existing directory), refusing anything that would
 // land outside it or write through a symlink. Validate with inspectTgz first.
@@ -920,7 +938,10 @@ async function acceptBuildInner(
     out.sha256 !== (await sha256File(tgzPath))
   )
     bad("manifest-mismatch");
-  const v = await inspectTgz(tgzPath, { signal });
+  const v = await inspectTgz(tgzPath, {
+    signal,
+    nodeMajor: nodeMajorOf(descriptor.nodeVersion),
+  });
   if (v.bad || v.findings) bad(tarProblemCode(v));
   if (
     v.files !== count(out.files) ||

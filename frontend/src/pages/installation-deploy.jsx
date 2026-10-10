@@ -36,6 +36,7 @@ import { BackupPanel } from "../components/deploy/backup-panel";
 import { StaleBanner } from "../components/deploy/stale-banner";
 import { VersionCard } from "../components/deploy/version-card";
 import { describeError, titlesOf } from "../components/deploy/format";
+import { describeProjectIssue } from "../../../shared/deploy-errors";
 const VERIFY_LABEL = {
   vercel: "Vercel token",
   project: "Project settings",
@@ -305,6 +306,22 @@ export function InstallationDeploy({ installation, user }) {
               )}
             </ul>
           )}
+          {data.verify &&
+            (data.verify.problems?.length > 0 ||
+              data.verify.warnings?.length > 0) && (
+              <ul className="verify-issues small">
+                {(data.verify.problems ?? []).map((issue) => (
+                  <li key={`p-${issue.name}`} role="alert">
+                    {describeProjectIssue(issue)}
+                  </li>
+                ))}
+                {(data.verify.warnings ?? []).map((issue) => (
+                  <li key={`w-${issue.name}`} className="subtle">
+                    {describeProjectIssue(issue, "warning")}
+                  </li>
+                ))}
+              </ul>
+            )}
           {data.verify && data.verify.env && data.verify.env !== "ok" && (
             <p className="small subtle">
               Environment variables on Vercel differ from the stored settings.

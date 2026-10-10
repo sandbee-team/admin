@@ -770,6 +770,37 @@ add(
   "A process of the Vercel CLI could not be stopped, so the job was stopped for safety.",
   "Check the worker container, then retry.",
 );
+add(
+  "artifact-runtime",
+  "build",
+  "Runtime differs",
+  "A function in the build output does not use the builder's Node.js version.",
+  "Tell support; do not deploy this build.",
+);
+// ---- Vercel project setting checks (verify and preflight) --------------------------
+// Non-secret project settings only. Blocking: framework, rootDirectory. A Node.js
+// version that differs from the builder's is only a warning: admin deploys take
+// their function runtime from the prebuilt output (.vc-config.json), not from the
+// Vercel project's setting.
+export const SETTING_LABELS = {
+  framework: "Framework",
+  rootDirectory: "Root Directory",
+  nodeVersion: "Node.js version",
+  sourceFilesOutsideRootDirectory:
+    "Include source files outside of the Root Directory",
+};
+export const BLOCKING_SETTINGS = ["framework", "rootDirectory"];
+const show = (v) =>
+  v === null || v === undefined || v === "" ? "not set" : String(v);
+// One owner-facing sentence for a problem (blocking) or a warning.
+export function describeProjectIssue(issue, level = "error") {
+  const label = SETTING_LABELS[issue?.name] ?? "A project setting";
+  if (level === "warning" && issue?.name === "nodeVersion") {
+    const major = /^(\d+)/.exec(String(issue.expected ?? ""))?.[1] ?? "22";
+    return `Node.js version is ${show(issue.actual)} on Vercel; admin deploys run on Node ${major} from the build (only local-console builds use the project setting).`;
+  }
+  return `${label} is '${show(issue?.actual)}', expected '${show(issue?.expected)}': change it in Vercel, Settings, Build and Deployment.`;
+}
 // ---- client database backup ---------------------------------------------------------
 add(
   "backup-too-large",

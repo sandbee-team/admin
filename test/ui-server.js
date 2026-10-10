@@ -162,6 +162,7 @@ for (const name of [
   "m",
   "n",
   "o",
+  "p",
 ]) {
   const _id = randomUUID();
   await db.collection("staff").insertOne({
@@ -455,6 +456,13 @@ const SCENARIOS = {
         error: { step: "health", code: "health-failed", message: "x" },
       }),
   },
+  settings: {
+    n: 18,
+    slug: "ui-settings",
+    customer: "Settings Cafe",
+    ...READY,
+    verify: "issues",
+  },
   gone: {
     n: 11,
     slug: "ui-gone",
@@ -531,6 +539,21 @@ async function seedPos(name) {
       c.VAULT_KEY,
       aadOf(id, "vercel.token"),
     );
+  if (spec.verify === "issues")
+    pos.verify = {
+      at: new Date(),
+      by: { id: "x", name: "Owner" },
+      vercel: "ok",
+      project: "settings",
+      env: "ok",
+      mongo: "ok",
+      cloudflare: null,
+      health: "ok",
+      problems: [
+        { name: "rootDirectory", actual: "src", expected: "apps/cafe" },
+      ],
+      warnings: [{ name: "nodeVersion", actual: "24.x", expected: "22.x" }],
+    };
   if (spec.verify === "ok")
     pos.verify = {
       at: new Date(),

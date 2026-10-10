@@ -21,7 +21,10 @@ import {
   buildRowId,
   sha7,
 } from "../../shared/deploy.js";
-import { isKnownCode } from "../../shared/deploy-errors.js";
+import {
+  describeProjectIssue,
+  isKnownCode,
+} from "../../shared/deploy-errors.js";
 import { key8 } from "../lib/deploy-view.js";
 import {
   JobFail,
@@ -32,7 +35,7 @@ import {
   wait,
   withLease,
 } from "./lease.js";
-import { AcceptError, extractTgz } from "./artifact.js";
+import { AcceptError, extractTgz, nodeMajorOf } from "./artifact.js";
 import {
   CLI_CODES,
   cliEnv,
@@ -49,6 +52,7 @@ import {
 } from "./retention.js";
 import {
   WORKER_ACTOR,
+  expectedNodeOf,
   inspectProject,
   loadTarget,
   productionOf,
@@ -201,7 +205,10 @@ export async function preflight(jr) {
       "The customer is paused or archived, or the installation is retired.",
       "preflight",
     );
-  const ins = await inspectProject(jr.vercel, target, { signal: jr.signal });
+  const ins = await inspectProject(jr.vercel, target, {
+    signal: jr.signal,
+    expectedNode: await expectedNodeOf(ctx),
+  });
   if (ins.vercel !== "ok")
     throw fail(
       `vercel-${ins.vercel}`.slice(0, 40),
@@ -216,7 +223,13 @@ export async function preflight(jr) {
         : `project-${ins.project}`.slice(0, 40),
       failMessage(
         ins.project === "settings"
-          ? `Vercel project settings differ: ${ins.names.filter((n) => !/^[A-Z]/.test(n)).join(", ")}`
+          ? ins.problems
+              .map((p) => describeProjectIssue(p))
+              .join(" ")
+              .replace(
+                /: change it in Vercel, Settings, Build and Deployment./g,
+                ".",
+              )
           : (providerMessage[ins.project] ??
               `The Vercel project could not be read (${ins.project}).`),
       ),
@@ -259,7 +272,15 @@ export async function preflight(jr) {
         "preflight",
       );
   }
-  await jr.end("preflight");
+  // A different Node.js version on the Vercel project is only a note: the
+  // runtime of an admin deploy comes from the build output.
+  await jr.end(
+    "preflight",
+    "done",
+    ins.warnings.length
+      ? `Vercel project uses Node ${ins.warnings[0].actual ?? "?"}; the build's runtime is used`
+      : "",
+  );
 }
 
 // ---- resolve --------------------------------------------------------------------
@@ -567,12 +588,15 @@ export async function uploadDeployment(jr, { tgzPath, metaValue }) {
   // extractTgz validates the whole archive first (links, filePathMap) and
   // creates every path component itself, never through a symlink.
   try {
-    await extractTgz(tgzPath, root, { signal: jr.signal });
+    await extractTgz(tgzPath, root, {
+      signal: jr.signal,
+      nodeMajor: nodeMajorOf(jr.job.buildInputs?.builder?.nodeVersion),
+    });
   } catch (error) {
     if (error instanceof AcceptError)
       throw fail(
-        error.code === "artifact-filepathmap"
-          ? "artifact-filepathmap"
+        ["artifact-filepathmap", "artifact-runtime"].includes(error.code)
+          ? error.code
           : "tar-invalid",
         "The build output failed validation.",
         "upload",

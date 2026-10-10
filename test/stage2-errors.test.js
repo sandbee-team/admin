@@ -7,6 +7,7 @@ import {
   describeCode,
   isKnownCode,
   providerFlag,
+  describeProjectIssue,
 } from "../shared/deploy-errors.js";
 import { DEPLOY_STEPS } from "../shared/deploy.js";
 import { JobFail } from "../backend/worker/lease.js";
@@ -199,5 +200,36 @@ describe("provider, verify and task codes (API review L3)", () => {
       "rollback-baseline-no-fallback",
     ])
       assert.ok(isKnownCode(c), c);
+  });
+});
+
+describe("project setting messages", () => {
+  it("names the setting with actual and expected, and words the Node.js warning", () => {
+    const err = describeProjectIssue({
+      name: "rootDirectory",
+      actual: "src",
+      expected: "apps/cafe",
+    });
+    assert.match(
+      err,
+      /^Root Directory is 'src', expected 'apps\/cafe': change it in Vercel, Settings, Build and Deployment\.$/,
+    );
+    assert.match(
+      describeProjectIssue({
+        name: "framework",
+        actual: null,
+        expected: "nextjs",
+      }),
+      /^Framework is 'not set', expected 'nextjs'/,
+    );
+    assert.equal(
+      describeProjectIssue(
+        { name: "nodeVersion", actual: "24.x", expected: "22.x" },
+        "warning",
+      ),
+      "Node.js version is 24.x on Vercel; admin deploys run on Node 22 from the build (only local-console builds use the project setting).",
+    );
+    assert.ok(isKnownCode("artifact-runtime"));
+    assert.ok(ERROR_CODES["artifact-runtime"].plainMessage.length <= 160);
   });
 });

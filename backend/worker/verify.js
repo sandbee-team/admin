@@ -7,7 +7,12 @@ import { ProviderError } from "../lib/provider-http.js";
 import { canonicalEnvValue, nextPublicOf } from "../lib/build-inputs.js";
 import { probeHealth, probeLogin } from "../lib/pos-health.js";
 import { NEXT_PUBLIC_KEYS } from "../../shared/deploy.js";
-import { isKnownCode, providerFlag } from "../../shared/deploy-errors.js";
+import {
+  BLOCKING_SETTINGS,
+  isKnownCode,
+  providerFlag,
+} from "../../shared/deploy-errors.js";
+import { BUILD_SETTINGS } from "../lib/build-inputs.js";
 import { audit } from "../lib/audit.js";
 import { transaction } from "../db.js";
 import { JobFail, LeaseLost, withLease } from "./lease.js";
@@ -73,8 +78,33 @@ export const providerCode = (error) => {
 };
 // Vercel user, project settings and env drift. Flags only: "ok" or a fixed
 // code; `names` lists KEY NAMES (never values) for the failure message.
-export async function inspectProject(vercel, target, { signal } = {}) {
+const cleanSetting = (value) =>
+  value === null || value === undefined
+    ? null
+    : String(value)
+        .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+        .slice(0, 100);
+const majorOf = (value) => /^(\d+)/.exec(String(value ?? ""))?.[1] ?? null;
+// The Node.js major the builder uses (builder.json), as "22.x"; the fixed
+// build setting when the descriptor is not known yet.
+export async function expectedNodeOf(ctx) {
+  try {
+    const info = await ctx.heartbeat?.builderInfo();
+    const major = majorOf(info?.descriptor?.nodeVersion);
+    if (major) return `${major}.x`;
+  } catch {
+    // Fall back below.
+  }
+  return BUILD_SETTINGS.nodeVersion;
+}
+export async function inspectProject(
+  vercel,
+  target,
+  { signal, expectedNode = BUILD_SETTINGS.nodeVersion } = {},
+) {
   const out = {
+    problems: [],
+    warnings: [],
     vercel: null,
     project: null,
     env: null,
@@ -91,12 +121,24 @@ export async function inspectProject(vercel, target, { signal } = {}) {
   try {
     const project = await vercel.project(target.projectId, { signal });
     out.projectData = project;
-    const wrong = [];
-    if (project.framework !== "nextjs") wrong.push("framework");
-    if (project.rootDirectory !== "apps/cafe") wrong.push("rootDirectory");
-    if (project.nodeVersion !== "22.x") wrong.push("nodeVersion");
-    out.project = wrong.length ? "settings" : "ok";
-    out.names.push(...wrong);
+    // Blocking: what a prebuilt deploy really depends on.
+    const want = { framework: "nextjs", rootDirectory: "apps/cafe" };
+    for (const name of BLOCKING_SETTINGS)
+      if (project[name] !== want[name])
+        out.problems.push({
+          name,
+          actual: cleanSetting(project[name]),
+          expected: want[name],
+        });
+    // Warning only: the function runtime comes from the build output.
+    if (majorOf(project.nodeVersion) !== majorOf(expectedNode))
+      out.warnings.push({
+        name: "nodeVersion",
+        actual: cleanSetting(project.nodeVersion),
+        expected: expectedNode,
+      });
+    out.project = out.problems.length ? "settings" : "ok";
+    out.names.push(...out.problems.map((p) => p.name));
   } catch (error) {
     out.project = providerCode(error);
     return out;
@@ -182,7 +224,10 @@ export async function runVerify(ctx, claim) {
         health: null,
       };
       await slot.mustSet({ step: "vercel" });
-      const inspected = await inspectProject(vercel, target, { signal });
+      const inspected = await inspectProject(vercel, target, {
+        signal,
+        expectedNode: await expectedNodeOf(ctx),
+      });
       flags.vercel = inspected.vercel;
       flags.project = inspected.project;
       flags.env = inspected.env;
@@ -237,7 +282,14 @@ export async function runVerify(ctx, claim) {
                 error: null,
                 result: { checks: STEPS.length, failed },
               }),
-              "pos.verify": { at: now, by: task.by ?? null, ...flags },
+              "pos.verify": {
+                at: now,
+                by: task.by ?? null,
+                ...flags,
+                // Non-secret project settings: name, actual, expected.
+                problems: inspected.problems,
+                warnings: inspected.warnings,
+              },
             },
           },
           { session },

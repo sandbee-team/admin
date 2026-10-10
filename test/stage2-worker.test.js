@@ -65,7 +65,8 @@ import {
   tarProblemCode,
 } from "../backend/worker/artifact.js";
 import { runRetention } from "../backend/worker/retention.js";
-import { JOB_STEPS, buildRowId } from "../shared/deploy.js";
+import { JOB_STEPS, buildRowId, verifyStateOf } from "../shared/deploy.js";
+import { verifyView } from "../backend/lib/deploy-view.js";
 import { createFakeS3 } from "./fake-s3.js";
 import { createFakeCli } from "./fakes/cli.js";
 import {
@@ -1458,10 +1459,14 @@ describe("preflight", () => {
     env = await makeEnv();
     w = await makeWorker(env);
     id = await seedInstallation(env);
-    env.vercel.state.project.nodeVersion = "20.x";
+    env.vercel.state.project.rootDirectory = "src";
     deploy = await deployOnce(env, w, id, { sha: SHA1 });
     assert.equal(deploy.current.error.code, "project-settings");
-    assert.match(deploy.current.error.message, /nodeVersion/);
+    assert.match(
+      deploy.current.error.message,
+      /Root Directory is 'src', expected 'apps\/cafe'/,
+    );
+    assert.equal(env.gh.state.dispatches.length, 0);
   });
 
   it("refuses a locked installation, an unreadable token and a rejected token", async () => {
@@ -1610,6 +1615,8 @@ describe("verify task", () => {
         mongo: "ok",
         cloudflare: "ok",
         health: "ok",
+        problems: [],
+        warnings: [],
       },
     );
     assert.equal(verify.by.id, "staff-1");
@@ -3636,5 +3643,89 @@ describe("re-review fixes", () => {
     assert.equal(events.length, 1);
     assert.match(events[0].detail, /^pre-admin baseline #/);
     assert.equal(events[0].detail.includes("@"), false);
+  });
+});
+
+describe("Vercel project Node.js version is a warning, not a blocker", () => {
+  it("verify: 24.x passes with a stored warning (name, actual, expected)", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    env.vercel.state.project.nodeVersion = "24.x";
+    await enqueueTask(env, id, "verify");
+    await w.loop.drain();
+    const row = await rowOf(env, id);
+    assert.equal(row.pos.task.status, "succeeded");
+    assert.equal(row.pos.verify.project, "ok");
+    assert.deepEqual(row.pos.verify.problems, []);
+    assert.deepEqual(row.pos.verify.warnings, [
+      { name: "nodeVersion", actual: "24.x", expected: "22.x" },
+    ]);
+    assert.equal(verifyStateOf(row.pos.verify), "ok", "the credentials count as verified");
+    const view = verifyView(row.pos.verify);
+    assert.deepEqual(view.warnings, row.pos.verify.warnings);
+    assertNoSecrets(view, SECRETS, "verify view");
+  });
+  it("verify: a wrong Root Directory blocks and names setting, actual and expected", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    env.vercel.state.project.rootDirectory = "src";
+    env.vercel.state.project.framework = null;
+    await enqueueTask(env, id, "verify");
+    await w.loop.drain();
+    const { verify } = (await rowOf(env, id)).pos;
+    assert.equal(verify.project, "settings");
+    assert.deepEqual(verify.problems, [
+      { name: "framework", actual: null, expected: "nextjs" },
+      { name: "rootDirectory", actual: "src", expected: "apps/cafe" },
+    ]);
+    assert.equal(verifyStateOf(verify), "failed");
+    assert.deepEqual(verifyView(verify).problems, verify.problems);
+  });
+  it("deploy: 24.x does not stop a deploy", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    env.vercel.state.project.nodeVersion = "24.x";
+    const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+    assert.equal(deploy.current, null);
+    assert.equal(deploy.last.sha, SHA1);
+  });
+  it("the runtime of every function must be the builder's Node major (or edge)", async () => {
+    const cfg = (runtime, name = "a") => ({
+      name: `.vercel/output/functions/${name}.func/.vc-config.json`,
+      data: JSON.stringify(runtime === undefined ? {} : { runtime }),
+    });
+    const dir = await mkdtemp(path.join(tmpdir(), "rt-"));
+    try {
+      const run = async (entries) => {
+        const file = path.join(dir, `${randomUUID()}.tgz`);
+        await writeFile(file, validOutput(SHA1, entries).tgz);
+        return inspectTgz(file, { nodeMajor: "22" });
+      };
+      assert.equal((await run([cfg("nodejs22.x"), cfg("edge", "m")])).runtimeMismatch, 0);
+      for (const bad of ["nodejs20.x", "nodejs24.x", "python3.12", undefined])
+        assert.ok((await run([cfg(bad)])).runtimeMismatch > 0, String(bad));
+      assert.equal(tarProblemCode(await run([cfg("nodejs20.x")])), "artifact-runtime");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+  it("an artifact built with another Node runtime is rejected before sealing or uploading", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    env.gh.state.tweak.tgz = () =>
+      validOutput(SHA1, [
+        {
+          name: ".vercel/output/functions/a.func/.vc-config.json",
+          data: JSON.stringify({ runtime: "nodejs20.x" }),
+        },
+      ]).tgz;
+    const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+    assert.equal(deploy.current.error.code, "artifact-runtime");
+    assert.equal(env.cli.calls.length, 0);
+    assert.equal(env.s3fake.liveKeys().length, 0);
   });
 });

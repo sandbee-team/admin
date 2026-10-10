@@ -163,6 +163,27 @@ const flag = (value) =>
   value === "ok" || (typeof value === "string" && FLAG_RE.test(value))
     ? value
     : null;
+// Non-secret Vercel project settings only (name, actual, expected).
+const SETTING_NAMES = [
+  "framework",
+  "rootDirectory",
+  "nodeVersion",
+  "sourceFilesOutsideRootDirectory",
+];
+const settingIssues = (list) =>
+  Array.isArray(list)
+    ? list
+        .filter((i) => SETTING_NAMES.includes(i?.name))
+        .slice(0, 6)
+        .map((i) => ({
+          name: i.name,
+          actual:
+            i.actual === null || i.actual === undefined
+              ? null
+              : clean(i.actual, 100),
+          expected: clean(i.expected, 100),
+        }))
+    : [];
 export const verifyView = (verify) =>
   verify
     ? {
@@ -174,6 +195,8 @@ export const verifyView = (verify) =>
         mongo: flag(verify.mongo),
         cloudflare: flag(verify.cloudflare),
         health: flag(verify.health),
+        problems: settingIssues(verify.problems),
+        warnings: settingIssues(verify.warnings),
       }
     : null;
 // One digest of the exact candidate ids: preview and execute are bound by it.
