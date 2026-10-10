@@ -27,7 +27,9 @@ import {
 } from "./deploy.js";
 
 const detailOf = (job) =>
-  `${job.branch}@${sha7(job.sha)} #${job.requestId.slice(0, 8)}`;
+  job.sha
+    ? `${job.branch}@${sha7(job.sha)} #${job.requestId.slice(0, 8)}`
+    : `pre-admin baseline #${job.requestId.slice(0, 8)}`;
 export async function runRollback(ctx, claim) {
   let run = null;
   await withLease(

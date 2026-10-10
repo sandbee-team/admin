@@ -3,7 +3,6 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
-  chmod,
   mkdir,
   readFile,
   readdir,
@@ -162,7 +161,8 @@ async function writable(dir) {
   }
 }
 async function containsBytes(root, needle, limit = 200000) {
-  let seen = 0;
+  let seen = 0,
+    unchecked = 0;
   const stack = [root];
   while (stack.length && seen < limit) {
     const dir = stack.pop();
@@ -170,6 +170,7 @@ async function containsBytes(root, needle, limit = 200000) {
     try {
       entries = await readdir(dir, { withFileTypes: true });
     } catch {
+      unchecked++; // a directory we could not list
       continue;
     }
     for (const entry of entries) {
@@ -178,21 +179,27 @@ async function containsBytes(root, needle, limit = 200000) {
       else if (entry.isFile()) {
         seen++;
         try {
-          if ((await stat(full)).size > 64 * 1024 * 1024) continue;
-          if ((await readFile(full)).includes(needle)) return true;
+          if ((await stat(full)).size > 64 * 1024 * 1024) {
+            unchecked++;
+            continue;
+          }
+          if ((await readFile(full)).includes(needle))
+            return { found: true, unchecked };
         } catch {
-          // Unreadable files cannot hold what we look for.
+          unchecked++; // reported, never silently skipped
         }
       }
     }
   }
-  return false;
+  return { found: false, unchecked: unchecked + (stack.length ? 1 : 0) };
 }
 // Runs a tiny node probe as the CLI's uid: it must NOT be able to read
 // /proc/1/environ or the worker's /proc/<pid>/environ (EACCES/EPERM) and must
 // be able to write its own HOME. -> "ok" | "fail" | "skip" (worker is not root).
 export async function isolationProbe(ctx, homeDir) {
-  if (!ctx.cliUser) return "skip";
+  // In production a worker that is not root cannot switch uid: the CLI would
+  // run as the worker itself and could read its secrets. That must fail loudly.
+  if (!ctx.cliUser) return ctx.c?.NODE_ENV === "production" ? "fail" : "skip";
   const code =
     'const fs=require("fs");const o=[];for(const p of ["/proc/1/environ","/proc/"+process.argv[1]+"/environ"]){try{fs.readFileSync(p);o.push("READ")}catch(e){o.push(e.code)}}try{fs.writeFileSync(process.argv[2]+"/probe","x");o.push("W-OK")}catch(e){o.push("W-"+e.code)}process.stdout.write(o.join(","))';
   const r = spawnSync(
@@ -208,7 +215,8 @@ export async function isolationProbe(ctx, homeDir) {
     },
   );
   const [a, b, w] = String(r.stdout ?? "").split(",");
-  const denied = (x) => x === "EACCES" || x === "EPERM";
+  // ENOENT (hidepid) is isolation too.
+  const denied = (x) => x === "EACCES" || x === "EPERM" || x === "ENOENT";
   return r.status === 0 && denied(a) && denied(b) && w === "W-OK"
     ? "ok"
     : "fail";
@@ -239,10 +247,6 @@ export async function selfCheck(
   const deployRoot = path.join(jobDir, "root");
   await prepareDeployRoot(deployRoot, {});
   const cliEnvDirs = cliEnv({ workDir: ctx.workDir, jobDir });
-  for (const key of ["HOME", "TMPDIR", "XDG_CACHE_HOME"]) {
-    await mkdir(cliEnvDirs[key], { recursive: true });
-    await chmod(cliEnvDirs[key], 0o1777);
-  }
   // The CLI's uid must not be able to read the worker's secrets (/proc/<pid>/environ).
   record(
     "cli-isolation",
@@ -316,8 +320,11 @@ export async function selfCheck(
         );
         // The per-job config directory is deleted with the job; nothing may remain.
         await removeJobDir(ctx.cliUser ?? null, jobDir);
-        const onDisk = await containsBytes(ctx.workDir, needle);
-        record("token-not-on-disk", onDisk ? "fail" : "ok");
+        const scan = await containsBytes(ctx.workDir, needle);
+        record("token-not-on-disk", scan.found ? "fail" : "ok");
+        // Files that could not be read are reported, not skipped silently.
+        results.uncheckedFiles = scan.unchecked;
+        print(`info unchecked-files ${scan.unchecked}`);
       }
     }
   }

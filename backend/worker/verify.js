@@ -223,8 +223,11 @@ export async function runVerify(ctx, claim) {
         " ",
       );
       await transaction(ctx.client, async (session) => {
+        // Guarded on the settings revision read at loadTarget: a config or secret
+        // change during the run bumps pos.rev, and this result must not overwrite
+        // the invalidation that change made.
         const done = await ctx.coll.installations.updateOne(
-          slot.filterOf(),
+          { ...slot.filterOf(), "pos.rev": target.pos.rev },
           {
             $set: {
               ...slot.prefixed({
@@ -239,7 +242,26 @@ export async function runVerify(ctx, claim) {
           },
           { session },
         );
-        if (done.matchedCount !== 1) throw new LeaseLost();
+        if (done.matchedCount !== 1) {
+          const stale = await ctx.coll.installations.updateOne(
+            slot.filterOf(),
+            {
+              $set: slot.prefixed({
+                status: "failed",
+                step: "done",
+                finishedAt: now,
+                error: {
+                  code: "verify-stale",
+                  message:
+                    "Settings changed while verifying; run verify again.",
+                },
+              }),
+            },
+            { session },
+          );
+          if (stale.matchedCount !== 1) throw new LeaseLost();
+          return;
+        }
         await audit(
           ctx.db,
           session,

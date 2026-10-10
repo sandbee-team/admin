@@ -6,10 +6,10 @@ $handoffRoot = Join-Path $projectRoot 'handoff'
 New-Item -ItemType Directory -Path $handoffRoot -Force | Out-Null
 $outputPath = Join-Path $handoffRoot $OutputName
 if (Test-Path -LiteralPath $outputPath) { throw 'Handoff already exists. Choose a new filename.' }
-$directories = @('backend','frontend','shared','scripts','test','docs')
+$directories = @('backend','frontend','shared','scripts','test','docs','tools')
 $rootFiles = @('package.json','package-lock.json','README.md','Dockerfile','compose.yaml','compose.production.yaml','.env.example','.gitignore','.dockerignore','vite.config.mjs','playwright.config.mjs')
 $files = @()
-foreach ($directory in $directories) { $files += Get-ChildItem -LiteralPath (Join-Path $projectRoot $directory) -File -Recurse }
+foreach ($directory in $directories) { $files += Get-ChildItem -LiteralPath (Join-Path $projectRoot $directory) -File -Recurse | Where-Object { $_.FullName -notmatch '[\\/]node_modules[\\/]' } }
 foreach ($name in $rootFiles) { $files += Get-Item -LiteralPath (Join-Path $projectRoot $name) }
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem

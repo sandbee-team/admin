@@ -99,7 +99,7 @@ export function overviewRoutes({ db, client, c, auth, cache, storeDb }) {
         db.collection("installations").countDocuments({
           pos: { $exists: true },
           status: { $ne: "retired" },
-          "pos.deployLock": true,
+          "pos.deployLock": { $ne: false },
         }),
         db
           .collection("system_state")

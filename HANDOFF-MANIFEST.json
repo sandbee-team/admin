@@ -1,23 +1,28 @@
 [
     {
         "path":  "sandbee-admin/backend/app.js",
-        "bytes":  5774,
-        "sha256":  "a1fa37bcf99d7e40439478538f853e4d584dcb10d0b6a2e016b991928d9e9678"
+        "bytes":  6024,
+        "sha256":  "22c7d752f78c9f266e6816a107187f2d297f8c6a32aa1f24f7f869541cd0dfea"
     },
     {
         "path":  "sandbee-admin/backend/config.js",
-        "bytes":  4575,
-        "sha256":  "356b873f5cb3bb26b9ac26c02a40a956697cc92dafc23ea24ee1eab765b2aa0f"
+        "bytes":  6702,
+        "sha256":  "f3d801d656b225033989bacfebee8eac81d54bb8396b7ba11fa2a0f4ba9b49a6"
     },
     {
         "path":  "sandbee-admin/backend/db.js",
-        "bytes":  2910,
-        "sha256":  "646daa278fa8afadaab9194d6c53af8f5b53d7de467cdad33857809636b3d0b1"
+        "bytes":  4389,
+        "sha256":  "76df825c00ae245835f95e24cb191b59363a01a8af8dbf9fc3268dea87d12055"
     },
     {
         "path":  "sandbee-admin/backend/server.js",
-        "bytes":  1713,
-        "sha256":  "c647569cc96cf8e517669c13d7dc75c5215f35cf69ede38550f3baad8c13c653"
+        "bytes":  1770,
+        "sha256":  "f77b8e1f630c2b0adc6c7538fd7768a7dc096e8dc908b68b6d4b6624535d1dec"
+    },
+    {
+        "path":  "sandbee-admin/backend/worker.js",
+        "bytes":  2458,
+        "sha256":  "5e70e184ae9ace5de467738713bc48ace88098769a2f1a22a6b24006c3ebe66c"
     },
     {
         "path":  "sandbee-admin/backend/lib/audit.js",
@@ -25,14 +30,49 @@
         "sha256":  "5ea598387b7747cf2dec0075c40f1981b10872e29295b76203eb3fb2e5d2d96b"
     },
     {
+        "path":  "sandbee-admin/backend/lib/build-cache.js",
+        "bytes":  18791,
+        "sha256":  "93dc932372ded53389c7fe104559fd6ebe670d7473d514c3266acb62bbb46daa"
+    },
+    {
+        "path":  "sandbee-admin/backend/lib/build-inputs.js",
+        "bytes":  5519,
+        "sha256":  "b38a77325143ce5b64713df00f85b8b2cff993831bc8d420e619d857651bf9e5"
+    },
+    {
+        "path":  "sandbee-admin/backend/lib/client-mongo.js",
+        "bytes":  2705,
+        "sha256":  "42ea335922afd428e1751c9e91d8b8d711a1f5bac417810adf504993f4cf0843"
+    },
+    {
+        "path":  "sandbee-admin/backend/lib/cloudflare.js",
+        "bytes":  1440,
+        "sha256":  "26e7e52b783e4f0cc42eca823308003600421b8a65cc8b054732a370715e3eb5"
+    },
+    {
         "path":  "sandbee-admin/backend/lib/crypto.js",
         "bytes":  2718,
         "sha256":  "5e67f318c900cf163940d9c30cb16260017b715bd2ce2cb7d11eb90dc0d6b17b"
     },
     {
+        "path":  "sandbee-admin/backend/lib/deploy-view.js",
+        "bytes":  8731,
+        "sha256":  "533d12991872febe36b87658278ac2e11cee5e8f41f4d87de864b331ea6634b1"
+    },
+    {
         "path":  "sandbee-admin/backend/lib/errors.js",
         "bytes":  671,
         "sha256":  "efd1bb014c1190171bfeedabcca017a856d8523905fc905171bb75a90e860360"
+    },
+    {
+        "path":  "sandbee-admin/backend/lib/file-store.js",
+        "bytes":  3514,
+        "sha256":  "6ccc63c8ec5043be655af627341061ab49e07ec7cf816c9e4bbb7ad7fabc8f96"
+    },
+    {
+        "path":  "sandbee-admin/backend/lib/github.js",
+        "bytes":  17137,
+        "sha256":  "11ddb08922093524dc29d4564c27f5bad9e321cece4fa1602bd5e621d6b9e522"
     },
     {
         "path":  "sandbee-admin/backend/lib/http-timeouts.js",
@@ -45,9 +85,19 @@
         "sha256":  "845db701b55e48e94760c7217a2c8077c8aeb58a2bb4445bb647c2d5704f54b1"
     },
     {
+        "path":  "sandbee-admin/backend/lib/pos-health.js",
+        "bytes":  4137,
+        "sha256":  "e5e304552cf0b0e25caaad5df4f93d1e5408f4dd34c459cdd4a60d797af72a53"
+    },
+    {
         "path":  "sandbee-admin/backend/lib/pos-import.js",
-        "bytes":  11914,
-        "sha256":  "c304a57a67d446e87336d7cc3e7cdf408d24b586086f646397990155e9fce865"
+        "bytes":  11892,
+        "sha256":  "b0c7ab1e098f6bc31d9d544fa88ef5447b45fb1e078c283d85e9eaf0ae786868"
+    },
+    {
+        "path":  "sandbee-admin/backend/lib/provider-http.js",
+        "bytes":  8203,
+        "sha256":  "15cab2753d5d095f8847b3de144b94fbee5fa1794c8a3d4165940e729d8c0db0"
     },
     {
         "path":  "sandbee-admin/backend/lib/qr.js",
@@ -60,9 +110,19 @@
         "sha256":  "c1d39cf85a3fb5664a46058cef2cf032a813010c18af53d3654f6955e394085d"
     },
     {
+        "path":  "sandbee-admin/backend/lib/redact.js",
+        "bytes":  1472,
+        "sha256":  "ac1fae3cc36287659254f645e9de83dc44e69475b9ecb83a13f6db2ab565f0d1"
+    },
+    {
         "path":  "sandbee-admin/backend/lib/s3.js",
-        "bytes":  8496,
-        "sha256":  "58668f89d7043554916124d6ecf1f44f0ab1c59075160bab5f745e38936db2ad"
+        "bytes":  18203,
+        "sha256":  "5c44f5b91c300c80b72b699e3d8e2d058a4506be4c72c85f3028ef3d3a12ed90"
+    },
+    {
+        "path":  "sandbee-admin/backend/lib/safe-https.js",
+        "bytes":  7163,
+        "sha256":  "8dff575628d4aafa6a8768040c2235c17ec858513273ab64d38e5885c1aff5a9"
     },
     {
         "path":  "sandbee-admin/backend/lib/secrets.js",
@@ -85,6 +145,11 @@
         "sha256":  "ccc8bf1d0ea0c030c58faa4a0ca69828b43e92f83c8172e78c65ccaef67a3c07"
     },
     {
+        "path":  "sandbee-admin/backend/lib/vercel.js",
+        "bytes":  7621,
+        "sha256":  "638ce3a44b067475ec2b90b9b0a1f025249c6a3077d58acbf22b99c2dfd576ee"
+    },
+    {
         "path":  "sandbee-admin/backend/modules/accounts.js",
         "bytes":  13999,
         "sha256":  "bc040fe4c2bba4273abea257981af14c3e03d90a3ca7512890b0e0b4e5c49a32"
@@ -100,14 +165,24 @@
         "sha256":  "231b4cf9df6e0279fa50e8bf7c5d992a4b576e95ecfbfaef3a8cfbc8abec108a"
     },
     {
+        "path":  "sandbee-admin/backend/modules/db-backup.js",
+        "bytes":  6572,
+        "sha256":  "1e3882cb75fb770d47a2c5a1c23b9163e20f4f7cb167ce059f28fe47ea3a6289"
+    },
+    {
+        "path":  "sandbee-admin/backend/modules/deploys.js",
+        "bytes":  45228,
+        "sha256":  "9fed0e26ae94b4968d8b76feb767499d18329f75bfaa7508a955095e21e9f32d"
+    },
+    {
         "path":  "sandbee-admin/backend/modules/ecom.js",
         "bytes":  3259,
         "sha256":  "f1a7609dce2a7d3e4d6877668678579c6a0e3bd7498461b7bad3d7f4d0cbfd30"
     },
     {
         "path":  "sandbee-admin/backend/modules/files.js",
-        "bytes":  22592,
-        "sha256":  "f6e080a582ae6ccb3083406961026a989d67c49d1cab7fa6646f58e98bf0f195"
+        "bytes":  20582,
+        "sha256":  "54f314f6ac5be1b448eeaa7b5bfb1878bed4c5944d719f4bbf0fe546623e7d80"
     },
     {
         "path":  "sandbee-admin/backend/modules/mail.js",
@@ -116,8 +191,8 @@
     },
     {
         "path":  "sandbee-admin/backend/modules/overview.js",
-        "bytes":  8707,
-        "sha256":  "ec100b83065c3ceed5b7a4bede7e687eabce34857487fcc728a2f9a07a5de13a"
+        "bytes":  10417,
+        "sha256":  "a88ffcebeb2672e9f54619345d42d9c7a279e15082634ba4249694db38c460e3"
     },
     {
         "path":  "sandbee-admin/backend/modules/pos-import.js",
@@ -126,8 +201,8 @@
     },
     {
         "path":  "sandbee-admin/backend/modules/pos.js",
-        "bytes":  11856,
-        "sha256":  "60e47f8039ec5ee961dcc5113138b49bf551809f62ba4f70ada7df098e23bb6e"
+        "bytes":  14703,
+        "sha256":  "cc46552bd8262b2468c8df9d9eb612b1ea0815aee7e393c31eecc9873c14e25a"
     },
     {
         "path":  "sandbee-admin/backend/modules/records.js",
@@ -138,6 +213,86 @@
         "path":  "sandbee-admin/backend/modules/team.js",
         "bytes":  3218,
         "sha256":  "c7ad2b747ef0dcafe76013253a5df679d3e2b76965f16a26a6037ec712cf5aec"
+    },
+    {
+        "path":  "sandbee-admin/backend/worker/artifact.js",
+        "bytes":  30431,
+        "sha256":  "6f57981423f5112d6ba567f91ae57a365b9ef8bae29c4129814a3105f2e4f1fd"
+    },
+    {
+        "path":  "sandbee-admin/backend/worker/build.js",
+        "bytes":  10194,
+        "sha256":  "ff16e83c7099c328913041281239ceb8754f5bdfc730ab44d4b8cd51132c0ffc"
+    },
+    {
+        "path":  "sandbee-admin/backend/worker/clean-as-uid.js",
+        "bytes":  463,
+        "sha256":  "8cb89358966826671b54d6b651788e603ce0c69cacb75b5dbc246e4993f8dadf"
+    },
+    {
+        "path":  "sandbee-admin/backend/worker/clean-walk.js",
+        "bytes":  1710,
+        "sha256":  "c2f6ef3ad9db37a677f8eea2c9be711cabd39863bb91f3e13e5bbd2b57d041bf"
+    },
+    {
+        "path":  "sandbee-admin/backend/worker/cli-runner.js",
+        "bytes":  11145,
+        "sha256":  "bf6c09ca89a2aadbaf4d7f218065f244501c0d90b726804e7db6238e58e2346a"
+    },
+    {
+        "path":  "sandbee-admin/backend/worker/context.js",
+        "bytes":  11043,
+        "sha256":  "66ee537a42e8420e9618c34ec869f13ca6a117e80a79fd6f1ecab50af9dec34f"
+    },
+    {
+        "path":  "sandbee-admin/backend/worker/db-backup.js",
+        "bytes":  7886,
+        "sha256":  "e6effe92f8f41ab42dbf9b06c8c4e92c2642682cb475a68443dbbd01a240f108"
+    },
+    {
+        "path":  "sandbee-admin/backend/worker/deploy.js",
+        "bytes":  44691,
+        "sha256":  "84203475d461ab93a0d1f408a939ead66c3bf34b0e65a1a8b74aab18a3a68851"
+    },
+    {
+        "path":  "sandbee-admin/backend/worker/fetch-build.js",
+        "bytes":  6988,
+        "sha256":  "bafc4b72c03f3cf77e1596b8e35e89459038a3605c612d3b64f32341cf119c13"
+    },
+    {
+        "path":  "sandbee-admin/backend/worker/heartbeat.js",
+        "bytes":  3075,
+        "sha256":  "7c54480de26e99d60af7ab555ba5ead974ba1c74ee5141660c6dbe679bf61c9e"
+    },
+    {
+        "path":  "sandbee-admin/backend/worker/lease.js",
+        "bytes":  15728,
+        "sha256":  "8593a199c40bb22b02156b8efd40106606fd03fd7e548152e4f92b5c1a0594f3"
+    },
+    {
+        "path":  "sandbee-admin/backend/worker/loop.js",
+        "bytes":  7562,
+        "sha256":  "be97abbf69a8e76c08aea2d6a8dd66d4cd45a7b9a72c8247efb34da2e4597dcb"
+    },
+    {
+        "path":  "sandbee-admin/backend/worker/purge.js",
+        "bytes":  5920,
+        "sha256":  "bac1da4b7374417d3265ae15251ac958ab361cf83453d88c9356063a0df9205e"
+    },
+    {
+        "path":  "sandbee-admin/backend/worker/retention.js",
+        "bytes":  6665,
+        "sha256":  "38fe31b42f1c753c83b35114385505547f226d172a254d088d24f25e70a73d22"
+    },
+    {
+        "path":  "sandbee-admin/backend/worker/rollback.js",
+        "bytes":  7381,
+        "sha256":  "16bd65dc2897a2bab61125ad914da4ef19e220ae5c89315358a40b26fd354287"
+    },
+    {
+        "path":  "sandbee-admin/backend/worker/verify.js",
+        "bytes":  10066,
+        "sha256":  "16cf3a147407a9740e1edd19c1d9f88a46e39bc831233702c5a84e777ed2aa65"
     },
     {
         "path":  "sandbee-admin/frontend/index.html",
@@ -151,8 +306,8 @@
     },
     {
         "path":  "sandbee-admin/frontend/src/main.jsx",
-        "bytes":  6640,
-        "sha256":  "1ce343662e52804107cd5d37ba297a19175a2c0d107bd548c42f36f9d486bf2a"
+        "bytes":  6791,
+        "sha256":  "a014ec8c06c830558f52922bd6baf2587b2c92bf00ca8271dfba019cfd04c50e"
     },
     {
         "path":  "sandbee-admin/frontend/src/styles.css",
@@ -186,8 +341,8 @@
     },
     {
         "path":  "sandbee-admin/frontend/src/components/shell.jsx",
-        "bytes":  7722,
-        "sha256":  "e4287a2d3821ca692a570e955880c77f2ab7ccd562cb1d10283c99b058a8e433"
+        "bytes":  7861,
+        "sha256":  "9f6fb0606ec6afef5e653bc5f30306bd55259087a7d5748967c52bfc79e04455"
     },
     {
         "path":  "sandbee-admin/frontend/src/components/step-up.jsx",
@@ -215,14 +370,64 @@
         "sha256":  "019479aea2ea0cf21c2c85065acfccb4d1d09f6bb327148645006b6329bffa2c"
     },
     {
+        "path":  "sandbee-admin/frontend/src/components/deploy/backup-panel.jsx",
+        "bytes":  5027,
+        "sha256":  "1da0eb612cc3ab04dc8a75e5de8c4f80d6945a7207680b668a5c4509937618af"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/components/deploy/branch-picker.jsx",
+        "bytes":  5016,
+        "sha256":  "ee1371b3202bd093d48968e20eae262433084f7550031c554836651836424b63"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/components/deploy/deploy-actions.jsx",
+        "bytes":  9118,
+        "sha256":  "7e26e94daf142fc126679d4b3edc30a4fb23e8ef1eae6584469b6f9412041936"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/components/deploy/deploy-error.jsx",
+        "bytes":  4713,
+        "sha256":  "665875b9c0600d9dcb8cc32f7dff8578ca644d5bb7ad02f335b3a7f7574fad3f"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/components/deploy/deploy-progress.jsx",
+        "bytes":  6210,
+        "sha256":  "97f9dbe76f80501ecf96aa9e0d8d75c1124e9aa8e603ade4134c1a2f60712eea"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/components/deploy/format.js",
+        "bytes":  2688,
+        "sha256":  "ed1ab3e036e5f3efac65e4ae0cc538959acd9b679bc53c0557ef6ceafd25c988"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/components/deploy/readiness-checklist.jsx",
+        "bytes":  4064,
+        "sha256":  "b04bbc5f7045991c93720c212a947b38fef7274dd03a12241d9f2813705bf961"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/components/deploy/stale-banner.jsx",
+        "bytes":  561,
+        "sha256":  "6be124b10f77eb2b1ff99d7760fcd13aad85aeeca62167eccc441542466bcae2"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/components/deploy/version-card.jsx",
+        "bytes":  3031,
+        "sha256":  "2a65bb531662693271fac1110a7668e599c4a016f442967a7be820c2a562f36d"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/hooks/use-poll.js",
+        "bytes":  2937,
+        "sha256":  "2aa75185c7a19783a00b50c42606ec5fea9d0919dfb1f7090071e8e0dd57be52"
+    },
+    {
         "path":  "sandbee-admin/frontend/src/hooks/use-resource.js",
         "bytes":  1467,
         "sha256":  "9e866955e72fba1ae429b0fd275ba2a17b99d577cb280d50db69fe4a505ed5fa"
     },
     {
         "path":  "sandbee-admin/frontend/src/lib/api.js",
-        "bytes":  3581,
-        "sha256":  "3b059bbfb4cb61f818fa4ff2cfd6fb5ecc27639c528c67d6f768fd5b2c58a984"
+        "bytes":  3734,
+        "sha256":  "26df8eb731d68ae69f927ff8c8fcb3e732f6eb60a8b93d0d15a98a77fa844f16"
     },
     {
         "path":  "sandbee-admin/frontend/src/lib/router.jsx",
@@ -241,13 +446,13 @@
     },
     {
         "path":  "sandbee-admin/frontend/src/pages/customer-files.jsx",
-        "bytes":  12053,
-        "sha256":  "ecc6761a0b3e6841aadb39e22c87e4a9d28ba412580b187c90d0d1fd37abe584"
+        "bytes":  12927,
+        "sha256":  "02d82bfcb3f0587b189f6fb48b61f525df555fc0cffde36c5fc3958cc63dc3b3"
     },
     {
         "path":  "sandbee-admin/frontend/src/pages/customer-workspace.jsx",
-        "bytes":  5997,
-        "sha256":  "091c0ae5c4ae020223fc38f183168cca92029e84bc9766241f3a4b7c28479ce1"
+        "bytes":  7791,
+        "sha256":  "7f6190818210c077aa0a96138b2094b56cadf1b050da42a000fede3343129061"
     },
     {
         "path":  "sandbee-admin/frontend/src/pages/ecom.jsx",
@@ -260,9 +465,14 @@
         "sha256":  "9d9919366651fc92945d9e7ff684dfbef77c7cfd46178ef9fb457512bd002538"
     },
     {
+        "path":  "sandbee-admin/frontend/src/pages/installation-deploy.jsx",
+        "bytes":  22247,
+        "sha256":  "4bc4b85c27e32d168a77641ac29631c81fb9cf87c2bc3cd9782513ec167f9e94"
+    },
+    {
         "path":  "sandbee-admin/frontend/src/pages/installation-workspace.jsx",
-        "bytes":  22166,
-        "sha256":  "dba04c7f4b568dd6903110043ef9eea489cba3f95388638ef065e2ab0ffb5e86"
+        "bytes":  23126,
+        "sha256":  "31381f414082e8ab46871ccd5e48a81fcd5f725ed8864aa8b60656fa3977c020"
     },
     {
         "path":  "sandbee-admin/frontend/src/pages/login.jsx",
@@ -271,8 +481,13 @@
     },
     {
         "path":  "sandbee-admin/frontend/src/pages/overview.jsx",
-        "bytes":  10375,
-        "sha256":  "85136fba0661e32923f9d7c07aac6f593b20d3b2b050ed2341c90bc324e07a72"
+        "bytes":  12357,
+        "sha256":  "44717765101b8ecd764b06e097ea21c524183ee8f6ac84768deae8af472a9e71"
+    },
+    {
+        "path":  "sandbee-admin/frontend/src/pages/pos-fleet.jsx",
+        "bytes":  7262,
+        "sha256":  "619d5ef33bcd48ec6420aa20228c2dfa83f0e0d353c192188632d6d56690a158"
     },
     {
         "path":  "sandbee-admin/frontend/src/pages/pos-import.jsx",
@@ -311,8 +526,8 @@
     },
     {
         "path":  "sandbee-admin/frontend/src/styles/components.css",
-        "bytes":  7199,
-        "sha256":  "124f2905b032fa28fffdf0590d3de88a457eeb701624a398676b5f419042f20f"
+        "bytes":  14985,
+        "sha256":  "8debafbefe46b6d95baf59c8532438a82bacb912dab02bf4708173f972897b98"
     },
     {
         "path":  "sandbee-admin/frontend/src/styles/dashboard.css",
@@ -370,9 +585,19 @@
         "sha256":  "c2515fda9892ec05ee76338f6077a50ba922bca4bcb742627e72bb4c4c32d2bc"
     },
     {
+        "path":  "sandbee-admin/shared/deploy-errors.js",
+        "bytes":  21236,
+        "sha256":  "65eaec276072d6231ae90583b84a5c3f1451f608051a0075b2a8b2605f5ed638"
+    },
+    {
+        "path":  "sandbee-admin/shared/deploy.js",
+        "bytes":  17905,
+        "sha256":  "80cce1e281bf6d37622165e94615807a6405ed43b8eac5c628410d1cae07efbf"
+    },
+    {
         "path":  "sandbee-admin/shared/policy.js",
-        "bytes":  1311,
-        "sha256":  "ecb2eddf1bbef418b978a5a6689f68b3dce57f7d2301a0a47941096f9e0d0f1d"
+        "bytes":  1340,
+        "sha256":  "59637992b683a84fc6bc93465d8c0659ad01c14e62dfb0d3d7f016fed9aa1c43"
     },
     {
         "path":  "sandbee-admin/shared/product-models.js",
@@ -381,8 +606,8 @@
     },
     {
         "path":  "sandbee-admin/shared/schemas.js",
-        "bytes":  16321,
-        "sha256":  "aa0a11a4dcab718a794ae223ee770666ab355855b8237520bfbdac5c0b69374f"
+        "bytes":  17914,
+        "sha256":  "28784e89707f7065c6738e3b6a7fe21721f7ef11e2c8c3defbcabca8c7276985"
     },
     {
         "path":  "sandbee-admin/scripts/bootstrap.js",
@@ -391,8 +616,13 @@
     },
     {
         "path":  "sandbee-admin/scripts/package-handoff.ps1",
-        "bytes":  3225,
-        "sha256":  "a8d75921ca7ccb5218fb2a5e9c0a81bf40ff8c82a8d7170ecd9b985baeef4797"
+        "bytes":  3299,
+        "sha256":  "f4a79cfd27e7d519ed30b26c86ff454106c6575b1fc507e7ec105abe54b67f90"
+    },
+    {
+        "path":  "sandbee-admin/scripts/pos-db-restore.js",
+        "bytes":  5726,
+        "sha256":  "9c43b17aa7fb60e7fded9ae3e0278574607e9208725cd154cd6a7b252e081e1e"
     },
     {
         "path":  "sandbee-admin/scripts/recovery.js",
@@ -411,18 +641,18 @@
     },
     {
         "path":  "sandbee-admin/test/fake-s3.js",
-        "bytes":  8334,
-        "sha256":  "bac6977968931f646468925d778d1dd7796f772805c3181af3a93e46a891dc15"
+        "bytes":  10680,
+        "sha256":  "d3dcdde8cdd431c5bee1ceeb3aec0231169b40dc3e2e0e357828dc55c62c1449"
     },
     {
         "path":  "sandbee-admin/test/helpers.js",
-        "bytes":  5689,
-        "sha256":  "b0ae635a027c5bea62740aef6a9758d11751ed36fdfbc5f88b857430de02535a"
+        "bytes":  6459,
+        "sha256":  "78e6e8431f8914116defecf2cc64c47ceb99a4fe3c933a86dd0d73d48baf3a3b"
     },
     {
         "path":  "sandbee-admin/test/review-backend.test.js",
-        "bytes":  25742,
-        "sha256":  "ad2ef042eca900a6801241a66bbec98a2dde18823fedb45e0c27ffca7b056f61"
+        "bytes":  26908,
+        "sha256":  "b06d79b0b2d7ae7a87874f3db142f3fdd7b00737cad4838964ec8c2b68de93fc"
     },
     {
         "path":  "sandbee-admin/test/s3.test.js",
@@ -436,8 +666,8 @@
     },
     {
         "path":  "sandbee-admin/test/stage1-auth.test.js",
-        "bytes":  54435,
-        "sha256":  "02e37b69063a5dcaec9b7c653689c68d4f3fb16cc263f9be1b91aa5182268569"
+        "bytes":  56271,
+        "sha256":  "733535e9b78572d6e2b300f59aea9c046845ce19ee6091443cc60bc9cb75c302"
     },
     {
         "path":  "sandbee-admin/test/stage1-import.test.js",
@@ -446,18 +676,73 @@
     },
     {
         "path":  "sandbee-admin/test/stage1-recovery.test.js",
-        "bytes":  12932,
-        "sha256":  "16faa82d1be85fe023f3ee41c3aa1fdeb0fdb740ca16c95add6f794816044b4f"
+        "bytes":  13294,
+        "sha256":  "f6ffbbcbea4fe94ce450a16126e04c34e1b053a1d9edda996d51a5ad70d3f739"
     },
     {
         "path":  "sandbee-admin/test/stage1-vault.test.js",
-        "bytes":  93223,
-        "sha256":  "d4b13d866a82f8a25d0916fc87400f0d044b3a85ab6582bb0e006e3195da7631"
+        "bytes":  92004,
+        "sha256":  "988f51f94f504c0a3c7f1895889dd76af388cd7c2059ad54a83d41b3211a9ff8"
+    },
+    {
+        "path":  "sandbee-admin/test/stage2-adapters.test.js",
+        "bytes":  46117,
+        "sha256":  "f84093c4066ce9b4fa9f0e8cb382aaf4a4774de8c30f0d67ca491967620c5633"
+    },
+    {
+        "path":  "sandbee-admin/test/stage2-api.test.js",
+        "bytes":  87082,
+        "sha256":  "97873f0edcdb6a52c63c8e7e1edae49c3b92ef0dffc9757ebc07d6b8aaa60563"
+    },
+    {
+        "path":  "sandbee-admin/test/stage2-backup.test.js",
+        "bytes":  17891,
+        "sha256":  "0ee59d217d7be4515ccc7a346835de096442700422a3cbe25328df54a963b709"
+    },
+    {
+        "path":  "sandbee-admin/test/stage2-build-cache.test.js",
+        "bytes":  47194,
+        "sha256":  "8488fedbf345f0ff061f7b888d13e1b039ae30d509beb2fad66a1b35875319d4"
+    },
+    {
+        "path":  "sandbee-admin/test/stage2-errors.test.js",
+        "bytes":  6330,
+        "sha256":  "5cf13df211c50215629d380f549c09c0800dd38c7207e90e82da0361115e8f94"
+    },
+    {
+        "path":  "sandbee-admin/test/stage2-worker.test.js",
+        "bytes":  118851,
+        "sha256":  "cb59fedd1a362ec9f3b297ec996705f4deb62f0d3d17e7ed48295d70ecea7ccd"
     },
     {
         "path":  "sandbee-admin/test/ui-server.js",
-        "bytes":  5602,
-        "sha256":  "02c037fbe11a7ce2d134074a55f3a263d8edb750325c238995fa8a4ec4d28233"
+        "bytes":  21761,
+        "sha256":  "c5f5f00265ffb9b00bf6c5b54d828b942a93a0167dfe9744c90b3183347bc322"
+    },
+    {
+        "path":  "sandbee-admin/test/fakes/builder.js",
+        "bytes":  15866,
+        "sha256":  "5827edef73020a0ed5e5a5df792efe8649f735f690b39cf7e3bea9e8ed5240d1"
+    },
+    {
+        "path":  "sandbee-admin/test/fakes/cli.js",
+        "bytes":  2597,
+        "sha256":  "e1c949bb7416f571a2ddb143bb5c5b3b1a17c3d3580273309f5c9eaa2768d1ce"
+    },
+    {
+        "path":  "sandbee-admin/test/fakes/github.js",
+        "bytes":  7722,
+        "sha256":  "0394076bdb221fea1aef3befe3d14eea0a9ec694c5f6a7caa192e07cd1f970fd"
+    },
+    {
+        "path":  "sandbee-admin/test/fakes/health.js",
+        "bytes":  991,
+        "sha256":  "45a31a8750b73016f9fc47c8ea88a7cd5867fd396d2da09b074427a9374acb17"
+    },
+    {
+        "path":  "sandbee-admin/test/fakes/vercel.js",
+        "bytes":  4394,
+        "sha256":  "e05b38d141b0006c2b68a3181f8da0a40b161dfc652142ed06068acc2c4fc042"
     },
     {
         "path":  "sandbee-admin/test/fixtures/pos-client.json",
@@ -475,9 +760,29 @@
         "sha256":  "101128f6469a466db1d6f3418d3bf5390d851573e6f32f4dbbeb80c1f99028a8"
     },
     {
+        "path":  "sandbee-admin/test/ui/backup.spec.js",
+        "bytes":  6716,
+        "sha256":  "a2731a18b92d5900c464909ca3c1a5a0e53c0c1f69883efb06df84e04b49bb34"
+    },
+    {
         "path":  "sandbee-admin/test/ui/client-record.spec.js",
-        "bytes":  20862,
-        "sha256":  "f69cba867195e829f030085c6f1b8a2804d5bc5b38ee1da7ff2a283136721a9a"
+        "bytes":  21179,
+        "sha256":  "f6ead579f8ead3000eed058080bdde92b8374259ac1c139810d5215fe3868808"
+    },
+    {
+        "path":  "sandbee-admin/test/ui/deploy-guards.spec.js",
+        "bytes":  7846,
+        "sha256":  "6a280749580bbbe10438fbbe6828cf1894975f2aedda4857688a6b3b9783afbc"
+    },
+    {
+        "path":  "sandbee-admin/test/ui/deploy-round2.spec.js",
+        "bytes":  9943,
+        "sha256":  "08c03d46662ade17deaa5e85082587f495e9e86bd135bb9b292f316005b4a810"
+    },
+    {
+        "path":  "sandbee-admin/test/ui/deploys.spec.js",
+        "bytes":  22478,
+        "sha256":  "b723ce25af2f32e89574f5c5d4b843cd05eb1ef9d04cf7dd6680b7f12866ee02"
     },
     {
         "path":  "sandbee-admin/test/ui/import.spec.js",
@@ -496,13 +801,13 @@
     },
     {
         "path":  "sandbee-admin/docs/API.md",
-        "bytes":  44417,
-        "sha256":  "3a9703a10cfea09c218c0ade9174d09a2a4d09f7cd3a2aaaecb09bb97fb7f05b"
+        "bytes":  60730,
+        "sha256":  "4b8090601a495d10b34608ae523189f8d15ea3e2c7c1877358bab13d5794258e"
     },
     {
         "path":  "sandbee-admin/docs/DEPLOYMENT.md",
-        "bytes":  14868,
-        "sha256":  "b153a86f6986af6b3e5bd8dbe529e9b56d13bdccfc5e38aa7959062d0bdc4bfe"
+        "bytes":  23815,
+        "sha256":  "c5cf0fffc3458480c2b1f4291d4b40d81741eb245a4b690f93a91d9882772eb1"
     },
     {
         "path":  "sandbee-admin/docs/LAUNCH-REVIEW-2026-09-28.md",
@@ -521,18 +826,23 @@
     },
     {
         "path":  "sandbee-admin/docs/POS-INTEGRATION.md",
-        "bytes":  24052,
-        "sha256":  "458562fc6804ff188fdf8fb962fd22bc12fc953522a56768d9d53f427057ee2e"
+        "bytes":  27243,
+        "sha256":  "1f054f4530bdafc0fa9451cb07cbd53387c9f8df3edcb334e4eef6f4b06d60fe"
     },
     {
         "path":  "sandbee-admin/docs/POS-STAGE1-PLAN.md",
-        "bytes":  38822,
-        "sha256":  "814c89a310fa115ab0e34f98043cb41c695e3a8c2fcda7d592159dff9bff173e"
+        "bytes":  39313,
+        "sha256":  "68347261ed2205e5cc01ab44721fed28f5b58bcb44c79620fbcd271250f7a5d2"
     },
     {
         "path":  "sandbee-admin/docs/POS-STAGE2-PLAN.md",
-        "bytes":  53804,
-        "sha256":  "513cf496a3cb3acd68b25fb05d5e5d60dfe3c0559e906d030dcf73d26d3211e4"
+        "bytes":  54449,
+        "sha256":  "122eb1603d437b301641385f1d600e1cdeace6fd32d9d8860579743157614f89"
+    },
+    {
+        "path":  "sandbee-admin/docs/POS-STAGE2-REV2.md",
+        "bytes":  26067,
+        "sha256":  "f837265b0d437f49ea26532b9a7d76cd4d759a6a27a81ffb08177d970912d332"
     },
     {
         "path":  "sandbee-admin/docs/REFERENCE-DESIGN.md",
@@ -551,8 +861,8 @@
     },
     {
         "path":  "sandbee-admin/docs/SECURITY.md",
-        "bytes":  15422,
-        "sha256":  "4d9e4213499234a887c53ecd48455f45c54d4ea62618e43667090ba25938e14c"
+        "bytes":  19579,
+        "sha256":  "feb11834a9b2f77df033f264046c87816d1d695929a1382d1a378ae3006d8055"
     },
     {
         "path":  "sandbee-admin/docs/STORE-UI-UPDATE.md",
@@ -563,6 +873,16 @@
         "path":  "sandbee-admin/docs/VALIDATION.md",
         "bytes":  4325,
         "sha256":  "816899d13ddaf57fca8bb82922a122d054c6120a31468f6f4303c23267db3ea4"
+    },
+    {
+        "path":  "sandbee-admin/tools/vercel-cli/package-lock.json",
+        "bytes":  175687,
+        "sha256":  "37a136cbcf507cff6d83cfda3f207ce864f8797932de10931b457af27094489b"
+    },
+    {
+        "path":  "sandbee-admin/tools/vercel-cli/package.json",
+        "bytes":  234,
+        "sha256":  "9329c757f94c8d18d587b269fec638789b94fd7ac71b2e670c324d31418ac502"
     },
     {
         "path":  "sandbee-admin/package.json",
@@ -576,28 +896,28 @@
     },
     {
         "path":  "sandbee-admin/README.md",
-        "bytes":  5875,
-        "sha256":  "d64114eb863ae6717552647641b9bae9358de5882f91ea7301ebf2af50989971"
+        "bytes":  5961,
+        "sha256":  "70ea221c9db5591f1f4d4298300ec60cf4358aa344410f2ef52dcb9a1dfd8f9c"
     },
     {
         "path":  "sandbee-admin/Dockerfile",
-        "bytes":  798,
-        "sha256":  "569f0d0937efeb9b6e46db52f664159febfe365118411459073559afd64d36a7"
+        "bytes":  1726,
+        "sha256":  "efd7b18fca5d1671d7b3bc979134c4c79e7cd7ab95c97616fe59d752ca1d9d15"
     },
     {
         "path":  "sandbee-admin/compose.yaml",
-        "bytes":  989,
-        "sha256":  "8acca6c88c2474b945ab4a407bc36493930bad05d44f99f3cc94f70e5f142be4"
+        "bytes":  1027,
+        "sha256":  "7f514b682c4a997713a472830796d7b13325470aaab814b5b134785e64e65081"
     },
     {
         "path":  "sandbee-admin/compose.production.yaml",
-        "bytes":  524,
-        "sha256":  "c8061e7e4be2620d5c384a41030190ea73d8d15ee35ea38a8c088a4315e4ea57"
+        "bytes":  2589,
+        "sha256":  "bbd46a2745e6523a6c0e645d0cd6cb6f516328fb11164bcdfc340bf25b4a60f7"
     },
     {
         "path":  "sandbee-admin/.env.example",
-        "bytes":  966,
-        "sha256":  "2d6bd21dc721194320dacb43b0ac56a32a5277d17127e275f77bda61ebced49d"
+        "bytes":  967,
+        "sha256":  "58c76b534a64ab5d15d900cb34da789b2bc959d7d65cf929ea4ca7ce55c72e6c"
     },
     {
         "path":  "sandbee-admin/.gitignore",

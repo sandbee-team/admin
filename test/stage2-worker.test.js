@@ -43,9 +43,18 @@ import {
 import { createLoop } from "../backend/worker/loop.js";
 import {
   cliEnv,
+  listUidProcesses,
+  prepareCliDir,
   prepareDeployRoot,
+  reapCliProcesses,
+  removeJobDir,
   runCli,
 } from "../backend/worker/cli-runner.js";
+import {
+  cleanOwnedEntries,
+  jobCleanDirs,
+} from "../backend/worker/clean-walk.js";
+import { chmod } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { restoreBackup } from "../scripts/pos-db-restore.js";
 import { symlink, utimes } from "node:fs/promises";
@@ -3205,5 +3214,315 @@ describe("deploy root writable by the CLI's uid (1777 on the root and .vercel on
       cwds.length >= 2 && cwds.every((c) => c.ok),
       JSON.stringify(cwds),
     );
+  });
+});
+
+describe("re-review fixes", () => {
+  it("M-A (pure): the cleanup walk deletes only entries owned by the uid, never follows links, survives failures", async () => {
+    const tree = {
+      "/j/cli": ["data", "keep.txt"],
+      "/j/cli/data": ["com.vercel.cli"],
+      "/j/root": ["payload", "mine"],
+      "/j/root/.vercel": ["README.txt", "output"],
+    };
+    const owners = {
+      "/j/cli/data": 0,
+      "/j/cli/keep.txt": 0,
+      "/j/cli/data/com.vercel.cli": 10001,
+      "/j/root/payload": 0,
+      "/j/root/mine": 10001,
+      "/j/root/.vercel/README.txt": 10001,
+      "/j/root/.vercel/output": 0,
+    };
+    const dirsSet = new Set(["/j/cli/data", "/j/cli/data/com.vercel.cli"]);
+    const removed = [];
+    const fakeFs = {
+      readdir: async (d) => {
+        if (!tree[d]) throw Object.assign(new Error("x"), { code: "ENOENT" });
+        return tree[d];
+      },
+      lstat: async (p) => ({
+        uid: owners[p] ?? 0,
+        isDirectory: () => dirsSet.has(p),
+        isSymbolicLink: () => false,
+      }),
+      rm: async (p, o) => {
+        assert.equal(o.recursive, true);
+        if (p === "/j/root/mine") throw new Error("EBUSY");
+        removed.push(p);
+      },
+    };
+    const dirs = await jobCleanDirs(fakeFs, "/j");
+    assert.deepEqual(dirs, [
+      "/j/cli",
+      "/j/root",
+      "/j/root/.vercel",
+      "/j/cli/data",
+    ]);
+    const out = await cleanOwnedEntries(fakeFs, dirs, 10001);
+    assert.deepEqual(removed.sort(), [
+      "/j/cli/data/com.vercel.cli",
+      "/j/root/.vercel/README.txt",
+    ]);
+    assert.equal(out.failed, 1);
+    assert.equal(
+      out.skipped >= 4,
+      true,
+      "root-owned entries are never touched",
+    );
+  });
+  it(
+    "M-A (Linux): a job dir with CLI-created, 10001-style nested dirs is fully removed",
+    { skip: platform() !== "linux" },
+    async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "job-"));
+      await prepareCliDir(dir);
+      await prepareDeployRoot(path.join(dir, "root"), {});
+      await mkdir(path.join(dir, "root", ".vercel", "output", "static"), {
+        recursive: true,
+      });
+      await writeFile(
+        path.join(dir, "root", ".vercel", "output", "static", "a.html"),
+        "x",
+      );
+      // What the CLI creates (here: our own uid stands in for 10001).
+      await mkdir(path.join(dir, "cli", "data", "com.vercel.cli", "deep"), {
+        recursive: true,
+      });
+      await writeFile(
+        path.join(dir, "cli", "data", "com.vercel.cli", "deep", "auth.json"),
+        "{}",
+      );
+      await writeFile(path.join(dir, "root", ".vercel", "README.txt"), "x");
+      const me = { uid: process.getuid(), gid: process.getgid() };
+      assert.equal(await removeJobDir(me, dir), true);
+      assert.equal(existsSync(dir), false);
+    },
+  );
+  it(
+    "M-A: pre-created skeletons, and the boot sweep removes an already-leaked tree",
+    { skip: platform() === "win32" },
+    async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "job-"));
+      await prepareCliDir(dir);
+      for (const n of ["home", "tmp", "data", "config", "cache"])
+        assert.equal(
+          (await stat(path.join(dir, "cli", n))).mode & 0o7777,
+          0o1777,
+          n,
+        );
+      await rm(dir, { recursive: true, force: true });
+      const env = await makeEnv();
+      const w = await makeWorker(env);
+      w.ctx.cliUser = { uid: process.getuid(), gid: process.getgid() };
+      const orphan = path.join(env.workDir, "jobs", randomUUID());
+      await mkdir(path.join(orphan, "cli", "data", "com.vercel.cli"), {
+        recursive: true,
+      });
+      await writeFile(
+        path.join(orphan, "cli", "data", "com.vercel.cli", "x"),
+        "x",
+      );
+      await w.loop.boot();
+      assert.equal(existsSync(orphan), false);
+    },
+  );
+  it("L1: processes of the CLI's uid are reaped and a survivor fails the job closed (cli-orphan)", async () => {
+    const proc = await mkdtemp(path.join(tmpdir(), "proc-"));
+    try {
+      await mkdir(path.join(proc, "123"));
+      await writeFile(
+        path.join(proc, "123", "status"),
+        "Name:\tnode\nUid:\t10001\t10001\t10001\t10001\n",
+      );
+      await mkdir(path.join(proc, "124"));
+      await writeFile(
+        path.join(proc, "124", "status"),
+        "Name:\tworker\nUid:\t0\t0\t0\t0\n",
+      );
+      assert.deepEqual(await listUidProcesses(10001, proc), [123]);
+      const calls = [];
+      const spawn = (cmd, args, options) => {
+        calls.push({ args, uid: options.uid });
+        return fakeChild();
+      };
+      const left = await reapCliProcesses(
+        { uid: 10001, gid: 10001 },
+        { procRoot: proc, attempts: 2, delayMs: 1, spawn },
+      );
+      assert.equal(left, 1);
+      assert.equal(calls[0].uid, 10001);
+      assert.match(calls[0].args[1], /process\.kill\(-1,'SIGKILL'\)/);
+      await rm(path.join(proc, "123"), { recursive: true });
+      assert.equal(
+        await reapCliProcesses(
+          { uid: 10001, gid: 10001 },
+          { procRoot: proc, attempts: 2, delayMs: 1, spawn },
+        ),
+        0,
+      );
+      assert.equal(await reapCliProcesses(null), 0);
+    } finally {
+      await rm(proc, { recursive: true, force: true });
+    }
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    w.ctx.reapCli = async () => 1;
+    const id = await seedInstallation(env);
+    const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+    assert.equal(deploy.current.error.code, "cli-orphan");
+    assert.equal(deploy.last, null);
+  });
+  it("M-B: a verify that raced a settings change cannot overwrite the invalidation", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    const user = env.vercel.user;
+    env.vercel.user = async (...a) => {
+      await env.db
+        .collection("installations")
+        .updateOne(
+          { _id: id },
+          { $inc: { "pos.rev": 1 }, $set: { "pos.verify": null } },
+        );
+      return user(...a);
+    };
+    await enqueueTask(env, id, "verify");
+    await w.loop.drain();
+    const row = await rowOf(env, id);
+    assert.equal(row.pos.verify, null, "the invalidation stands");
+    assert.equal(row.pos.task.status, "failed");
+    assert.equal(row.pos.task.error.code, "verify-stale");
+  });
+  it(
+    "L3: files the self-check could not read are counted, not skipped silently",
+    { skip: platform() === "win32" || (process.getuid?.() ?? 1) === 0 },
+    async () => {
+      const env = await makeEnv();
+      const w = await makeWorker(env);
+      const id = await seedInstallation(env);
+      w.ctx.runCli = async (o) => ({
+        code: 0,
+        category: null,
+        stdout: `${CLI_VERSION}\n`,
+      });
+      const secret = path.join(env.workDir, "cache", "secret.bin");
+      await mkdir(path.dirname(secret), { recursive: true });
+      await writeFile(secret, "x");
+      await chmod(secret, 0o000);
+      const lines = [];
+      try {
+        await selfCheck(w.ctx, {
+          installationId: id,
+          print: (l) => lines.push(l),
+        });
+      } finally {
+        await chmod(secret, 0o600);
+      }
+      const info = lines.find((l) => l.startsWith("info unchecked-files "));
+      assert.ok(info && Number(info.split(" ")[2]) >= 1, lines.join("|"));
+    },
+  );
+  it("L4: too many configs fail, and a prerender fallback follows the same rules as filePathMap", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "inspect-"));
+    try {
+      const run = async (entries, options) => {
+        const file = path.join(dir, `${randomUUID()}.tgz`);
+        await writeFile(file, validOutput(SHA1, entries).tgz);
+        return inspectTgz(file, options);
+      };
+      const cfg = (n) => ({
+        name: `.vercel/output/functions/f${n}.func/.vc-config.json`,
+        data: "{}",
+      });
+      let v = await run([cfg(1), cfg(2), cfg(3)], { maxConfigs: 2 });
+      assert.ok(
+        v.badConfig > 0,
+        "the third config was not inspected, so refuse",
+      );
+      v = await run([cfg(1), cfg(2)], { maxConfigs: 2 });
+      assert.equal(v.badConfig, 0);
+      const pre = (fallback) => ({
+        name: ".vercel/output/functions/p.prerender-config.json",
+        data: JSON.stringify({ fallback }),
+      });
+      const target = {
+        name: ".vercel/output/functions/p.prerender-fallback.html",
+        data: "<p>",
+      };
+      v = await run([target, pre("p.prerender-fallback.html")]);
+      assert.equal(v.filePathMap, 0);
+      v = await run([target, pre({ fsPath: "p.prerender-fallback.html" })]);
+      assert.equal(v.filePathMap, 0);
+      for (const bad of [
+        "../../../etc/passwd",
+        "/proc/1/environ",
+        "missing.html",
+        { fsPath: "../x" },
+        5,
+      ])
+        assert.ok(
+          (await run([target, pre(bad)])).filePathMap > 0,
+          JSON.stringify(bad),
+        );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+  it("L6: a missing heartbeat row counts as stale (queued work expires), like the API", async () => {
+    const env = await makeEnv();
+    const id = await seedInstallation(env);
+    await enqueue(env, id);
+    const w = await makeWorker(env);
+    await w.loop.drain();
+    const cur = (await deployOf(env, id)).current;
+    assert.equal(cur.status, "expired");
+    assert.equal(cur.error.code, "not-picked-up");
+  });
+  it("L7: a non-root worker fails the isolation check in production; hidepid (ENOENT) is isolation", async () => {
+    assert.equal(
+      await isolationProbe(
+        { cliUser: null, c: { NODE_ENV: "production" } },
+        "/x",
+      ),
+      "fail",
+    );
+    assert.equal(
+      await isolationProbe({ cliUser: null, c: { NODE_ENV: "test" } }, "/x"),
+      "skip",
+    );
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    w.ctx.c = { ...w.ctx.c, NODE_ENV: "production" };
+    w.ctx.runCli = async () => ({
+      code: 0,
+      category: null,
+      stdout: `${CLI_VERSION}\n`,
+    });
+    const lines = [];
+    const result = await selfCheck(w.ctx, { print: (l) => lines.push(l) });
+    assert.ok(lines.includes("fail cli-isolation"));
+    assert.equal(result.ok, false);
+  });
+  it("L9: the audit detail of a pre-admin rollback has no @", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    await deployOnce(env, w, id, { sha: SHA1 });
+    const before = await deployOf(env, id);
+    await enqueue(env, id, {
+      kind: "rollback",
+      sha: "",
+      branch: "",
+      vercelDeploymentId: before.previous.vercelDeploymentId,
+    });
+    await w.loop.drain();
+    const events = await env.db
+      .collection("audit_events")
+      .find({ action: "pos.rollback.succeeded" })
+      .toArray();
+    assert.equal(events.length, 1);
+    assert.match(events[0].detail, /^pre-admin baseline #/);
+    assert.equal(events[0].detail.includes("@"), false);
   });
 });

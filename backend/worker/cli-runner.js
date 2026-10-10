@@ -75,6 +75,12 @@ export async function prepareCliDir(jobDir) {
   const dir = cliDirOf(jobDir);
   await mkdir(dir, { recursive: true });
   await chmod(dir, 0o1777);
+  // Root-owned 1777 skeletons: whatever the CLI creates below them is its own
+  // and is removable by its uid, with no 10001-owned parent root cannot enter.
+  for (const name of ["home", "tmp", "data", "config", "cache"]) {
+    await mkdir(join(dir, name), { recursive: true });
+    await chmod(join(dir, name), 0o1777);
+  }
   return dir;
 }
 // The deploy root the CLI runs in: payload files stay root-owned and read-only,
@@ -99,25 +105,15 @@ export async function prepareDeployRoot(
 // a tiny node child running as that same uid first.
 export async function removeJobDir(user, dir) {
   if (user) {
-    const cli = cliDirOf(dir);
     await new Promise((resolve) => {
       try {
-        const child = nodeSpawn(
-          process.execPath,
-          [
-            "-e",
-            "for(const p of process.argv.slice(1)){try{require('node:fs').rmSync(p,{recursive:true,force:true})}catch{}}",
-            cli,
-            join(dir, "root"),
-          ],
-          {
-            uid: user.uid,
-            gid: user.gid,
-            env: { PATH: "/usr/bin:/bin" },
-            stdio: "ignore",
-            shell: false,
-          },
-        );
+        const child = nodeSpawn(process.execPath, [cleanScript, dir], {
+          uid: user.uid,
+          gid: user.gid,
+          env: { PATH: "/usr/bin:/bin" },
+          stdio: "ignore",
+          shell: false,
+        });
         child.on("error", resolve);
         child.on("close", resolve);
       } catch {
@@ -125,7 +121,73 @@ export async function removeJobDir(user, dir) {
       }
     });
   }
-  await rm(dir, { recursive: true, force: true }).catch(() => {});
+  // true when the skeleton is gone; false leaves it for the boot sweep.
+  try {
+    await rm(dir, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+const cleanScript = fileURLToPath(
+  new URL("./clean-as-uid.js", import.meta.url),
+);
+// Processes still running as the CLI's uid (scan of /proc/*/status).
+export async function listUidProcesses(uid, procRoot = "/proc") {
+  const { readdir, readFile } = await import("node:fs/promises");
+  const pids = [];
+  let names = [];
+  try {
+    names = await readdir(procRoot);
+  } catch {
+    return pids;
+  }
+  for (const name of names) {
+    if (!/^\d+$/.test(name)) continue;
+    try {
+      const status = await readFile(join(procRoot, name, "status"), "utf8");
+      const m = /^Uid:\s+(\d+)/m.exec(status);
+      if (m && Number(m[1]) === uid) pids.push(Number(name));
+    } catch {
+      // Gone already.
+    }
+  }
+  return pids;
+}
+// After a CLI run (success, failure or timeout): kill everything the CLI's uid
+// still runs (kill(-1) as that uid signals only its own processes) and make
+// sure nothing is left. -> number of processes still alive (0 = clean).
+export async function reapCliProcesses(
+  user,
+  { procRoot = "/proc", attempts = 20, delayMs = 50, spawn = nodeSpawn } = {},
+) {
+  if (!user) return 0;
+  await new Promise((resolve) => {
+    try {
+      const child = spawn(
+        process.execPath,
+        ["-e", "try{process.kill(-1,'SIGKILL')}catch{}"],
+        {
+          uid: user.uid,
+          gid: user.gid,
+          env: { PATH: "/usr/bin:/bin" },
+          stdio: "ignore",
+          shell: false,
+        },
+      );
+      child.on("error", resolve);
+      child.on("close", resolve);
+    } catch {
+      resolve();
+    }
+  });
+  let left = [];
+  for (let i = 0; i < attempts; i++) {
+    left = await listUidProcesses(user.uid, procRoot);
+    if (!left.length) return 0;
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  return left.length;
 }
 // Named stderr fragments -> category (spike S2). Only the id is ever kept.
 const FRAGMENTS = [

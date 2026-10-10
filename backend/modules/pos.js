@@ -16,7 +16,7 @@ import {
 import { jobBlocks, taskBlocks } from "../../shared/deploy.js";
 
 // Settings that a running job reads are frozen while it is active.
-const JOB_FIELDS = ["vercel.token", "mongo.uri"];
+const JOB_FIELDS = ["vercel.token", "mongo.uri", "cloudflare.token"];
 export const busyError = (message) => {
   const error = new HttpError(409, message);
   error.apiCode = "busy";

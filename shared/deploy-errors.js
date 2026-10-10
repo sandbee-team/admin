@@ -756,6 +756,20 @@ add(
   "The build cache could not be reached.",
   "Retry in a few minutes.",
 );
+add(
+  "verify-stale",
+  "task",
+  "Verify out of date",
+  "Settings changed while verifying, so the result was discarded.",
+  "Run verify again.",
+);
+add(
+  "cli-orphan",
+  "upload",
+  "CLI process left",
+  "A process of the Vercel CLI could not be stopped, so the job was stopped for safety.",
+  "Check the worker container, then retry.",
+);
 // ---- client database backup ---------------------------------------------------------
 add(
   "backup-too-large",

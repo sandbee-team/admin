@@ -6,7 +6,7 @@
 // (a started upload is reconciled through the deployment's meta, never
 // repeated blindly). Messages stored on a job are fixed strings; nothing from a
 // provider, the CLI or a secret is ever copied into a stored field or a log.
-import { chmod, mkdir, rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { audit } from "../lib/audit.js";
 import { ProviderError } from "../lib/provider-http.js";
@@ -38,6 +38,8 @@ import {
   cliEnv,
   prepareCliDir,
   prepareDeployRoot,
+  reapCliProcesses,
+  removeJobDir,
 } from "./cli-runner.js";
 import { ensureSpace, fetchBuild, jobDir, rmJob } from "./fetch-build.js";
 import {
@@ -558,7 +560,9 @@ export async function uploadDeployment(jr, { tgzPath, metaValue }) {
   const { ctx, target } = jr;
   const dir = jobDir(ctx, jr.rid);
   const root = path.join(dir, "root");
-  await rm(root, { recursive: true, force: true });
+  // A leftover tree (takeover) may hold files the CLI's uid wrote: clear it as
+  // that uid first; if anything stays, the boot sweep takes it later.
+  await removeJobDir(ctx.cliUser ?? null, dir);
   await mkdir(root, { recursive: true });
   // extractTgz validates the whole archive first (links, filePathMap) and
   // creates every path component itself, never through a symlink.
@@ -605,10 +609,6 @@ export async function uploadDeployment(jr, { tgzPath, metaValue }) {
     jobDir: dir,
   });
   await prepareCliDir(dir);
-  for (const key of ["HOME", "TMPDIR", "XDG_CACHE_HOME"]) {
-    await mkdir(env[key], { recursive: true });
-    await chmod(env[key], 0o1777); // writable by the CLI's uid, no chown needed
-  }
   const result = await ctx.runCli({
     args,
     cwd: root,
@@ -617,6 +617,15 @@ export async function uploadDeployment(jr, { tgzPath, metaValue }) {
     timeoutMs: ctx.t.cliTimeoutMs,
     signal: jr.cliSignal(),
   });
+  // Whatever the outcome, nothing the CLI started may outlive it: kill every
+  // process of its uid and fail closed if any survives.
+  const orphans = await (ctx.reapCli ?? reapCliProcesses)(ctx.cliUser ?? null);
+  if (orphans > 0)
+    throw fail(
+      "cli-orphan",
+      "A process of the Vercel CLI could not be stopped; the job was stopped for safety.",
+      "upload",
+    );
   ensureLive(jr.signal);
   if (ctx.stopState?.requested && jr.cliSignal().aborted) throw new Released();
   const found = await jr.vercel.findDeploymentByMeta(
@@ -629,7 +638,10 @@ export async function uploadDeployment(jr, { tgzPath, metaValue }) {
       signal: jr.signal,
     },
   );
-  await rm(root, { recursive: true, force: true });
+  // Tolerant: a tree the worker cannot delete is left for the boot sweep.
+  await rm(root, { recursive: true, force: true }).catch((error) =>
+    ctx.log("cleanup-left", { code: String(error?.code ?? "error") }),
+  );
   if (!found) {
     const category = result.category;
     if (category)
@@ -892,7 +904,9 @@ const AUDIT = {
 export const auditFor = (status, kind) =>
   AUDIT[status]?.[kind === "rollback" ? 1 : 0];
 const detailOf = (job) =>
-  `${job.branch}@${sha7(job.sha)} #${job.requestId.slice(0, 8)}`;
+  job.sha
+    ? `${job.branch}@${sha7(job.sha)} #${job.requestId.slice(0, 8)}`
+    : `pre-admin baseline #${job.requestId.slice(0, 8)}`;
 export async function notifyOwner(ctx, jr, status, text) {
   if (!ctx.notify) return;
   try {

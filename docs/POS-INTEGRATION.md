@@ -3,7 +3,7 @@
 Status: Stage 1 LIVE on admin.sandbee.in since 2026-10-09 (commit `8949777`); full-codebase review
 fixes LIVE since 2026-10-10 (commit `1617d30`: 204 unit/API tests, 18 Playwright ×3 green; owner
 smoke-checked accounts, files and Recovery after deploy).
-Stage 2: W1 adapters, W3 API and W2 deploy worker (separate `worker` container, `backend/worker/`, retention per D22) implemented on branch `feat/pos-stage2`, not yet released; release steps in docs/DEPLOYMENT.md (see docs/POS-STAGE2-PLAN.md, POS-STAGE2-REV2.md). Stage 3 and Phases 2-3 not started. Owner: single operator.
+Stage 2 (2026-10-10): W0 builder (pos-builder main @ 60ceb7b), W1 adapters + sealed build cache, W3 API, W2 deploy worker (separate `worker` container; Vercel CLI as uid 10001), W4 client DB backup and W5 guided Deploy UI + POS clients page implemented, reviewed (4 independent reviews; all critical/high/medium fixed) and verified (539 unit/API tests with 5 Linux-only skipped on Windows, 35 Playwright ×3 green); merged to `main`, pending server release (Linux-only tests run in a container on the server first); release steps in docs/DEPLOYMENT.md (see docs/POS-STAGE2-PLAN.md, POS-STAGE2-REV2.md). Stage 3 and Phases 2-3 not started. Owner: single operator.
 Open owner items: enter Lucifer by hand (Step 8 of the go-live: customer → POS installation →
 POS setup with the `lucifer007` profile ids, a new dedicated Vercel token, the MONGODB_URI from the
 Vercel project env, accounts); `F:\lucifer\clients\` clean-up later (D14).

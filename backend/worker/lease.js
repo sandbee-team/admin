@@ -7,6 +7,7 @@ import {
   ACTIVE_STATES,
   ACTIVE_TASK_STATES,
   MAX_ATTEMPTS,
+  QUEUED_EXPIRY_MS,
 } from "../../shared/deploy.js";
 import { knownCode } from "../../shared/deploy-errors.js";
 
@@ -148,7 +149,7 @@ const claimed = (ctx, spec, doc, takeover) => ({
 // Queue expiry (contract with the API): a QUEUED job never expires while the
 // worker heartbeat is fresh; it expires only when the heartbeat has been stale
 // for 10 minutes or more.
-export const QUEUE_STALE_MS = 10 * 60 * 1000;
+export const QUEUE_STALE_MS = QUEUED_EXPIRY_MS;
 export async function heartbeatAgeMs(ctx) {
   const row = await ctx.coll.state.findOne(
     { _id: "pos-worker" },
@@ -157,15 +158,14 @@ export async function heartbeatAgeMs(ctx) {
   const at = row?.at ? new Date(row.at).getTime() : 0;
   return ctx.now() - at;
 }
-// A missing row means "never ran": not stale (nothing was ever promised).
+// A missing row counts as stale, exactly like the API's free-slot check.
 export async function queueStale(ctx) {
   const row = await ctx.coll.state.findOne(
     { _id: "pos-worker" },
     { projection: { at: 1 } },
   );
-  return (
-    Boolean(row?.at) && ctx.now() - new Date(row.at).getTime() >= QUEUE_STALE_MS
-  );
+  if (!row?.at) return true;
+  return ctx.now() - new Date(row.at).getTime() >= QUEUE_STALE_MS;
 }
 // Boot sweep, run BEFORE the first heartbeat of this process: queued deploys
 // and tasks that waited through a long outage are expired (code not-picked-up).

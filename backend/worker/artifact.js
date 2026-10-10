@@ -498,7 +498,33 @@ function resolveInArchive(entries, start) {
 // link, and the filePathMap of every .vc-config.json (the pinned CLI reads
 // files named there from the deploy root; in prebuilt mode it only checks that
 // they stay under that root, so anything outside the output is refused here).
-function archiveChecks(v, entries, configs) {
+// A file reference the CLI would read (filePathMap value, prerender fallback):
+// a relative path without .., inside the output, naming a regular file of the
+// archive that is reached without passing through any link. `base` is the
+// directory the reference is relative to ("" = the deploy root).
+function refOk(entries, value, base = "") {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 1000 ||
+    NAME_BAD.test(value) ||
+    value.startsWith("/") ||
+    /^[A-Za-z]:/.test(value) ||
+    value.split("/").includes("..")
+  )
+    return false;
+  const target = path.posix.normalize(
+    base ? path.posix.join(base, value) : value,
+  );
+  return (
+    inOut(target) &&
+    entries.get(target)?.type === "file" &&
+    resolveInArchive(entries, target) === target
+  );
+}
+function archiveChecks(v, entries, configs, overflow = 0) {
+  // More configs than we inspect: the rest is unchecked, so refuse.
+  v.badConfig += overflow;
   for (const [name, e] of entries) {
     if (e.type === "symlink" && !resolveInArchive(entries, name))
       v.symlinkEscapes++;
@@ -525,6 +551,14 @@ function archiveChecks(v, entries, configs) {
       v.badConfig++;
       continue;
     }
+    if (config.kind === "prerender") {
+      const fb = parsed.fallback;
+      if (fb === undefined || fb === null) continue;
+      const ref = typeof fb === "string" ? fb : fb?.fsPath;
+      if (!refOk(entries, ref, path.posix.dirname(config.name)))
+        v.filePathMap++;
+      continue;
+    }
     const map = parsed.filePathMap;
     if (map === undefined || map === null) continue;
     if (typeof map !== "object" || Array.isArray(map)) {
@@ -538,25 +572,7 @@ function archiveChecks(v, entries, configs) {
         !NAME_BAD.test(key) &&
         !key.startsWith("/") &&
         !key.split("/").some((p) => p === ".." || p === "");
-      let ok = false;
-      if (
-        keyOk &&
-        typeof value === "string" &&
-        value.length > 0 &&
-        value.length <= 1000 &&
-        !NAME_BAD.test(value) &&
-        !value.startsWith("/") &&
-        !/^[A-Za-z]:/.test(value) &&
-        !value.split("/").includes("..")
-      ) {
-        const target = path.posix.normalize(value);
-        // The target itself must be a regular file (a link is not), reached
-        // without passing through any link.
-        ok =
-          inOut(target) &&
-          entries.get(target)?.type === "file" &&
-          resolveInArchive(entries, target) === target;
-      }
+      const ok = keyOk && refOk(entries, value, "");
       if (!ok) v.filePathMap++;
     }
   }
@@ -565,6 +581,7 @@ function archiveChecks(v, entries, configs) {
 export function inspectTgz(file, options = {}) {
   const entries = new Map();
   const configs = [];
+  let overflow = 0;
   return walkTgz(
     file,
     (entry) => {
@@ -575,10 +592,19 @@ export function inspectTgz(file, options = {}) {
       if (
         entry.type === "file" &&
         inOut(name) &&
-        name.split("/").pop() === ".vc-config.json"
+        (name.split("/").pop() === ".vc-config.json" ||
+          name.endsWith(".prerender-config.json"))
       ) {
-        if (configs.length >= MAX_CONFIGS) return null;
-        const record = { text: "", tooBig: entry.size > MAX_CONFIG_BYTES };
+        if (configs.length >= (options.maxConfigs ?? MAX_CONFIGS)) {
+          overflow++;
+          return null;
+        }
+        const record = {
+          name,
+          kind: name.endsWith(".prerender-config.json") ? "prerender" : "vc",
+          text: "",
+          tooBig: entry.size > MAX_CONFIG_BYTES,
+        };
         configs.push(record);
         const chunks = [];
         return {
@@ -593,7 +619,10 @@ export function inspectTgz(file, options = {}) {
       }
       return null;
     },
-    { ...options, finalize: (v) => archiveChecks(v, entries, configs) },
+    {
+      ...options,
+      finalize: (v) => archiveChecks(v, entries, configs, overflow),
+    },
   );
 }
 // The specific code for a rejected archive.

@@ -813,7 +813,7 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
         gate((await readiness(row, req.staff, session)).view, "unlock");
         if (row.pos.deployLock === false) return;
         await installations.updateOne(
-          { _id: id, "pos.deployLock": true },
+          { _id: id, "pos.deployLock": { $ne: false } },
           {
             $set: {
               "pos.deployLock": false,
@@ -1364,7 +1364,7 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
           host: pos.host ?? "",
           installationStatus: row.status,
           state: status,
-          locked: pos.deployLock === true,
+          locked: pos.deployLock !== false,
           live: live
             ? {
                 branch: live.branch,

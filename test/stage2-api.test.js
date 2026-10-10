@@ -2174,7 +2174,7 @@ describe("API review fixes", () => {
         const cfg = await put(id, POS_CONFIG(slug));
         assert.equal(cfg.status, 409, kind);
         assert.equal(cfg.data.code, "busy");
-        for (const field of ["vercel.token", "mongo.uri"]) {
+        for (const field of ["vercel.token", "mongo.uri", "cloudflare.token"]) {
           const s = await call(`/installations/${id}/pos/secret`, {
             method: "PUT",
             session: admin,
@@ -2392,6 +2392,18 @@ describe("API review fixes", () => {
         locked.locked - 1,
         "an unlock drops the count",
       );
+      // A missing/null lock is locked everywhere (state, locked, count).
+      await setPos(f.id, { "pos.deployLock": null });
+      await setPos(f.id, { "pos.deploy.last": version(1) });
+      const row = (await call("/pos/fleet?light=1")).data.rows.find(
+        (x) => x.installationId === f.id,
+      );
+      assert.equal(row.locked, true);
+      assert.equal(row.state, "locked");
+      await setPos(f.id, {
+        "pos.deployLock": false,
+        "pos.unlockedAt": new Date(),
+      });
       // The M3 migration leaves an owner unlock alone.
       await relockLegacyUnlocks(ctx.db);
       assert.equal((await doc(f.id)).pos.deployLock, false);
