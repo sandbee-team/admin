@@ -44,6 +44,7 @@ import {
   deployView,
   jobView,
   key8,
+  storedCommit,
   purgeDigest,
   taskView,
   verifyView,
@@ -429,12 +430,22 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
       throw staleError("POS settings changed. Reload and try again.");
     }
   }
-  const newJob = ({ kind, branch, sha, buildKey, staff, now, target }) => ({
+  const newJob = ({
+    kind,
+    branch,
+    sha,
+    buildKey,
+    commit,
+    staff,
+    now,
+    target,
+  }) => ({
     kind,
     requestId: randomUUID(),
     branch,
     sha,
     buildKey: buildKey ?? null,
+    commit: commit ?? null,
     by: person(staff),
     requestedAt: new Date(now),
     status: "queued",
@@ -467,7 +478,8 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
       const redeploy = input.kind === "redeploy";
       if (!redeploy) typed(input.confirm, pos.slug);
       let branch = input.branch,
-        sha = input.sha;
+        sha = input.sha,
+        commit = null;
       if (redeploy) {
         const version = pos.deploy?.[input.of];
         ensure(
@@ -478,6 +490,7 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
             : "There is no previous version to redeploy.",
         );
         ({ branch, sha } = version);
+        commit = storedCommit(version.commit, sha, branch);
       }
       const early = await readiness(row, req.staff);
       gate(early.view, "deploy");
@@ -485,7 +498,15 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
         throw busyError("A deploy is already running for this installation.");
       await consume(db, `deploy:${id}`, 30, 3600000);
       // Never accept an arbitrary sha: re-resolve the branch and check it.
-      if (!redeploy) await verifySha(branch, sha);
+      if (!redeploy) {
+        await verifySha(branch, sha);
+        // The worker has no source token: the headline comes from here.
+        try {
+          commit = storedCommit(await gh.commit(sha), sha, branch);
+        } catch {
+          commit = null;
+        }
+      }
       const built = await buildKeyFor(pos);
       const job = await transaction(client, async (session) => {
         await authorizeWrite(db, session, req.staff, "deploy");
@@ -497,6 +518,7 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
           branch,
           sha,
           buildKey: built?.key,
+          commit,
           staff: req.staff,
           now,
         });
@@ -555,6 +577,7 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
           branch: target.branch,
           sha: target.sha,
           buildKey: target.build?.buildKey,
+          commit: storedCommit(target.commit, target.sha, target.branch),
           staff: req.staff,
           now,
           target: target.vercelDeploymentId,
@@ -952,13 +975,7 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
               buildKey: built.key,
               inputs: built.inputs,
               branch,
-              commit: {
-                sha,
-                branch,
-                headline: commit.headline,
-                authorName: commit.authorName,
-                date: commit.date,
-              },
+              commit: storedCommit(commit, sha, branch),
               lease: leaseless(),
               attempt: 0,
               runId: null,
@@ -1244,6 +1261,7 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
                 sha7: sha7(live.sha),
                 at: live.at,
                 status: live.status,
+                ...liveCommit(last),
               }
             : null,
           head:
@@ -1261,3 +1279,12 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
   });
   return router;
 }
+// Headline, author name and date of the live commit, cleaned (never an e-mail).
+const liveCommit = (last) => {
+  const c = storedCommit(last?.commit ?? {}, last?.sha, last?.branch);
+  return {
+    headline: c?.headline ?? "",
+    authorName: c?.authorName ?? "",
+    date: c?.date ?? null,
+  };
+};

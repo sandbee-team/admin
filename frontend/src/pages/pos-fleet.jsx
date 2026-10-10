@@ -30,6 +30,15 @@ export function behindText(row) {
     }[row.relation] || "—"
   );
 }
+export function LiveHeadline({ row }) {
+  const text = row.live?.headline;
+  if (!text) return null;
+  return (
+    <span className="cell-subtext headline-cell" title={text}>
+      {text}
+    </span>
+  );
+}
 export const liveText = (row) =>
   row.live ? `${row.live.branch}@${row.live.sha7}` : "Not deployed";
 const isBusy = (data) =>
@@ -130,6 +139,7 @@ export function PosFleet({ user }) {
                     <td className="small">{row.host || "—"}</td>
                     <td>
                       {liveText(row)}
+                      <LiveHeadline row={row} />
                       {row.live?.at && (
                         <span className="cell-subtext">
                           {when(row.live.at)}

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button } from "../ui";
 import { CANCELLABLE_STEPS, UI_STEPS } from "../../../../shared/deploy";
-import { STEP_LABEL, clock, sha7 } from "./format";
+import { STEP_LABEL, clock, commitLine, sha7 } from "./format";
 const VERB = {
   deploy: "Deploying",
   redeploy: "Redeploying",
@@ -80,6 +80,11 @@ export function DeployProgress({ job, owner, onCancel, cancelling }) {
               {job.branch}@{sha7(job.sha)}
             </code>
           </h2>
+          {job.commit?.headline && (
+            <p className="progress-commit">
+              {commitLine(job).slice(1).join(" — ")}
+            </p>
+          )}
           <p>
             Started by {job.by?.name || "someone"}. You can leave this page; the
             deploy keeps going.

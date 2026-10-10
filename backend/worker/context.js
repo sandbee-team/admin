@@ -15,6 +15,7 @@ import { createVercel } from "../lib/vercel.js";
 import { verifyToken } from "../lib/cloudflare.js";
 import { pingClientMongo } from "../lib/client-mongo.js";
 import { HEARTBEAT_MS, LEASE_MS } from "../../shared/deploy.js";
+import { runDbBackup } from "./db-backup.js";
 import { createHeartbeat } from "./heartbeat.js";
 import { cliEnv, installedCliVersion, lastLine, runCli } from "./cli-runner.js";
 import { dirs, ensureLayout, UUID_RE } from "./fetch-build.js";
@@ -123,7 +124,7 @@ export async function buildContext({
       wake: new AbortController(),
     },
     log: makeLog(),
-    handlers: {},
+    handlers: { "db-backup": runDbBackup },
     ...overrides,
   };
   ctx.t = { ...DEFAULT_TIMING, ...overrides.t };

@@ -719,3 +719,38 @@
     padding: var(--space-4);
   }
 }
+.backup-panel {
+  margin-top: var(--space-4);
+}
+.backup-body {
+  display: grid;
+  gap: var(--space-3);
+  padding: 0 23px 23px;
+  font-size: 12px;
+}
+.backup-body .progress-status {
+  padding: 0;
+}
+.error-why {
+  display: grid;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  overflow-wrap: anywhere;
+}
+.progress-commit {
+  overflow-wrap: anywhere;
+}
+.headline-cell {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.backup-note {
+  margin-bottom: var(--space-3);
+}
+@media (max-width: 600px) {
+  .backup-body {
+    padding-inline: 16px;
+  }
+}

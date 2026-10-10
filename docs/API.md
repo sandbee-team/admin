@@ -91,7 +91,7 @@ Extra error codes (all `{error, code, requestId}`): 409 `not-ready` also carries
 | POST `/installations/:id/pos/verify` | `{}` enqueues a `verify` task; 12/h per installation. Audit `pos.verify.requested` | credentials |
 | POST `/installations/:id/pos/builds` | `{branch, sha}` prepare build (no production change): cache hit 200 `{build:{state:"cached"}}`; existing row 200 `{existing:true}`; new row 201. 10/h per staff. Audit `pos.build.requested` | deploy |
 | POST `/pos/build-cache/self-test` | put (conditional), list, get, delete under `builds/_selftest/`; `{ok, put, conditional, list, get, del}`. 503 `not-configured` without S3 | secrets |
-| GET `/pos/fleet[?customerId=]` | `{rows[<=100], limited}`; row = `{installationId, customerId, customerName, slug, host, installationStatus, state: deploying\|failed\|locked\|unverified\|live\|not-deployed, locked, live:{branch,sha7,at,status}\|null, head:{sha7,headline}\|null, relation: current\|behind\|ahead\|diverged\|branch-gone\|unknown\|none, behindBy, branchGone, cached}`. One branch-head lookup per distinct branch, one compare per distinct sha pair | credentials |
+| GET `/pos/fleet[?customerId=]` | `{rows[<=100], limited}`; row = `{installationId, customerId, customerName, slug, host, installationStatus, state: deploying\|failed\|locked\|unverified\|live\|not-deployed, locked, live:{branch,sha7,at,status,headline,authorName,date} (from `last.commit`, cleaned, never an e-mail)\|null, head:{sha7,headline}\|null, relation: current\|behind\|ahead\|diverged\|branch-gone\|unknown\|none, behindBy, branchGone, cached}`. One branch-head lookup per distinct branch, one compare per distinct sha pair | credentials |
 | POST `/pos/freeze` `{reason?}` / `/pos/unfreeze` | Global freeze flag. Freeze blocks deploy and redeploy (readiness item `not-frozen`); rollback, verify and tasks still work. Audit `pos.frozen` / `pos.unfrozen` | deploy + step-up |
 | POST `/installations/:id/pos/purge/preview` | `{}` enqueues a `purge-preview` task (needs `cutoverAt`). Audit `pos.purge.previewed` | deploy |
 | POST `/installations/:id/pos/purge` | `{previewTaskId, digest, confirm:<slug>}`. The preview must be `succeeded` and under 30 minutes old; `digest` (returned as `task.result.digest` of the preview) must equal the SHA-256 of the sorted candidate ids; the new `purge` task carries exactly those ids in `params`. Audit `pos.purge.requested` (`N deployments #id8`) | deploy + step-up + slug |
@@ -116,6 +116,7 @@ Stored shapes (MongoDB). The same text lives as a comment block in `shared/deplo
 | `requestId` | uuid v4: job id, run-name suffix, artifact name, Vercel meta `sandbeeRequest` |
 | `branch`, `sha` | what to ship (40-hex). For a rollback: the target (`previous`) |
 | `buildKey` | 64 hex or `null`; the API fills it when the builder descriptor is readable, the worker recomputes it in `resolve` |
+| `commit` | `{sha, branch, headline <=120 (first line), authorName (name only, never an e-mail), date}` or `null`. Set by the API at enqueue (deploy: from GitHub for the exact sha; redeploy/rollback: copied from the stored version; build rows get the same field) because the worker has no source token; the worker copies it to `last.commit`. Control and bidi characters are removed |
 | `by` | `{id, name}` |
 | `requestedAt` | Date |
 | `status` | `queued` \| `running` \| `cancelling` \| `failed` \| `cancelled` \| `rolled-back` \| `unhealthy` \| `expired` |
@@ -141,3 +142,12 @@ Enqueue = one conditional `updateOne` inside a transaction with `authorizeWrite`
 - `pos-retention`: `{status, at, lease, result}` for the daily copy-forward sweep (not enqueued by the API).
 
 Indexes: partial `installations` on `pos.deploy.current.status` and `pos.task.status`; partial `system_state` on `{kind, status}` for build rows.
+
+### Client DB backup
+
+Owner button (D6, D28): backs up a POS client's own MongoDB into the customer's files. Only on the owner's click; nothing is scheduled.
+
+- `POST /api/installations/:id/pos/db-backup` (empty JSON body): `deploy` permission (owner) plus step-up. Answers 201 `{task}`, 409 `busy` (one active task per installation), 409 when no database URI is stored, 429 above 6 per hour per installation, 428 without step-up, 503 `not-configured` when file storage is off.
+- `GET /api/installations/:id/pos/db-backup` (`credentials`): `{configured, task}`. `task` = `{id, status: queued|running|succeeded|failed|expired, step, by, requestedAt, finishedAt, progress{collections, documents, bytes}, result{collections, documents, bytes}, error{code, message}}`: counts only, never names, documents or URIs.
+
+The worker streams every non-system collection as canonical EJSON lines (a header with the database name and collection list, one `{"c","d"}` line per document, a trailer with exact counts), gzips them, seals the result like a client file (SBF1, AES-256-GCM, data key under VAULT_KEY) and registers it as category `db-backup`, named `<slug>-db-<yyyymmdd-hhmm>.jsonl.gz`. The limit is 20 MB compressed: above it the run stops, stores nothing and fails with `backup-too-large` (use `mongodump` locally). A backup is not resumable: a worker restart ends it as `backup-failed`. Audit: `pos.db-backup.requested` (API) and `pos.db-backup.created` (worker, size and counts only). Download uses the normal file download (owner, step-up).

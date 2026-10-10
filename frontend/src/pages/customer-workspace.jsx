@@ -18,7 +18,7 @@ import {
 } from "../components/ui";
 import { WorkspaceFrame } from "../components/workspace-frame";
 import { Link } from "../lib/router";
-import { StateBadge, behindText, liveText } from "./pos-fleet";
+import { LiveHeadline, StateBadge, behindText, liveText } from "./pos-fleet";
 import { dateTime } from "../lib/api";
 import { can } from "../../../shared/policy";
 import { RecordEditor } from "./record-editor";
@@ -172,6 +172,7 @@ function PosCells({ row, id }) {
     <>
       <td>
         {liveText(row)}
+        <LiveHeadline row={row} />
         <span className="cell-subtext">
           <StateBadge state={row.state} />
         </span>

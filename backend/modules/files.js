@@ -2,7 +2,6 @@ import { Router } from "express";
 import {
   randomBytes,
   randomUUID,
-  createCipheriv,
   createDecipheriv,
   createHash,
 } from "node:crypto";
@@ -14,10 +13,11 @@ import {
   MAX_FILES,
 } from "../../shared/schemas.js";
 import { ensure, HttpError, staleError } from "../lib/errors.js";
-import { encrypt, decrypt, equal } from "../lib/crypto.js";
+import { decrypt, equal } from "../lib/crypto.js";
 import { audit } from "../lib/audit.js";
 import { consume } from "../lib/limiter.js";
 import { encodeRfc3986 } from "../lib/s3.js";
+import { createSealer, fileEntry, pushEntry } from "../lib/file-store.js";
 import { transaction } from "../db.js";
 import { authorizeWrite } from "./records.js";
 
@@ -27,20 +27,6 @@ const DAY = 86400000;
 const RESTORE_DAYS = 29,
   PURGE_DAYS = 31;
 const MAX_TRANSFERS = 2;
-const TYPES = {
-  pdf: "application/pdf",
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  webp: "image/webp",
-  txt: "text/plain",
-  csv: "text/csv",
-  json: "application/json",
-  zip: "application/zip",
-  gz: "application/gzip",
-  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-};
 const CLAIM_MS = 60000;
 const aadOf = (cid, fid) => `file:${cid}:${fid}`;
 const keyOf = (cid, fid) => `files/${cid}/${fid}`;
@@ -227,13 +213,7 @@ export function fileRoutes({ db, client, c, auth, s3 }) {
       );
 
       const fid = randomUUID(),
-        aad = aadOf(cid, fid),
-        dataKey = randomBytes(32),
-        iv = randomBytes(12);
-      const cipher = createCipheriv("aes-256-gcm", dataKey, iv);
-      cipher.setAAD(Buffer.from(aad));
-      const hash = createHash("sha256"),
-        parts = [MAGIC, iv];
+        sealer = createSealer(cid, fid);
       let received = 0,
         problem = null;
       // Chunk by chunk; never break out early (that would destroy the socket
@@ -244,74 +224,33 @@ export function fileRoutes({ db, client, c, auth, s3 }) {
           problem ??= "The upload was longer than declared.";
           continue;
         }
-        hash.update(chunk);
-        parts.push(cipher.update(chunk));
+        sealer.update(chunk);
       }
       ensure(!problem, 400, problem);
       ensure(received === length, 400, "The upload was shorter than declared.");
       res.removeHeader("Connection");
-      parts.push(cipher.final(), cipher.getAuthTag());
-      const object = Buffer.concat(parts);
+      const sealed = sealer.finish(c.VAULT_KEY);
+      const object = sealed.object;
 
       const s3Key = keyOf(cid, fid);
       const { versionId } = await s3.put(s3Key, object);
       const now = new Date();
-      const entry = {
-        id: fid,
+      const entry = fileEntry({
+        fid,
         name,
         category,
         size: length,
-        sha256: hash.digest("hex"),
-        contentType: Object.hasOwn(TYPES, ext)
-          ? TYPES[ext]
-          : "application/octet-stream",
+        sealed,
+        ext,
         s3Key,
         versionId,
-        dataKey: encrypt(dataKey.toString("hex"), c.VAULT_KEY, aad),
-        uploadedBy: req.staff.name,
-        uploadedById: req.staff._id,
-        uploadedAt: now,
-        deletedAt: null,
-        deletedBy: null,
-        restoredAt: null,
-        purgedAt: null,
-      };
+        by: req.staff,
+        now,
+      });
       try {
         await transaction(client, async (session) => {
           await authorizeWrite(db, session, req.staff, "credentials");
-          // Entries deleted more than 31 days ago are past restoring (the bucket
-          // lifecycle purges them); dropping them keeps the cap from filling.
-          await customers.updateOne(
-            { _id: cid },
-            {
-              $pull: {
-                files: {
-                  deletedAt: { $lt: new Date(Date.now() - PURGE_DAYS * DAY) },
-                },
-              },
-            },
-            { session },
-          );
-          const result = await customers.updateOne(
-            { _id: cid, [`files.${MAX_FILES - 1}`]: { $exists: false } },
-            { $push: { files: entry } },
-            { session },
-          );
-          if (result.matchedCount !== 1) {
-            ensure(
-              await customers.findOne(
-                { _id: cid },
-                { session, projection: { _id: 1 } },
-              ),
-              404,
-              "Customer not found.",
-            );
-            ensure(
-              false,
-              409,
-              `A customer can hold at most ${MAX_FILES} files.`,
-            );
-          }
+          await pushEntry(customers, session, cid, entry);
           await audit(
             db,
             session,

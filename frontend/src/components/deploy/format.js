@@ -1,4 +1,5 @@
 import { sha7 } from "../../../../shared/deploy";
+import { describeCode, isKnownCode } from "../../../../shared/deploy-errors";
 export { sha7 };
 export const when = (value, now = Date.now()) => {
   const time = value ? new Date(value).getTime() : NaN;
@@ -35,28 +36,29 @@ export const ITEM_TITLES = {
 };
 export const titlesOf = (ids = []) =>
   ids.map((id) => ITEM_TITLES[id] || id).join(", ");
-// Plain-language text for the stored failure code. Unknown codes fall back to
-// the server's own short message (it never carries secrets or provider bodies).
-const ERROR_TEXT = {
-  unauthorized: "Vercel or GitHub refused the stored token. Check the token.",
-  forbidden: "The token is not allowed to do this. Check its permissions.",
-  "not-found": "Something the deploy needs no longer exists.",
-  conflict: "The provider reported a conflict. Try again in a moment.",
-  invalid: "The provider rejected the request.",
-  "rate-limited": "The provider is rate limiting requests. Try again later.",
-  unavailable: "The provider is having problems. Try again later.",
-  timeout: "A step took too long and was stopped.",
-  network: "The worker could not reach the provider.",
-  "build-failed": "The build failed on GitHub. Open the run for the log.",
-  "scan-failed": "The built output failed the safety scan and was not used.",
-  "integrity-failed": "The stored build failed its integrity check.",
-  "health-failed": "The new version did not pass its health check.",
-  "worker-restarted": "The worker restarted and the job could not resume.",
-  "attempts-exceeded": "The job was tried several times and gave up.",
-  drift: "Vercel settings changed since the last verify. Verify again.",
-};
-export const errorText = (error) =>
-  ERROR_TEXT[error?.code] || error?.message || "The deploy failed.";
+// Title, plain message and next step for a stored code, from the one shared
+// table. An unknown code reads as "internal" and keeps the server's own short
+// message (it never carries secrets or provider bodies).
+export function describeError(error) {
+  const known = isKnownCode(error?.code),
+    entry = describeCode(error?.code);
+  return {
+    ...entry,
+    known,
+    extra: !known && error?.message ? error.message : "",
+  };
+}
+export const errorText = (error) => describeError(error).plainMessage;
+// "Branch@sha7 - headline - author - when" for a commit-bearing record.
+export function commitLine(item) {
+  const c = item?.commit;
+  return [
+    `${item?.branch || c?.branch || "unknown"}@${sha7(item?.sha || c?.sha)}`,
+    c?.headline,
+    c?.authorName,
+    c?.date ? when(c.date) : "",
+  ].filter(Boolean);
+}
 export const STEP_LABEL = {
   pending: "Waiting",
   running: "Running",

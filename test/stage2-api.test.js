@@ -13,6 +13,7 @@ import { newPos, aadOf } from "../backend/modules/pos.js";
 import { buildInputs, buildKeyOf } from "../backend/lib/build-inputs.js";
 import { createFakeGitHub, SRC, BLD, SHAS } from "./fakes/github.js";
 import { createFakeS3 } from "./fake-s3.js";
+import { storedCommit } from "../backend/lib/deploy-view.js";
 import {
   GATES,
   READINESS_IDS,
@@ -1641,6 +1642,144 @@ describe("verify and purge tasks", () => {
       ).status,
       409,
     );
+  });
+});
+
+describe("commit on the job and the build row", () => {
+  const DIRTY = "Fix \u202eevil\u0007 headline\u2028 here\nsecond line body";
+  it("storedCommit keeps the first line, cleans control and bidi characters and never an e-mail", () => {
+    const c = storedCommit(
+      {
+        headline: DIRTY,
+        authorName: "Ann <ann@example.test> bob@example.test\u202e",
+        date: "2026-10-05T10:00:00Z",
+        email: "x@example.test",
+      },
+      SHAS.a,
+      "main",
+    );
+    assert.equal(c.headline, "Fix  evil  headline  here");
+    assert.equal(c.authorName, "Ann");
+    assert.equal(c.sha, SHAS.a);
+    assert.ok(c.date instanceof Date);
+    assert.equal(JSON.stringify(c).includes("@"), false);
+    assert.equal(storedCommit(null, SHAS.a, "main"), null);
+    assert.equal(storedCommit({ headline: "x" }, "nope", "main"), null);
+    assert.equal(
+      storedCommit({ headline: "y".repeat(500) }, SHAS.a, "main").headline
+        .length,
+      120,
+    );
+  });
+  it("a deploy stores the commit of the exact sha; the view and audit stay clean", async () => {
+    const { id, slug } = await fresh();
+    fake.state.branches.push({
+      name: "commit-branch",
+      sha: sha(71),
+      message: DIRTY,
+      date: "2026-10-06T12:00:00Z",
+    });
+    const res = await post(
+      id,
+      "deploys",
+      deployBody(slug, { branch: "commit-branch", sha: sha(71) }),
+    );
+    assert.equal(res.status, 201, JSON.stringify(res.data));
+    const stored = (await doc(id)).pos.deploy.current.commit;
+    assert.equal(stored.sha, sha(71));
+    assert.equal(stored.branch, "commit-branch");
+    assert.equal(stored.headline, "Fix  evil  headline  here");
+    assert.equal(stored.authorName, "Dev Person");
+    assert.ok(stored.date instanceof Date);
+    assert.equal(
+      JSON.stringify(stored).includes("@"),
+      false,
+      "no e-mail stored",
+    );
+    assert.equal(JSON.stringify(stored).includes("dev@example.test"), false);
+    assert.equal(res.data.current.commit.headline, "Fix  evil  headline  here");
+    assert.equal(res.data.current.commit.authorName, "Dev Person");
+    const state = await call(`/installations/${id}/pos/deploys`);
+    assert.equal(state.data.current.commit.sha, sha(71));
+    assertNoSecrets(state.data, SECRETS, "state");
+  });
+  it("redeploy and rollback copy the commit from the stored version", async () => {
+    const { id, slug } = await fresh();
+    await setPos(id, {
+      "pos.deploy.last": version(1, {
+        commit: {
+          sha: SHA_OLD,
+          branch: "main",
+          headline: "Live headline",
+          authorName: "Live Author",
+          date: new Date("2026-10-01T00:00:00Z"),
+        },
+      }),
+      "pos.deploy.previous": version(2),
+    });
+    let res = await post(id, "deploys", { kind: "redeploy", confirm: true });
+    assert.equal(res.status, 201);
+    let job = (await doc(id)).pos.deploy.current;
+    assert.equal(job.commit.headline, "Live headline");
+    assert.equal(job.commit.authorName, "Live Author");
+    assert.equal(job.commit.sha, SHA_OLD);
+    await setPos(id, { "pos.deploy.current": null });
+    res = await post(id, "rollback", { confirm: slug });
+    assert.equal(res.status, 201);
+    job = (await doc(id)).pos.deploy.current;
+    assert.equal(job.commit.sha, SHA_PREV);
+    assert.equal(job.commit.headline, "Headline");
+    // A version without a commit gives null, never a crash.
+    await setPos(id, {
+      "pos.deploy.current": null,
+      "pos.deploy.last": { ...version(1), commit: undefined },
+    });
+    res = await post(id, "deploys", { kind: "redeploy", confirm: true });
+    assert.equal((await doc(id)).pos.deploy.current.commit, null);
+  });
+  it("fleet rows carry the live headline, author name and date, cleaned", async () => {
+    const f = await fresh();
+    await setPos(f.id, {
+      "pos.deploy.last": version(1, {
+        commit: {
+          sha: SHA_OLD,
+          branch: "main",
+          headline: "Ship ‮it\u0007\nbody",
+          authorName: "Ann <ann@example.test>",
+          date: new Date("2026-10-01T00:00:00Z"),
+        },
+      }),
+    });
+    const res = await call(`/pos/fleet?customerId=${f.customerId}`);
+    const live = res.data.rows[0].live;
+    assert.equal(live.headline, "Ship  it");
+    assert.equal(live.authorName, "Ann");
+    assert.ok(live.date);
+    assert.equal(JSON.stringify(res.data).includes("@"), false);
+    assertNoSecrets(res.data, SECRETS, "fleet");
+  });
+  it("prepare build stores the cleaned commit on the build row", async () => {
+    const { id } = await fresh();
+    fake.state.branches.push({
+      name: "commit-build",
+      sha: sha(72),
+      message: DIRTY,
+      date: "2026-10-06T13:00:00Z",
+    });
+    const res = await post(id, "builds", {
+      branch: "commit-build",
+      sha: sha(72),
+    });
+    assert.equal(res.status, 201, JSON.stringify(res.data));
+    const row = await ctx.db
+      .collection("system_state")
+      .findOne({ kind: "build", sha: sha(72) });
+    assert.equal(row.commit.headline, "Fix  evil  headline  here");
+    assert.equal(row.commit.authorName, "Dev Person");
+    assert.equal(row.commit.sha, sha(72));
+    assert.equal(JSON.stringify(row.commit).includes("@"), false);
+    assertNoSecrets(row, SECRETS, "build row");
+    await ctx.db.collection("system_state").deleteOne({ _id: row._id });
   });
 });
 

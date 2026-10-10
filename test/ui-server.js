@@ -146,7 +146,7 @@ await db.collection("connections").insertOne({
 // Owners with a known authenticator key (the spec derives codes from it), one
 // per test, because a TOTP step can only be used once per account.
 const DEPLOY_KEY = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
-for (const name of ["a", "b", "c", "d", "e", "f"]) {
+for (const name of ["a", "b", "c", "d", "e", "f", "g", "h"]) {
   const _id = randomUUID();
   await db.collection("staff").insertOne({
     _id,
@@ -237,6 +237,13 @@ function job({
     branch,
     sha: target,
     buildKey: null,
+    commit: {
+      sha: target,
+      branch,
+      headline: "Feature work in progress",
+      authorName: "Dev Person",
+      date: ago(3600000),
+    },
     by: { id: "u", name: "deploy owner" },
     requestedAt,
     status,
@@ -368,6 +375,43 @@ const SCENARIOS = {
     last: () => version(7),
     previous: () => null,
   },
+  backup: {
+    n: 12,
+    slug: "ui-backup",
+    customer: "Backup Cafe",
+    ...READY,
+    mongo: true,
+  },
+  backuprun: {
+    n: 13,
+    slug: "ui-backuprun",
+    customer: "Backuprun Cafe",
+    ...READY,
+    mongo: true,
+    task: () => task("running"),
+  },
+  backupdone: {
+    n: 14,
+    slug: "ui-backupdone",
+    customer: "Backupdone Cafe",
+    ...READY,
+    mongo: true,
+    task: () => task("succeeded"),
+  },
+  backupbig: {
+    n: 15,
+    slug: "ui-backupbig",
+    customer: "Backupbig Cafe",
+    ...READY,
+    mongo: true,
+    task: () =>
+      task("failed", {
+        error: {
+          code: "backup-too-large",
+          message: "Over the limit.",
+        },
+      }),
+  },
   gone: {
     n: 11,
     slug: "ui-gone",
@@ -377,6 +421,28 @@ const SCENARIOS = {
     previous: () => null,
   },
 };
+const task = (status, extra = {}) => ({
+  id: randomUUID(),
+  kind: "db-backup",
+  status,
+  step: status === "running" ? "dump" : status,
+  progress:
+    status === "running"
+      ? { collections: 4, documents: 1200, bytes: 2 * 1048576 }
+      : null,
+  lease: { owner: "w1", until: new Date(Date.now() + 60000), fence: 1 },
+  attempt: 1,
+  by: { id: "u", name: "deploy owner" },
+  requestedAt: ago(120000),
+  finishedAt: ["queued", "running"].includes(status) ? null : new Date(),
+  params: null,
+  result:
+    status === "succeeded"
+      ? { collections: 6, documents: 4200, bytes: 3 * 1048576 }
+      : null,
+  error: null,
+  ...extra,
+});
 const POS_CONFIG = (slug, host) => ({
   slug,
   subdomain: "cafe",
@@ -409,6 +475,13 @@ async function seedPos(name) {
     pos.vercel.orgId = "";
   }
   pos.deployLock = !spec.unlocked;
+  if (spec.mongo)
+    pos.mongo.uri = encrypt(
+      "mongodb+srv://u:p@cluster.example.test/db",
+      c.VAULT_KEY,
+      aadOf(id, "mongo.uri"),
+    );
+  pos.task = spec.task?.() ?? null;
   if (spec.token)
     pos.vercel.token = encrypt(
       "vercel-secret-token-1234567890",
@@ -559,6 +632,14 @@ const control = createServer(async (req, res) => {
         await db
           .collection("system_state")
           .updateOne({ _id: "pos-worker" }, { $set: { at: ago(10 * 60000) } });
+    } else if (url.pathname === "/pos/task") {
+      const id = nid("d", SCENARIOS[scenario].n);
+      await db
+        .collection("installations")
+        .updateOne(
+          { _id: id },
+          { $set: { "pos.task": task(query("status") ?? "running") } },
+        );
     } else if (url.pathname === "/pos/job") {
       const id = nid("d", SCENARIOS[scenario].n);
       const row = await db.collection("installations").findOne({ _id: id });

@@ -21,6 +21,7 @@ import {
   buildRowId,
   sha7,
 } from "../../shared/deploy.js";
+import { isKnownCode } from "../../shared/deploy-errors.js";
 import { key8 } from "../lib/deploy-view.js";
 import {
   JobFail,
@@ -1069,6 +1070,8 @@ export async function finalizeLive(jr, { deployment, healthy, error }) {
   });
 }
 // Fail handler for a job: maps any error to a stored, fixed-string failure.
+const safeCode = (code) =>
+  isKnownCode(String(code)) ? String(code) : "internal";
 export function failureOf(error, step) {
   if (error instanceof JobFail)
     return {
@@ -1126,14 +1129,14 @@ export async function failJob(ctx, claim, jr, error) {
           step: DEPLOY_STEP_NAMES.includes(info.step)
             ? info.step
             : (current.step ?? "queued"),
-          code: String(info.code).slice(0, 40),
+          code: safeCode(info.code),
           message: failMessage(info.message),
         },
   });
   ctx.log("job-ended", {
     id: current.requestId?.slice(0, 8) ?? "",
     status: info.status,
-    code: String(info.code).slice(0, 40),
+    code: safeCode(info.code),
   });
   await dropWaiter(ctx, current);
   if (info.status === "failed")

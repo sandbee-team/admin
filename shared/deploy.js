@@ -93,6 +93,12 @@ export const sha7 = (sha) => (isSha(sha) ? sha.slice(0, 7) : "");
 //   buildKey        64 hex or null. The API fills it at enqueue when the
 //                   builder descriptor is readable; the worker recomputes it
 //                   in `resolve` and overwrites
+//   commit          {sha, branch, headline <= 120 (first line), authorName
+//                   (name only, never an e-mail), date} | null. Set by the API
+//                   at enqueue (deploy: from GitHub for the exact sha;
+//                   redeploy/rollback: copied from the stored version) because
+//                   the worker has no source token. The worker copies it into
+//                   last.commit at finalize. Control and bidi characters removed
 //   by              {id, name} of the staff member
 //   requestedAt     Date
 //   status          queued | running | cancelling | failed | cancelled |

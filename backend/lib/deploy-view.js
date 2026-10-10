@@ -23,7 +23,10 @@ import {
 
 const clean = (value, max) =>
   String(value ?? "")
-    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+    .replace(
+      /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g,
+      " ",
+    )
     .trim()
     .slice(0, max);
 const date = (value) => {
@@ -60,6 +63,24 @@ const stepView = (step) => ({
   endedAt: date(step?.endedAt),
   note: clean(step?.note, 120),
 });
+// The commit as stored on a job or build row: first line of the message,
+// the author's NAME only (an e-mail is never kept), control and bidi
+// characters removed. `raw` is untrusted (GitHub, or a stored version).
+export const storedCommit = (raw, sha, branch) =>
+  raw && isSha(sha)
+    ? {
+        sha,
+        branch: isBranch(branch) ? branch : "",
+        headline: clean(String(raw.headline ?? "").split(/\r?\n/)[0], 120),
+        authorName: clean(
+          String(raw.authorName ?? "")
+            .replace(/<[^>]*>/g, "")
+            .replace(/\S+@\S+/g, ""),
+          100,
+        ),
+        date: date(raw.date),
+      }
+    : null;
 const commitView = (commit) =>
   commit
     ? {
@@ -89,6 +110,7 @@ export function jobView(job, now = Date.now()) {
     branch: isBranch(job.branch) ? job.branch : "",
     sha: isSha(job.sha) ? job.sha : "",
     buildKey8: key8(job.buildKey),
+    commit: commitView(job.commit),
     by: person(job.by),
     requestedAt: date(job.requestedAt),
     status: oneOf(DEPLOY_STATES, job.status, "failed"),

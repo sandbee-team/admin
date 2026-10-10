@@ -20,11 +20,13 @@ import { pipeline } from "node:stream/promises";
 import zlib from "node:zlib";
 import { createWriteStream } from "node:fs";
 import { ProviderError } from "../lib/provider-http.js";
+import { knownCode } from "../../shared/deploy-errors.js";
 import { parseBuilderJson } from "../lib/build-inputs.js";
 
 export class AcceptError extends Error {
   constructor(code) {
     super(`Build not accepted (${code})`);
+    knownCode(code);
     this.name = "AcceptError";
     this.code = code;
   }

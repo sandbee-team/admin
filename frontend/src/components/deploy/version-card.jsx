@@ -34,6 +34,12 @@ export function VersionCard({ title, version, empty, action }) {
             </code>
           </p>
           <p>{version.commit?.headline || "No commit message recorded."}</p>
+          {version.commit?.authorName && (
+            <p className="small subtle">
+              {version.commit.authorName}
+              {version.commit.date ? ` · ${when(version.commit.date)}` : ""}
+            </p>
+          )}
           <dl className="version-facts">
             <div>
               <dt>When</dt>

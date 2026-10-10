@@ -9,6 +9,7 @@ import {
   MAX_ATTEMPTS,
   QUEUED_EXPIRY_MS,
 } from "../../shared/deploy.js";
+import { knownCode } from "../../shared/deploy-errors.js";
 
 export class LeaseLost extends Error {
   constructor() {
@@ -391,6 +392,7 @@ export async function claimBuild(ctx) {
 export class JobFail extends Error {
   constructor(code, message, { step = null, status = "failed" } = {}) {
     super(message);
+    knownCode(code); // free-text codes are a bug: see shared/deploy-errors.js
     this.name = "JobFail";
     this.code = code;
     this.step = step;

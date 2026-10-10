@@ -6,6 +6,7 @@
 // stored. Takeover resumes from runId; nothing is dispatched twice for a row.
 import { mkdir, unlink } from "node:fs/promises";
 import path from "node:path";
+import { isKnownCode } from "../../shared/deploy-errors.js";
 import { ProviderError } from "../lib/provider-http.js";
 import { BuildCacheError } from "../lib/build-cache.js";
 import {
@@ -75,7 +76,9 @@ export async function runBuildLane(ctx, claim) {
     claim,
     (signal) => driveBuild(ctx, claim, signal),
     async (error) => {
-      const { code, message } = buildFailure(error);
+      const failure = buildFailure(error);
+      const code = isKnownCode(failure.code) ? failure.code : "internal";
+      const { message } = failure;
       ctx.log("build-failed", { id: String(slot.idValue).slice(-8), code });
       await slot.set({
         status: "failed",

@@ -32,8 +32,9 @@ import {
 } from "../components/deploy/deploy-actions";
 import { DeployProgress } from "../components/deploy/deploy-progress";
 import { DeployError } from "../components/deploy/deploy-error";
+import { BackupPanel } from "../components/deploy/backup-panel";
 import { VersionCard } from "../components/deploy/version-card";
-import { titlesOf } from "../components/deploy/format";
+import { describeError, titlesOf } from "../components/deploy/format";
 const VERIFY_LABEL = {
   vercel: "Vercel token",
   project: "Project settings",
@@ -272,7 +273,9 @@ export function InstallationDeploy({ installation, user }) {
           ) : data.task?.kind === "verify" && data.task.status === "failed" ? (
             <p role="status">
               The last verification could not finish
-              {data.task.error ? `: ${data.task.error.message}` : "."}
+              {data.task.error
+                ? `: ${describeError(data.task.error).title}. ${describeError(data.task.error).plainMessage} ${describeError(data.task.error).action}`
+                : "."}
             </p>
           ) : null}
           {data.verify && (
@@ -355,6 +358,11 @@ export function InstallationDeploy({ installation, user }) {
             />
           </div>
         </section>
+        <BackupPanel
+          installationId={id}
+          customerId={installation.customerId}
+          owner={owner}
+        />
         <section className="panel deploy-lock" aria-labelledby="lock-title">
           <div className="panel-title">
             <div>

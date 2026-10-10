@@ -7,6 +7,7 @@ import { ProviderError } from "../lib/provider-http.js";
 import { canonicalEnvValue, nextPublicOf } from "../lib/build-inputs.js";
 import { probeHealth, probeLogin } from "../lib/pos-health.js";
 import { NEXT_PUBLIC_KEYS } from "../../shared/deploy.js";
+import { isKnownCode } from "../../shared/deploy-errors.js";
 import { audit } from "../lib/audit.js";
 import { transaction } from "../db.js";
 import { JobFail, LeaseLost, withLease } from "./lease.js";
@@ -265,7 +266,7 @@ export async function failTask(ctx, claim, error) {
     status: "failed",
     finishedAt: new Date(ctx.now()),
     error: {
-      code: String(code).slice(0, 40),
+      code: isKnownCode(String(code)) ? String(code) : "internal",
       message: String(message).slice(0, 160),
     },
   });

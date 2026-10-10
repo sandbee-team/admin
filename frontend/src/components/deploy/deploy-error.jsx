@@ -2,7 +2,7 @@ import { TriangleAlert } from "lucide-react";
 import { Button } from "../ui";
 import { UI_STEPS } from "../../../../shared/deploy";
 import { dateTime } from "../../lib/api";
-import { errorText, sha7 } from "./format";
+import { commitLine, describeError, sha7 } from "./format";
 const stepLabel = (name) =>
   UI_STEPS.find((ui) => ui.steps.includes(name))?.label || name;
 const NOUN = { deploy: "deploy", redeploy: "redeploy", rollback: "rollback" };
@@ -39,8 +39,9 @@ export function DeployError({
           : job.status === "expired"
             ? "The worker never finished this job. Nothing was changed on the live site."
             : job.error
-              ? errorText(job.error)
+              ? ""
               : "No reason was recorded.";
+  const why = job.error ? describeError(job.error) : null;
   const loud = !["cancelled", "expired"].includes(job.status);
   return (
     <section
@@ -53,7 +54,19 @@ export function DeployError({
         <TriangleAlert size={20} aria-hidden="true" />
         <div>
           <h2 id="deploy-error-title">{title}</h2>
-          <p>{detail}</p>
+          {detail && <p>{detail}</p>}
+          {why && (
+            <div className="error-why" data-code={job.error.code}>
+              <p>
+                <strong>{why.title}.</strong> {why.plainMessage}
+              </p>
+              <p className="small">What to do: {why.action}</p>
+              {why.extra && (
+                <p className="small subtle">Server message: {why.extra}</p>
+              )}
+            </div>
+          )}
+          <p className="small subtle">{commitLine(job).join(" — ")}</p>
           <dl className="version-facts">
             <div>
               <dt>Branch</dt>

@@ -92,6 +92,16 @@ Stage 2 adds a second container, `worker`, to `compose.production.yaml` (same im
 
 Operating notes: the owner's freeze switch stops all deploys (running ones stop before the upload; rollbacks, verify and purge still run). One deploy runs at a time, builds run two at a time, tasks one at a time. `docker compose -f compose.production.yaml logs worker` shows event names, 8-character ids and error codes only: never tokens, URIs or provider text.
 
+### Restoring a client database backup
+
+Download the file from the customer's Files (step-up needed; it comes back already decrypted, as `<slug>-db-<time>.jsonl.gz`). Restore it into a **scratch** MongoDB, never the client's live database:
+
+```sh
+RESTORE_MONGODB_URI="mongodb://127.0.0.1:27017"   node scripts/pos-db-restore.js --file demo-db-20261010-1200.jsonl.gz --db demo_restore
+```
+
+The URI is read from the environment only. The script refuses an Atlas host (unless `--allow-atlas`), refuses a target database that already holds collections (unless `--force`), and verifies the document counts against the backup's trailer. Backups over 20 MB compressed are refused at creation: use `mongodump` locally for those.
+
 ## Reverse proxy (Caddy)
 
 Production terminates TLS in Caddy (`/opt/edge/Caddyfile`) and proxies to Admin on a separate local port, which keeps the other live applications untouched:

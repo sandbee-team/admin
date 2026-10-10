@@ -33,6 +33,7 @@ export async function openClientDb(
     timeoutMs = 8000,
     Client = MongoClient,
     appName = "sandbee-admin-worker",
+    readPreference,
   } = {},
 ) {
   const hosts = hostsOf(uri);
@@ -47,6 +48,7 @@ export async function openClientDb(
       socketTimeoutMS: timeoutMs + 2000,
       maxPoolSize: 2,
       appName,
+      ...(readPreference ? { readPreference } : {}),
     });
     await client.connect();
     return { client, db: client.db() };

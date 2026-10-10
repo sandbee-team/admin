@@ -398,7 +398,7 @@ test("failed, stalled and auto-rolled-back jobs are explained honestly", async (
     .getByRole("alert")
     .filter({ hasText: "The deploy failed" });
   await expect(failure).toBeVisible();
-  await expect(failure).toContainText("The build failed on GitHub");
+  await expect(failure).toContainText("The POS build failed on GitHub");
   await expect(failure).toContainText("Failed at");
   await expect(failure).toContainText("Build");
   await expect(failure).toContainText("build-failed");

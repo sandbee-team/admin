@@ -16,6 +16,7 @@ import { ConfirmModal } from "../components/confirm";
 import { withStepUp } from "../components/step-up";
 import { api, upload, download, dateTime, isStale } from "../lib/api";
 import { can } from "../../../shared/policy";
+import { Link } from "../lib/router";
 // Mirror shared/schemas.js (FILE_CATEGORIES, FILE_EXTENSIONS, MAX_FILE_BYTES);
 // the API enforces them again.
 const CATEGORIES = [
@@ -77,13 +78,43 @@ export function FilesSection({ customerId, user }) {
           </Empty>
         </div>
       ) : (
-        <Resource resource={resource}>
-          {(data) => (
-            <FileList customerId={customerId} initial={data.rows} user={user} />
-          )}
-        </Resource>
+        <>
+          <BackupNote customerId={customerId} />
+          <Resource resource={resource}>
+            {(data) => (
+              <FileList
+                customerId={customerId}
+                initial={data.rows}
+                user={user}
+              />
+            )}
+          </Resource>
+        </>
       )}
     </>
+  );
+}
+// Database backups are made from the POS installation's Deploy tab.
+function BackupNote({ customerId }) {
+  const fleet = useResource(`/pos/fleet?customerId=${customerId}`),
+    rows = fleet.data?.rows ?? [];
+  if (!rows.length) return null;
+  return (
+    <p className="small subtle backup-note">
+      Database backups are made by the owner from the Deploy tab:{" "}
+      {rows.map((row, i) => (
+        <span key={row.installationId}>
+          {i > 0 && ", "}
+          <Link
+            className="text-link"
+            href={`/installations/${row.installationId}/deploy`}
+          >
+            {row.slug}
+          </Link>
+        </span>
+      ))}
+      .
+    </p>
   );
 }
 function FileList({ customerId, initial, user }) {
