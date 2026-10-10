@@ -163,6 +163,7 @@ for (const name of [
   "n",
   "o",
   "p",
+  "q",
 ]) {
   const _id = randomUUID();
   await db.collection("staff").insertOne({
@@ -454,6 +455,22 @@ const SCENARIOS = {
         status: "unhealthy",
         step: "health",
         error: { step: "health", code: "health-failed", message: "x" },
+      }),
+  },
+  healthunknown: {
+    n: 19,
+    slug: "ui-healthunknown",
+    customer: "Unknown Cafe",
+    ...READY,
+    current: () =>
+      job({
+        status: "unhealthy",
+        step: "health",
+        error: {
+          step: "health",
+          code: "health-unknown",
+          message: "Could not check the site after going live. Check it now.",
+        },
       }),
   },
   settings: {

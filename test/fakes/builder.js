@@ -350,7 +350,7 @@ export function createFakeVercel({ projectId = "prj_1" } = {}) {
     url: d.url,
     projectId,
     readyState: d.readyState,
-    readySubstate: "",
+    readySubstate: d.readySubstate ?? "",
     target: d.target,
     source: "cli",
     prebuilt: d.prebuilt,

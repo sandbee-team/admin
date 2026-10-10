@@ -17,6 +17,7 @@ const SCENARIO = {
   stalled: 7,
   rolledback: 8,
   settings: 18,
+  healthunknown: 19,
 };
 const iid = (name) =>
   `00000000-0000-4000-8000-d${String(SCENARIO[name]).padStart(11, "0")}`;
@@ -574,4 +575,21 @@ test("verify shows the failing project setting with actual and expected, and a N
     "Node.js version is 24.x on Vercel; admin deploys run on Node 22 from the build (only local-console builds use the project setting).",
   );
   await expect(page.locator(".verify-flags")).toContainText("Project settings");
+});
+
+test("a health check that could not run is not reported as a site that is down", async ({
+  page,
+}) => {
+  test.setTimeout(60000);
+  await control("reset?scenario=healthunknown");
+  await ownerIn(page, "q");
+  await page.goto(deployUrl("healthunknown"));
+  const panel = page.locator(".deploy-error");
+  await expect(
+    panel.getByRole("heading", {
+      name: "Could not check the site after going live",
+    }),
+  ).toBeVisible();
+  await expect(panel).toContainText("Check the site now.");
+  await expect(panel).not.toContainText("may be down");
 });

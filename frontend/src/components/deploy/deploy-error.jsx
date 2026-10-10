@@ -18,8 +18,12 @@ export function DeployError({
 }) {
   const noun = NOUN[job.kind] || "deploy",
     restored = last?.sha ? versionRef(last) : "the previous version";
-  const title =
-    job.status === "rolled-back"
+  // The worker could not run the health check after going live: not "down".
+  const unknown =
+    job.status === "unhealthy" && job.error?.code === "health-unknown";
+  const title = unknown
+    ? "Could not check the site after going live"
+    : job.status === "rolled-back"
       ? `Health check failed — rolled back to ${restored}`
       : job.status === "unhealthy"
         ? "Health check failed — the site may be down"
@@ -28,8 +32,9 @@ export function DeployError({
           : job.status === "expired"
             ? `The ${noun} expired before it finished`
             : `The ${noun} failed`;
-  const detail =
-    job.status === "rolled-back"
+  const detail = unknown
+    ? "The new version is live, but admin could not check it. Check the site now."
+    : job.status === "rolled-back"
       ? `The new version failed its health check and was rolled back to ${restored}. It may have been live for up to about a minute.`
       : job.status === "unhealthy"
         ? "The new version failed its health check and the previous version could not be restored automatically. Check the site now."

@@ -186,6 +186,19 @@ export function productionOf(project) {
     return alias.toDeploymentId;
   return project?.productionDeploymentId ?? null;
 }
+// Is this deployment the one production serves NOW? Either signal counts, but
+// a succeeded alias request never overrides a project whose production target
+// names another deployment (an old alias request can be stale: after a plain
+// promote Vercel may not report a new one at all).
+export function isProduction(project, id) {
+  if (!id) return false;
+  const prod = project?.productionDeploymentId ?? null;
+  if (prod === id) return true;
+  const alias = project?.lastAliasRequest;
+  const aliasOk =
+    alias?.toDeploymentId === id && alias.jobStatus === "succeeded";
+  return aliasOk && prod === null;
+}
 export async function healthFlag(ctx, target, signal) {
   const options = {
     host: target.host,

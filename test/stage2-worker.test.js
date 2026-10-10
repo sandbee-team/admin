@@ -67,6 +67,7 @@ import {
 import { runRetention } from "../backend/worker/retention.js";
 import { JOB_STEPS, buildRowId, verifyStateOf } from "../shared/deploy.js";
 import { verifyView } from "../backend/lib/deploy-view.js";
+import { isProduction } from "../backend/worker/verify.js";
 import { createFakeS3 } from "./fake-s3.js";
 import { createFakeCli } from "./fakes/cli.js";
 import {
@@ -2914,7 +2915,7 @@ describe("L4: disk errors are not integrity failures; S3 downloads retry", () =>
 });
 
 describe("M4: errors after promotion never hide a live deployment", () => {
-  it("an alias timeout with the new deployment already serving ends as unhealthy with last/previous correct", async () => {
+  it("a pending alias request does not matter once the production target is the new deployment", async () => {
     const env = await makeEnv();
     const w = await makeWorker(env, { t: { aliasMs: -1 } });
     const id = await seedInstallation(env);
@@ -2928,15 +2929,10 @@ describe("M4: errors after promotion never hide a live deployment", () => {
       return { status: 201 };
     };
     const deploy = await deployOnce(env, w, id, { sha: SHA1 });
-    assert.equal(deploy.current.status, "unhealthy");
-    assert.equal(deploy.current.error.code, "alias-timeout");
-    assert.equal(
-      deploy.last.vercelDeploymentId,
-      "dpl_1",
-      "what is live is recorded",
-    );
+    assert.equal(deploy.current, null);
+    assert.equal(deploy.last.vercelDeploymentId, "dpl_1");
     assert.equal(deploy.previous.status, "pre-admin");
-    assert.equal(deploy.cutoverAt, null);
+    assert.ok(deploy.cutoverAt instanceof Date);
   });
   it("a provider error while checking production after a failed health check", async () => {
     const env = await makeEnv();
@@ -3661,7 +3657,11 @@ describe("Vercel project Node.js version is a warning, not a blocker", () => {
     assert.deepEqual(row.pos.verify.warnings, [
       { name: "nodeVersion", actual: "24.x", expected: "22.x" },
     ]);
-    assert.equal(verifyStateOf(row.pos.verify), "ok", "the credentials count as verified");
+    assert.equal(
+      verifyStateOf(row.pos.verify),
+      "ok",
+      "the credentials count as verified",
+    );
     const view = verifyView(row.pos.verify);
     assert.deepEqual(view.warnings, row.pos.verify.warnings);
     assertNoSecrets(view, SECRETS, "verify view");
@@ -3704,10 +3704,16 @@ describe("Vercel project Node.js version is a warning, not a blocker", () => {
         await writeFile(file, validOutput(SHA1, entries).tgz);
         return inspectTgz(file, { nodeMajor: "22" });
       };
-      assert.equal((await run([cfg("nodejs22.x"), cfg("edge", "m")])).runtimeMismatch, 0);
+      assert.equal(
+        (await run([cfg("nodejs22.x"), cfg("edge", "m")])).runtimeMismatch,
+        0,
+      );
       for (const bad of ["nodejs20.x", "nodejs24.x", "python3.12", undefined])
         assert.ok((await run([cfg(bad)])).runtimeMismatch > 0, String(bad));
-      assert.equal(tarProblemCode(await run([cfg("nodejs20.x")])), "artifact-runtime");
+      assert.equal(
+        tarProblemCode(await run([cfg("nodejs20.x")])),
+        "artifact-runtime",
+      );
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -3727,5 +3733,159 @@ describe("Vercel project Node.js version is a warning, not a blocker", () => {
     assert.equal(deploy.current.error.code, "artifact-runtime");
     assert.equal(env.cli.calls.length, 0);
     assert.equal(env.s3fake.liveKeys().length, 0);
+  });
+});
+
+describe("go-live switch: promote signals and post-promotion recovery", () => {
+  // How Vercel answers after a promote, in the shapes seen live: 201 with NO
+  // lastAliasRequest, readySubstate PROMOTED and/or a project production target.
+  const promoteAs = (
+    env,
+    { production = true, substate = "PROMOTED" } = {},
+  ) => {
+    env.vercel.state.lastAlias = null;
+    env.vercel.promote = async (_pid, id) => {
+      env.vercel.state.deployments.get(id).readySubstate = substate;
+      if (production) env.vercel.state.production = id;
+      return { status: 201 };
+    };
+  };
+  it("a promote with no lastAliasRequest and readySubstate PROMOTED succeeds, and the health check runs", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    promoteAs(env);
+    const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+    assert.equal(deploy.current, null, JSON.stringify(deploy.current?.error));
+    assert.equal(deploy.last.vercelDeploymentId, "dpl_1");
+    assert.ok(
+      env.health.calls.some((c) => c.production === "dpl_1"),
+      "the new site was checked",
+    );
+  });
+  it("a production target equal to the new id (no substate, no alias request) is enough", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    promoteAs(env, { substate: "" });
+    const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+    assert.equal(deploy.current, null);
+    assert.equal(deploy.last.vercelDeploymentId, "dpl_1");
+  });
+  it("a genuinely stuck switch still times out, with no health run and nothing finalised", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env, { t: { aliasMs: -1 } });
+    const id = await seedInstallation(env);
+    env.vercel.promote = async () => ({ status: 201 }); // accepted, but nothing happens
+    const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+    assert.equal(deploy.current.status, "failed");
+    assert.equal(deploy.current.error.code, "alias-timeout");
+    assert.equal(deploy.last, null);
+    assert.equal(
+      env.health.calls.filter((c) => c.production === "dpl_1").length,
+      0,
+    );
+  });
+  it("isProduction: a stale alias never overrides the project's production target", () => {
+    const p = (prod, alias) => ({
+      productionDeploymentId: prod,
+      lastAliasRequest: alias,
+    });
+    const ok = { toDeploymentId: "A", jobStatus: "succeeded" };
+    assert.equal(isProduction(p("A", null), "A"), true);
+    assert.equal(isProduction(p(null, ok), "A"), true);
+    assert.equal(
+      isProduction(p("B", ok), "A"),
+      false,
+      "stale alias to A while production is B",
+    );
+    assert.equal(isProduction(p("B", null), "A"), false);
+    assert.equal(
+      isProduction(p("A", { toDeploymentId: "A", jobStatus: "failed" }), "A"),
+      true,
+    );
+  });
+  it("a manual rollback is never confirmed by a PROMOTED substate (old deployments keep it)", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env, { t: { aliasMs: -1 } });
+    const id = await seedInstallation(env);
+    await deployOnce(env, w, id, { sha: SHA1 });
+    const before = await deployOf(env, id);
+    env.vercel.state.deployments.get("dpl_live").readySubstate = "PROMOTED";
+    env.vercel.rollback = async () => ({ status: 201 }); // accepted, production does not move
+    await enqueue(env, id, {
+      kind: "rollback",
+      sha: "",
+      vercelDeploymentId: before.previous.vercelDeploymentId,
+    });
+    await w.loop.drain();
+    const after = await deployOf(env, id);
+    assert.equal(after.current.status, "failed");
+    assert.equal(after.current.error.code, "alias-timeout");
+    assert.equal(after.last.vercelDeploymentId, before.last.vercelDeploymentId);
+  });
+
+  // The alias poll throws once after the switch happened (the project read fails).
+  const failAliasPollOnce = (env, { thenBreakHealth = false } = {}) => {
+    const project = env.vercel.project;
+    let armed = false,
+      calls = 0;
+    const promote = env.vercel.promote;
+    env.vercel.promote = async (...a) => {
+      const out = await promote(...a);
+      armed = true;
+      return out;
+    };
+    env.vercel.project = async (...a) => {
+      if (armed) {
+        calls++;
+        if (calls === 1 || (thenBreakHealth && calls === 3))
+          throw new ProviderError("vercel", "network", { retryable: true });
+      }
+      return project(...a);
+    };
+  };
+  it("recovery runs the health check: healthy ends as a normal success", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    failAliasPollOnce(env);
+    const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+    assert.equal(deploy.current, null, JSON.stringify(deploy.current?.error));
+    assert.equal(deploy.last.vercelDeploymentId, "dpl_1");
+    assert.ok(deploy.cutoverAt instanceof Date, "a verified go-live");
+    assert.ok(env.health.calls.some((c) => c.production === "dpl_1"));
+  });
+  it("recovery runs the health check: unhealthy triggers the automatic rollback", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    env.health.bad.add("dpl_1");
+    failAliasPollOnce(env);
+    const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+    assert.equal(deploy.current.status, "rolled-back");
+    assert.equal(env.vercel.state.production, "dpl_live");
+    assert.equal(deploy.last, null);
+  });
+  it("if the health phase itself cannot run, the job ends unhealthy with health-unknown, and a Redeploy works from there", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    failAliasPollOnce(env, { thenBreakHealth: true });
+    let deploy = await deployOnce(env, w, id, { sha: SHA1 });
+    assert.equal(deploy.current.status, "unhealthy");
+    assert.equal(deploy.current.error.code, "health-unknown");
+    assert.match(deploy.current.error.message, /Could not check the site/);
+    assert.equal(
+      deploy.last.vercelDeploymentId,
+      "dpl_1",
+      "what is live is recorded",
+    );
+    assert.equal(deploy.previous.status, "pre-admin");
+    // The owner verifies and presses a cached Redeploy from this state.
+    deploy = await deployOnce(env, w, id, { kind: "redeploy", sha: SHA1 });
+    assert.equal(deploy.current, null, JSON.stringify(deploy.current?.error));
+    assert.equal(deploy.last.build.source, "cache");
+    assert.equal(env.gh.state.dispatches.length, 1, "no rebuild");
   });
 });

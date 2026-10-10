@@ -23,6 +23,7 @@ import {
 } from "../../shared/deploy.js";
 import {
   describeProjectIssue,
+  describeCode,
   isKnownCode,
 } from "../../shared/deploy-errors.js";
 import { key8 } from "../lib/deploy-view.js";
@@ -54,6 +55,7 @@ import {
   WORKER_ACTOR,
   expectedNodeOf,
   inspectProject,
+  isProduction,
   loadTarget,
   productionOf,
 } from "./verify.js";
@@ -762,7 +764,12 @@ export async function waitReady(jr, deploymentId) {
     await wait(ctx, ctx.t.vercelPollMs, jr.signal);
   }
 }
-export async function awaitAlias(jr, deploymentId) {
+// Waits until production serves `deploymentId`. Succeeds on ANY of: the project's
+// production target is it, a succeeded alias request for it, or (for a freshly
+// promoted deployment, `substate` true) readySubstate PROMOTED: a plain promote
+// returns 201 without any lastAliasRequest. A failed alias request for it is an
+// error; the timeout applies only when none of the signals ever turns true.
+export async function awaitAlias(jr, deploymentId, { substate = true } = {}) {
   const { ctx } = jr;
   const started = ctx.now();
   for (;;) {
@@ -770,15 +777,19 @@ export async function awaitAlias(jr, deploymentId) {
     const project = await jr.vercel.project(jr.target.projectId, {
       signal: jr.signal,
     });
+    if (isProduction(project, deploymentId)) return;
     const alias = project.lastAliasRequest;
-    if (alias?.toDeploymentId === deploymentId) {
-      if (alias.jobStatus === "succeeded") return;
-      if (alias.jobStatus === "failed")
-        throw fail(
-          "alias-failed",
-          "Vercel could not point production at the deployment.",
-          "vercel",
-        );
+    if (alias?.toDeploymentId === deploymentId && alias.jobStatus === "failed")
+      throw fail(
+        "alias-failed",
+        "Vercel could not point production at the deployment.",
+        "vercel",
+      );
+    if (substate) {
+      const d = await jr.vercel.deployment(deploymentId, {
+        signal: jr.signal,
+      });
+      if (d.readySubstate === "PROMOTED") return;
     }
     if (ctx.now() - started > ctx.t.aliasMs)
       throw fail(
@@ -796,7 +807,7 @@ async function vercelStep(jr, deployment) {
     signal: jr.signal,
   });
   const production = productionOf(project);
-  if (production !== deployment.id) {
+  if (!isProduction(project, deployment.id)) {
     const baseline = jr.job.baseline?.vercelDeploymentId ?? null;
     if (production !== baseline)
       throw fail(
@@ -829,7 +840,8 @@ export async function restore(jr, targetId, version) {
   const { ctx, target } = jr;
   try {
     await jr.vercel.rollback(target.projectId, targetId, { signal: jr.signal });
-    await awaitAlias(jr, targetId);
+    // Not PROMOTED-based: an old deployment already carries that substate.
+    await awaitAlias(jr, targetId, { substate: false });
     return { id: targetId, url: version?.url ?? "", via: "instant" };
   } catch (error) {
     if (!(error instanceof ProviderError) || jr.signal.aborted) throw error;
@@ -883,7 +895,7 @@ export async function restore(jr, targetId, version) {
   const project = await jr.vercel.project(target.projectId, {
     signal: jr.signal,
   });
-  if (productionOf(project) !== dep.id)
+  if (!isProduction(project, dep.id))
     await jr.vercel
       .promote(target.projectId, dep.id, { signal: jr.signal })
       .catch((error) => {
@@ -1226,8 +1238,137 @@ const DEPLOY_STEP_NAMES = [
   "finalize",
 ];
 
+// Health check after going live, with the automatic rollback (D24/D28), then
+// the terminal write. Used by the normal run and by the post-promotion recovery.
+export async function healthPhase(jr, deployment) {
+  const { ctx } = jr;
+  await jr.begin("health");
+  const res = await probe(jr, ctx.t.healthAttempts);
+  ensureLive(jr.signal);
+  const finalizeIdx = jr.idx("finalize");
+  if (res.ok) {
+    // A takeover after an automatic rollback finds a healthy production
+    // that is NOT the new deployment: that is the rolled-back outcome.
+    const nowProject = await jr.vercel.project(jr.target.projectId, {
+      signal: jr.signal,
+    });
+    if (!isProduction(nowProject, deployment.id)) {
+      await jr.end("health", "failed", "Rolled back");
+      await jr.begin("finalize");
+      await endJob(jr, {
+        status: "rolled-back",
+        error: {
+          step: "health",
+          code: "health-failed",
+          message:
+            "The new version failed its health check; rolled back to the previous version.",
+        },
+        extra: {
+          [`steps.${finalizeIdx}.state`]: "done",
+          [`steps.${finalizeIdx}.endedAt`]: new Date(ctx.now()),
+        },
+        stepFailed: false,
+      });
+      await rmJob(ctx, jr.rid);
+      return;
+    }
+    await jr.end("health", "done");
+    await jr.begin("finalize");
+    await finalizeLive(jr, { deployment, healthy: true });
+    await rmJob(ctx, jr.rid);
+    return;
+  }
+  await jr.end("health", "failed", reasonNote(res));
+  const baseline = jr.job.baseline;
+  const error = {
+    step: "health",
+    code: "health-failed",
+    message: failMessage(
+      `${reasonNote(res)} after the new deployment went live.`,
+    ),
+  };
+  let rolledBack = false;
+  if (baseline?.vercelDeploymentId && baseline.healthy === true) {
+    const project = await jr.vercel.project(jr.target.projectId, {
+      signal: jr.signal,
+    });
+    if (isProduction(project, deployment.id)) {
+      await jr.note("health", "Rolling back");
+      try {
+        const last = jr.target.pos.deploy?.last;
+        const live = await restore(
+          jr,
+          baseline.vercelDeploymentId,
+          last?.vercelDeploymentId === baseline.vercelDeploymentId
+            ? last
+            : null,
+        );
+        // The Hobby fallback makes a NEW deployment of the old commit: `last`
+        // must name what is live now.
+        if (last && live.id !== last.vercelDeploymentId)
+          await ctx.coll.installations.updateOne(jr.slot.filterOf(), {
+            $set: {
+              "pos.deploy.last.vercelDeploymentId": live.id,
+              "pos.deploy.last.url": live.url || last.url || "",
+            },
+          });
+        const again = await probe(jr, ctx.t.rollbackHealthAttempts);
+        rolledBack = again.ok;
+      } catch (caught) {
+        // A rollback that fails for any reason leaves the production
+        // check below to say what is live.
+        if (caught instanceof LeaseLost || caught instanceof Released)
+          throw caught;
+        if (jr.signal.aborted) throw jr.signal.reason ?? caught;
+      }
+    }
+  }
+  await jr.begin("finalize");
+  if (rolledBack) {
+    await endJob(jr, {
+      status: "rolled-back",
+      error: {
+        ...error,
+        message: failMessage(
+          `${reasonNote(res)}; rolled back to the previous version.`,
+        ),
+      },
+      extra: {
+        [`steps.${finalizeIdx}.state`]: "done",
+        [`steps.${finalizeIdx}.endedAt`]: new Date(ctx.now()),
+      },
+      stepFailed: false,
+    });
+    await notifyOwner(ctx, jr, "rolled back", error.message);
+  } else {
+    // No rollback happened (baseline unhealthy or missing) or it failed: the
+    // new deployment is still live unless a rollback switched production.
+    const project = await jr.vercel.project(jr.target.projectId, {
+      signal: jr.signal,
+    });
+    const newIsLive = isProduction(project, deployment.id);
+    if (newIsLive)
+      await finalizeLive(jr, { deployment, healthy: false, error });
+    else
+      await endJob(jr, {
+        status: "unhealthy",
+        error,
+        extra: {
+          [`steps.${finalizeIdx}.state`]: "done",
+          [`steps.${finalizeIdx}.endedAt`]: new Date(ctx.now()),
+        },
+        stepFailed: false,
+      });
+    await notifyOwner(ctx, jr, "unhealthy", error.message);
+  }
+  await rmJob(ctx, jr.rid);
+}
 // After the new deployment was promoted, an error must not turn into "failed"
-// while it is live: read production first. -> false | "ok" | "unhealthy"
+// while it is live, and it must never turn into "unhealthy" without a health
+// result: read production, and when the new deployment serves it run the normal
+// health phase (probe, automatic rollback, terminal write). If the health phase
+// itself cannot run the job ends unhealthy with the distinct code health-unknown
+// ("could not check the site"). -> false | "ok" | "unhealthy"
 export async function recoverDeployLive(jr, error) {
   const id = jr.job.vercelDeploymentId;
   if (
@@ -1245,21 +1386,29 @@ export async function recoverDeployLive(jr, error) {
   } catch {
     return false;
   }
-  if (productionOf(project) !== id) return false;
-  const healthPassed = jr.job.steps?.[jr.idx("health")]?.state === "done";
-  const info = failureOf(error, jr.job.step);
+  if (!isProduction(project, id)) return false;
+  const deployment = { id, url: jr.job.url ?? "" };
+  try {
+    // The switch itself happened: close the step that threw.
+    if (!jr.isDone("vercel"))
+      await jr.end("vercel", "done", "Production switched");
+    await healthPhase(jr, deployment);
+    return "ok";
+  } catch (caught) {
+    if (caught instanceof LeaseLost || caught instanceof Released) return false;
+    if (jr.signal.aborted) return false;
+  }
+  const info = describeCode("health-unknown");
   await finalizeLive(jr, {
-    deployment: { id, url: jr.job.url ?? "" },
-    healthy: healthPassed,
+    deployment,
+    healthy: false,
     error: {
-      step: ["vercel", "health", "finalize"].includes(info.step)
-        ? info.step
-        : jr.job.step,
-      code: safeCode(info.code),
-      message: failMessage(info.message),
+      step: "health",
+      code: "health-unknown",
+      message: failMessage(info.plainMessage),
     },
   });
-  return healthPassed ? "ok" : "unhealthy";
+  return "unhealthy";
 }
 
 // ---- the deploy / redeploy job ---------------------------------------------------------
@@ -1301,127 +1450,7 @@ export async function runDeploy(ctx, claim) {
       if (!jr.isDone("upload")) await jr.end("upload", "done");
       if (!jr.isDone("vercel")) await vercelStep(jr, deployment);
       await jr.reload();
-      // ---- health, with automatic rollback --------------------------------------
-      await jr.begin("health");
-      const res = await probe(jr, ctx.t.healthAttempts);
-      ensureLive(signal);
-      const finalizeIdx = jr.idx("finalize");
-      if (res.ok) {
-        // A takeover after an automatic rollback finds a healthy production
-        // that is NOT the new deployment: that is the rolled-back outcome.
-        const nowLive = productionOf(
-          await jr.vercel.project(jr.target.projectId, { signal }),
-        );
-        if (nowLive !== deployment.id) {
-          await jr.end("health", "failed", "Rolled back");
-          await jr.begin("finalize");
-          await endJob(jr, {
-            status: "rolled-back",
-            error: {
-              step: "health",
-              code: "health-failed",
-              message:
-                "The new version failed its health check; rolled back to the previous version.",
-            },
-            extra: {
-              [`steps.${finalizeIdx}.state`]: "done",
-              [`steps.${finalizeIdx}.endedAt`]: new Date(ctx.now()),
-            },
-            stepFailed: false,
-          });
-          await rmJob(ctx, jr.rid);
-          return;
-        }
-        await jr.end("health", "done");
-        await jr.begin("finalize");
-        await finalizeLive(jr, { deployment, healthy: true });
-        await rmJob(ctx, jr.rid);
-        return;
-      }
-      await jr.end("health", "failed", reasonNote(res));
-      const baseline = jr.job.baseline;
-      const error = {
-        step: "health",
-        code: "health-failed",
-        message: failMessage(
-          `${reasonNote(res)} after the new deployment went live.`,
-        ),
-      };
-      let rolledBack = false;
-      if (baseline?.vercelDeploymentId && baseline.healthy === true) {
-        const project = await jr.vercel.project(jr.target.projectId, {
-          signal,
-        });
-        if (productionOf(project) === deployment.id) {
-          await jr.note("health", "Rolling back");
-          try {
-            const last = jr.target.pos.deploy?.last;
-            const live = await restore(
-              jr,
-              baseline.vercelDeploymentId,
-              last?.vercelDeploymentId === baseline.vercelDeploymentId
-                ? last
-                : null,
-            );
-            // The Hobby fallback makes a NEW deployment of the old commit: `last`
-            // must name what is live now.
-            if (last && live.id !== last.vercelDeploymentId)
-              await ctx.coll.installations.updateOne(jr.slot.filterOf(), {
-                $set: {
-                  "pos.deploy.last.vercelDeploymentId": live.id,
-                  "pos.deploy.last.url": live.url || last.url || "",
-                },
-              });
-            const again = await probe(jr, ctx.t.rollbackHealthAttempts);
-            rolledBack = again.ok;
-          } catch (caught) {
-            // A rollback that fails for any reason leaves the production
-            // check below to say what is live.
-            if (caught instanceof LeaseLost || caught instanceof Released)
-              throw caught;
-            if (jr.signal.aborted) throw jr.signal.reason ?? caught;
-          }
-        }
-      }
-      await jr.begin("finalize");
-      if (rolledBack) {
-        await endJob(jr, {
-          status: "rolled-back",
-          error: {
-            ...error,
-            message: failMessage(
-              `${reasonNote(res)}; rolled back to the previous version.`,
-            ),
-          },
-          extra: {
-            [`steps.${finalizeIdx}.state`]: "done",
-            [`steps.${finalizeIdx}.endedAt`]: new Date(ctx.now()),
-          },
-          stepFailed: false,
-        });
-        await notifyOwner(ctx, jr, "rolled back", error.message);
-      } else {
-        // No rollback happened (baseline unhealthy or missing) or it failed: the
-        // new deployment is still live unless a rollback switched production.
-        const project = await jr.vercel.project(jr.target.projectId, {
-          signal,
-        });
-        const newIsLive = productionOf(project) === deployment.id;
-        if (newIsLive)
-          await finalizeLive(jr, { deployment, healthy: false, error });
-        else
-          await endJob(jr, {
-            status: "unhealthy",
-            error,
-            extra: {
-              [`steps.${finalizeIdx}.state`]: "done",
-              [`steps.${finalizeIdx}.endedAt`]: new Date(ctx.now()),
-            },
-            stepFailed: false,
-          });
-        await notifyOwner(ctx, jr, "unhealthy", error.message);
-      }
-      await rmJob(ctx, jr.rid);
+      await healthPhase(jr, deployment);
     },
     (error) => failJob(ctx, claim, run, error),
   );

@@ -15,7 +15,7 @@ import {
 } from "./lease.js";
 import { rmJob } from "./fetch-build.js";
 import { touchVersionBuild } from "./retention.js";
-import { WORKER_ACTOR, loadTarget, productionOf } from "./verify.js";
+import { WORKER_ACTOR, isProduction, loadTarget } from "./verify.js";
 import {
   JobRun,
   auditFor,
@@ -96,7 +96,7 @@ export async function runRollback(ctx, claim) {
           signal,
         });
         const target = jr.job.vercelDeploymentId;
-        if (productionOf(project) === target)
+        if (isProduction(project, target))
           live = { id: target, url: previous?.url ?? "", via: "instant" };
         else live = await restore(jr, target, previous);
         await jr.end(
@@ -150,7 +150,7 @@ async function recoverRollbackLive(jr, error) {
   } catch {
     return false;
   }
-  if (productionOf(project) !== id) return false;
+  if (!isProduction(project, id)) return false;
   const healthy = jr.isDone("health");
   await finalizeRollback(jr, {
     live: { id, url: jr.job.url ?? "" },

@@ -801,6 +801,13 @@ export function describeProjectIssue(issue, level = "error") {
   }
   return `${label} is '${show(issue?.actual)}', expected '${show(issue?.expected)}': change it in Vercel, Settings, Build and Deployment.`;
 }
+add(
+  "health-unknown",
+  "health",
+  "Site not checked",
+  "Could not check the site after going live. Check it now.",
+  "Open the site and run Verify.",
+);
 // ---- client database backup ---------------------------------------------------------
 add(
   "backup-too-large",
