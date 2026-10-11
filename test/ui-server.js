@@ -21,8 +21,24 @@ import {
   utcDay,
 } from "../shared/usage.js";
 import { createFakeGitHub, BLD, SRC, SHAS } from "./fakes/github.js";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { prepareMongoHome } from "./mongo-home.js";
+// Playwright stops this server hard, so the data folder is our own and the
+// next start removes the folders of runs that are gone (test/mongo-home.js).
+// The clean-up never blocks a start: without it the library's own temp folder
+// is used, as before.
+let dbPath = null;
+try {
+  dbPath = prepareMongoHome(join(tmpdir(), "sandbee-ui-mongo"));
+} catch (error) {
+  console.warn(
+    `ui-server: own Mongo folder unavailable (${error.code ?? error.message})`,
+  );
+}
 const repl = await MongoMemoryReplSet.create({
   replSet: { count: 1, storageEngine: "wiredTiger" },
+  instanceOpts: dbPath ? [{ dbPath }] : [],
 });
 const c = config({
   NODE_ENV: "test",
@@ -174,6 +190,10 @@ for (const name of [
   "r",
   "s",
   "t",
+  // purge.spec.js
+  "u",
+  "v",
+  "w",
 ]) {
   const _id = randomUUID();
   await db.collection("staff").insertOne({
@@ -669,6 +689,24 @@ const SCENARIOS = {
   usagenever: usageScenario(25, "ui-usage-never", "Never Cafe", {
     watch: true,
   }),
+  // purge.spec.js: cutover set (READY has a live version) unless noted.
+  purge: { n: 26, slug: "ui-purge", customer: "Purge Cafe", ...READY },
+  purgebig: { n: 27, slug: "ui-purge-big", customer: "Big Cafe", ...READY },
+  purgenocut: {
+    n: 28,
+    slug: "ui-purge-nocut",
+    customer: "New Cafe",
+    unlocked: true,
+    token: true,
+    verify: "ok",
+  },
+  purgelocked: {
+    n: 29,
+    slug: "ui-purge-locked",
+    customer: "Locked Cafe",
+    ...READY,
+    unlocked: false,
+  },
 };
 const task = (status, extra = {}) => ({
   id: randomUUID(),
@@ -692,6 +730,77 @@ const task = (status, extra = {}) => ({
   error: null,
   ...extra,
 });
+// A purge-preview or purge slot as backend/worker/purge.js (and lease.js for
+// `expired`) leaves it. `q` reads the control query: candidates, total, keep,
+// ageMin (minutes since it finished), done, deleted, skipped, failed, code.
+// `old` (the slot's task of the same kind, e.g. the one the panel queued)
+// keeps its id, requester and params, like the worker finishing it.
+const purgeTask = (kind, status, q, old) => {
+  const n = (name, fallback = 0) => Number(q(name) ?? fallback),
+    ended = !["queued", "running"].includes(status),
+    size = n("candidates", 3),
+    finishedAt = ended ? ago(n("ageMin") * 60000) : null,
+    handled = n("deleted") + n("skipped") + n("failed");
+  let result = null;
+  if (kind === "purge-preview" && status === "succeeded")
+    result = {
+      at: finishedAt,
+      candidates: Array.from({ length: size }, (_, i) => ({
+        id: `dpl_${String(i + 1).padStart(8, "0")}SourceUpload`,
+        createdAt: ago((40 + i) * 86400000),
+        target: i % 2 ? "" : "production",
+        state: "READY",
+      })),
+      total: n("total", size),
+      keep: n("keep", 5),
+    };
+  else if (
+    kind === "purge" &&
+    (status === "succeeded" ||
+      (status === "failed" &&
+        (q("code") ?? "delete-failed") === "delete-failed"))
+  )
+    result = {
+      deleted: n("deleted"),
+      skipped: n("skipped"),
+      failed: n("failed"),
+    };
+  const slot = {
+    kind,
+    status,
+    step: ended ? "done" : status === "running" ? "list" : "queued",
+    progress:
+      kind !== "purge" || ["queued", "expired"].includes(status)
+        ? null
+        : status === "running"
+          ? { done: n("done"), total: n("total", 3) }
+          : { done: handled, total: handled },
+    finishedAt,
+    result,
+    error:
+      status === "failed"
+        ? {
+            code: q("code") ?? (kind === "purge" ? "delete-failed" : "failed"),
+            message: "The step failed.",
+          }
+        : status === "expired"
+          ? { code: "not-picked-up", message: "Not picked up in time." }
+          : null,
+  };
+  const next =
+    old?.kind === kind
+      ? { ...old, ...slot }
+      : task(status, {
+          ...slot,
+          params:
+            kind === "purge"
+              ? { ids: [], digest: "0".repeat(64), previewTaskId: randomUUID() }
+              : null,
+        });
+  if (finishedAt && next.requestedAt > finishedAt)
+    next.requestedAt = new Date(finishedAt.getTime() - 4000);
+  return next;
+};
 const POS_CONFIG = (slug, host) => ({
   slug,
   subdomain: "cafe",
@@ -1009,13 +1118,19 @@ const control = createServer(async (req, res) => {
         { upsert: true },
       );
     } else if (url.pathname === "/pos/task") {
+      // /pos/task?scenario=NAME&status=..[&kind=purge-preview|purge&...]
+      // (see purgeTask); without a kind, a db-backup task.
       const id = nid("d", SCENARIOS[scenario].n);
+      const status = query("status") ?? "running",
+        kind = query("kind");
+      let next = task(status);
+      if (kind) {
+        const row = await db.collection("installations").findOne({ _id: id });
+        next = purgeTask(kind, status, query, row.pos.task);
+      }
       await db
         .collection("installations")
-        .updateOne(
-          { _id: id },
-          { $set: { "pos.task": task(query("status") ?? "running") } },
-        );
+        .updateOne({ _id: id }, { $set: { "pos.task": next } });
     } else if (url.pathname === "/pos/job") {
       const id = nid("d", SCENARIOS[scenario].n);
       const row = await db.collection("installations").findOne({ _id: id });
@@ -1062,9 +1177,12 @@ async function stop() {
   clearInterval(heartbeat);
   server.close();
   control.close();
-  await client.close();
-  await repl.stop();
-  process.exit(0);
+  try {
+    await client.close();
+    await repl.stop({ doCleanup: true, force: true });
+  } finally {
+    process.exit(0);
+  }
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);

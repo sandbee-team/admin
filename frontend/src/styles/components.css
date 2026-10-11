@@ -754,6 +754,52 @@
     padding-inline: 16px;
   }
 }
+.purge-body {
+  display: grid;
+  gap: var(--space-3);
+  padding: 0 23px 23px;
+  font-size: 12px;
+  min-width: 0;
+}
+.purge-body p {
+  margin: 0;
+}
+.deploy-confirm .field label {
+  overflow-wrap: anywhere;
+}
+.purge-result {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.purge-list {
+  max-height: 320px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.purge-list th {
+  position: sticky;
+  top: 0;
+}
+.purge-list th,
+.purge-list td {
+  padding: 10px 14px;
+}
+.purge-kept ul {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-4);
+  color: var(--muted);
+}
+.purge-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-3);
+}
+@media (max-width: 600px) {
+  .purge-body {
+    padding-inline: 16px;
+  }
+}
 .plan-warnings {
   margin: 0;
   padding: var(--space-3) var(--space-4) var(--space-3) var(--space-5);

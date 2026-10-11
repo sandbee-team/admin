@@ -221,6 +221,7 @@ export function taskView(task) {
     view = {
       at: date(result.at),
       total: int(result.total),
+      keep: int(result.keep),
       candidates,
       digest: purgeDigest(candidates.map((c) => c.id)),
     };
@@ -241,6 +242,11 @@ export function taskView(task) {
     by: person(task.by),
     requestedAt: date(task.requestedAt),
     finishedAt: date(task.finishedAt),
+    // A purge's progress (deleted + skipped + failed of the confirmed ids).
+    progress:
+      task.kind === "purge" && task.progress
+        ? { done: int(task.progress.done), total: int(task.progress.total) }
+        : null,
     result: view,
     error: task.error
       ? {

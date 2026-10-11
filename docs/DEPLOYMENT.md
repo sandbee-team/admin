@@ -130,6 +130,17 @@ Phase 2 adds on-demand usage checks (docs/PHASE2-PLAN.md rev 2): the owner ticks
 
 Operating notes: checks only happen when you trigger them, so run **Check watched clients** regularly (for example weekly) to catch token expiry or a paused site. A check takes about 3-15 s per client and calls the client's site 2-3 times (plain probes, then one stats request). The health stats token is bound to the host it was saved for (existing installations are bound once at the first start, audit `pos.stats-bound`), so after a host change save the token again in POS setup. `docker compose -f compose.production.yaml logs worker` shows `usage-check` lines with the level and duration only.
 
+## P1 release checklist (old source deployments panel)
+
+P1 adds the "Old source deployments" panel to an installation's Deploy tab (docs/P1-PURGE-PANEL.md): the owner previews the client's old SOURCE deployments in its own Vercel account (made by the local console before admin took over), then removes exactly the previewed ones after typing the slug and the authenticator step-up. The API and worker already existed; the task view now also returns the kept count and a purge's progress (counts only). No data change, no new container, volume, `.env` variable or npm dependency, so no dump is needed.
+
+1. **Linux suite on the server** (before merging): `bash scripts/test-linux.sh` in a checkout of the release branch must end with 0 failures.
+2. **Build and start:** `cd ~/admin && git pull && unset RELEASE_TAG && docker compose -f compose.production.yaml up -d --build`, `docker image prune -f`, then `docker compose -f compose.production.yaml ps` (both healthy) and `curl -fsS http://127.0.0.1:8098/ready`.
+3. **In the panel:** demo → Deploy → "Old source deployments" → **Preview old deployments**. Within a few seconds the list shows the old source deployments (id, created, state, target), how many are kept, and until when the preview can be used (30 minutes). **Remove N old deployments…** → type the slug → authenticator code → the panel shows the progress and then "Removed N old deployments". Up to 200 go per run; preview again until it finds none. The live site is not changed.
+4. **Release rollback:** `git checkout 50b57bc && docker compose -f compose.production.yaml up -d --build` (the previous release ignores the two extra view fields).
+
+What is always kept (worker `classify()`): the deployment that is live in production, admin's Live and Previous versions, every prebuilt deployment (everything admin uploaded), anything created since the first admin deploy (`cutoverAt`) and any deployment without a creation date. Each preview reads the newest 500 deployments of the project; the removal re-lists once when it starts and skips anything that is no longer a candidate. Audit: `pos.purge.previewed`, `pos.purge.requested` (count), `pos.purge.completed` (counts only).
+
 ## Reverse proxy (Caddy)
 
 Production terminates TLS in Caddy (`/opt/edge/Caddyfile`) and proxies to Admin on a separate local port, which keeps the other live applications untouched:

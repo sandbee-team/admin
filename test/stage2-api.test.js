@@ -1686,6 +1686,53 @@ describe("verify and purge tasks", () => {
     // The preview is consumed: a replay is refused.
     assert.equal((await execute({})).status, 409);
   });
+  it("the task view carries a preview's kept count and a purge's progress, counts only", async () => {
+    const { id } = await fresh();
+    const slot = (kind, extra) => ({
+      id: randomUUID(),
+      kind,
+      status: "running",
+      step: "list",
+      by: { id: "x", name: "Owner" },
+      requestedAt: new Date(),
+      finishedAt: null,
+      result: null,
+      error: null,
+      ...extra,
+    });
+    const view = async () =>
+      (await call(`/installations/${id}/pos/deploys`)).data.task;
+    await setPos(id, {
+      "pos.task": slot("purge-preview", {
+        status: "succeeded",
+        finishedAt: new Date(),
+        progress: { done: 1, total: 2 },
+        result: { at: new Date(), candidates: [], total: 0, keep: 7 },
+      }),
+    });
+    let task = await view();
+    assert.equal(task.result.keep, 7);
+    assert.equal(task.progress, null, "progress is shown for a purge only");
+    await setPos(id, { "pos.task.result.keep": { production: 1 } });
+    assert.equal((await view()).result.keep, 0);
+    await setPos(id, {
+      "pos.task": slot("purge", {
+        progress: { done: 40, total: 200, extra: "dropped" },
+      }),
+    });
+    task = await view();
+    assert.deepEqual(task.progress, { done: 40, total: 200 });
+    await setPos(id, { "pos.task.progress": { done: -1, total: "x" } });
+    assert.deepEqual((await view()).progress, { done: 0, total: 0 });
+    await setPos(id, { "pos.task.progress": null });
+    assert.equal((await view()).progress, null);
+    await setPos(id, {
+      "pos.task": slot("db-backup", {
+        progress: { collections: 4, documents: 9, bytes: 10 },
+      }),
+    });
+    assert.equal((await view()).progress, null);
+  });
   it("purge needs an unlocked, active client and an empty preview is refused", async () => {
     const { id, slug } = await fresh();
     await setPos(id, {

@@ -33,6 +33,7 @@ import {
 import { DeployProgress } from "../components/deploy/deploy-progress";
 import { DeployError } from "../components/deploy/deploy-error";
 import { BackupPanel } from "../components/deploy/backup-panel";
+import { PurgePanel } from "../components/deploy/purge-panel";
 import { StaleBanner } from "../components/deploy/stale-banner";
 import { VersionCard } from "../components/deploy/version-card";
 import { describeError, titlesOf } from "../components/deploy/format";
@@ -110,6 +111,7 @@ export function InstallationDeploy({ installation, user }) {
       build: blockedFor(data.readiness, "build"),
       unlock: blockedFor(data.readiness, "unlock"),
       verify: blockedFor(data.readiness, "verify"),
+      purge: blockedFor(data.readiness, "purge"),
     },
     active = Boolean(current?.blocking),
     reasons = actionReasons({
@@ -122,9 +124,10 @@ export function InstallationDeploy({ installation, user }) {
       blocked,
       cacheOn: data.cache.configured,
     }),
-    verifying =
-      data.task?.kind === "verify" &&
-      ACTIVE_TASK_STATES.includes(data.task.status);
+    taskActive = Boolean(
+      data.task && ACTIVE_TASK_STATES.includes(data.task.status),
+    ),
+    verifying = taskActive && data.task.kind === "verify";
   async function run(name, action, done) {
     setBusy(name);
     setProblem("");
@@ -174,16 +177,19 @@ export function InstallationDeploy({ installation, user }) {
     });
   }
   const actions = {
-    verified: !blocked.verify.length
-      ? {
-          label: "Verify now",
-          busy: busy === "verify" || verifying,
-          onClick: () => {
-            setNotice("");
-            quiet("verify", () => post("verify"));
+    // One task slot per client: a running purge or backup would refuse it.
+    verified: blocked.verify.length
+      ? { reason: "Needs the deploy worker." }
+      : taskActive && !verifying
+        ? { reason: "Another task is running for this client." }
+        : {
+            label: "Verify now",
+            busy: busy === "verify" || verifying,
+            onClick: () => {
+              setNotice("");
+              quiet("verify", () => post("verify"));
+            },
           },
-        }
-      : { reason: "Needs the deploy worker." },
     unlocked: !owner
       ? { reason: "Only the owner can unlock." }
       : blocked.unlock.length
@@ -217,7 +223,7 @@ export function InstallationDeploy({ installation, user }) {
         {!owner && (
           <p className="small subtle deploy-readonly">
             You can see this client’s deploy status. Only the owner can deploy,
-            roll back, unlock or prepare builds.
+            roll back, unlock, prepare builds or remove old deployments.
           </p>
         )}
         <StaleBanner poll={poll} />
@@ -392,6 +398,14 @@ export function InstallationDeploy({ installation, user }) {
           installationId={id}
           customerId={installation.customerId}
           owner={owner}
+        />
+        <PurgePanel
+          base={base}
+          data={data}
+          owner={owner}
+          slug={settings.slug}
+          blocked={blocked.purge}
+          onRefresh={poll.refresh}
         />
         <section className="panel deploy-freeze" aria-labelledby="freeze-title">
           <div className="panel-title">

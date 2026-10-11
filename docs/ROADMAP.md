@@ -7,7 +7,7 @@ owner the prompt for the next item.
 
 | #  | Item | Why this position | Status |
 | -- | ---- | ----------------- | ------ |
-| P1 | **"Old source deployments" panel** on the Deploy tab (purge preview → confirm → execute; the API, worker and their tests already exist, only the UI is missing) + test-server clean-up of leaked in-memory Mongo dirs | Closes the known source leak (D7) in demo now and in Lucifer after its first admin deploy; smallest item | next |
+| P1 | **"Old source deployments" panel** on the Deploy tab (purge preview → confirm → execute; the API, worker and their tests already exist, only the UI is missing) + test-server clean-up of leaked in-memory Mongo dirs | Closes the known source leak (D7) in demo now and in Lucifer after its first admin deploy; smallest item | implemented and verified 2026-10-12 (D38, branch `p1-purge-panel`); release pending |
 | P2 | **Lucifer on admin** (owner work, guided): enter Lucifer by hand (D15), Cloudflare token with Account Analytics:Read, Verify → Unlock → first admin deploy → P1 purge → stop the local go-live for Lucifer | The real client; proves the whole pipeline on a second account before more automation | after P1 |
 | P3 | **"Deploy this commit to all clients"** rollout (`docs/POS-STAGE2-REV2.md` §3.5, D26): `system_state` `pos-rollout`, demo first then A-Z, stop on the first failure, Resume/Cancel/Dismiss, `deploy` + step-up + typing `deploy all` | Pays off from two clients on; design already approved | after P2 |
 | P4 | **D9 platform DNS → Cloudflare** (runbook, record inventory, TTL plan, mail records, Caddy/TLS check, rollback) | Unblocked by Phase 2; Stage 3 can then automate DNS through the Cloudflare API | after P3 |
