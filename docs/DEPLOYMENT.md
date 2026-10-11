@@ -139,6 +139,8 @@ P1 adds the "Old source deployments" panel to an installation's Deploy tab (docs
 3. **In the panel:** demo → Deploy → "Old source deployments" → **Preview old deployments**. Within a few seconds the list shows the old source deployments (id, created, state, target), how many are kept, and until when the preview can be used (30 minutes). **Remove N old deployments…** → type the slug → authenticator code → the panel shows the progress and then "Removed N old deployments". Up to 200 go per run; preview again until it finds none. The live site is not changed.
 4. **Release rollback:** `git checkout 50b57bc && docker compose -f compose.production.yaml up -d --build` (the previous release ignores the two extra view fields).
 
+P1 went live on 2026-10-12 (commit `861487b`): Linux suite on the server 664 tests, 663 pass, 0 fail, 1 skipped; app and worker healthy; the owner purged demo's old source deployments from the panel and confirmed it in the Vercel dashboard.
+
 What is always kept (worker `classify()`): the deployment that is live in production, admin's Live and Previous versions, every prebuilt deployment (everything admin uploaded), anything created since the first admin deploy (`cutoverAt`) and any deployment without a creation date. Each preview reads the newest 500 deployments of the project; the removal re-lists once when it starts and skips anything that is no longer a candidate. Audit: `pos.purge.previewed`, `pos.purge.requested` (count), `pos.purge.completed` (counts only).
 
 ## Reverse proxy (Caddy)

@@ -1,6 +1,6 @@
 # P1 — "Old source deployments" panel (+ test-server Mongo clean-up)
 
-Status: APPROVED by the owner 2026-10-12 (questions 1-3: yes; the 32 old `mongo-mem-*` folders were deleted by the owner). Implemented on branch `p1-purge-panel`; §9 records what was built.
+Status: APPROVED by the owner 2026-10-12 (questions 1-3: yes; the 32 old `mongo-mem-*` folders were deleted by the owner). Implemented on branch `p1-purge-panel`, merged to main @ 861487b and LIVE since 2026-10-12; §9 records what was built.
 Binding: `docs/ROADMAP.md` house method, `docs/POS-INTEGRATION.md` D1-D37, `docs/POS-STAGE2-PLAN.md` §6/§8.
 
 ## 1. What exists (verified in code)
