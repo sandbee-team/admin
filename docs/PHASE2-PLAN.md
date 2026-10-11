@@ -386,3 +386,4 @@ Where the code differs from the text above, the code (and docs/API.md) is author
 7. **Time budget:** a check that exceeds its 60 s budget fails as `check-timeout` and keeps the
    previous result (a half-measured result would read as failures); provider retry waits are
    abort-aware.
+8. **Verified live (2026-10-11, demo):** the Cloudflare GraphQL no-dimension aggregate query, Vercel `GET /v5/user/tokens/current` and Cloudflare `tokens/verify` on real client tokens, the cafe `?stats=1` health stats with `x-stats-token`. The paused (`DEPLOYMENT_PAUSED`) answer remains fixture-tested only.
