@@ -1,7 +1,7 @@
 # P3 — "Deploy this commit to all clients" (rollout)
 
 Status: APPROVED by the owner 2026-10-12 (questions 1-4: the recommended defaults). Implemented on
-branch `p3-rollout`; §12 records what was built.
+branch `p3-rollout`, merged to main @ e44649c and LIVE since 2026-10-12; §12 records what was built.
 Binding: `docs/ROADMAP.md` house method, `docs/POS-INTEGRATION.md` D1-D38 (esp. D4, D11, D22-D28,
 D38), approved design `docs/POS-STAGE2-REV2.md` §3.5. No POS repo change, no new npm dependency, no
 new collection, container, volume or `.env` variable. Branch `p3-rollout`.
