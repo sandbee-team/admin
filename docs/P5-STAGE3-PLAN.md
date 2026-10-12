@@ -379,9 +379,11 @@ permission system refused it); it is the first step of session 3.
   `uploadMetadataOf` produced the 3 bindings + `{new_tag: v1, steps: [{new_sqlite_classes:
   [CafeRoom]}]}`. wrangler also writes `index.js.map` (sources inside) and `README.md`: neither
   is shipped; `index.js` keeps a `sourceMappingURL` comment (harmless without the map).
-- S3 line verified on the dev PC (`ns=2 ns-ips=2 authoritative-udp=ok(1) tcp53=ok`); the server
-  run is the owner's.
+- **S3 done (2026-10-13, owner on the server, `~/admin`, worker container):**
+  `S3 ns=2 ns-ips=2 authoritative-udp=ok(1) tcp53=ok` — the worker reaches GoDaddy's nameservers
+  directly over UDP and TCP 53, so the authoritative DNS check (D44) works from production; no
+  egress change needed. (Same result on the dev PC.)
 - Owner-pending (the agent's push and the tokens were not available): push `spike-realtime`, set
   `SPIKE_VERCEL_TOKEN`/`SPIKE_CF_TOKEN`, run S1 (`node tools/spikes/p5-vercel.mjs create`, enter the
-  printed records at GoDaddy, `… check`), S2 upload (`node tools/spikes/p5-realtime.mjs <dir>`) and
-  S3 on the server. W2/W3 wait for S1/S2.
+  printed records at GoDaddy, `… check`) and S2 upload (`node tools/spikes/p5-realtime.mjs <dir>`).
+  W2/W3 wait for S1/S2.
