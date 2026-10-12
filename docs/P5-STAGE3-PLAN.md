@@ -310,3 +310,78 @@ temporary GoDaddy record `p5spike` is allowed), Q5 existing screens.
   record `p5spike` for S1/S4?
 - Q5 New client entry: **existing screens (Customer → Installation → POS setup, as in P2 step 1)**;
   a one-form "New client" page later (P8) if it feels slow?
+
+## 16. As built (session 2, 2026-10-13)
+
+**Docs.** Plan approved unchanged; D41-D48 recorded in `docs/POS-INTEGRATION.md` (main @ 4082048).
+D49/D50 stay reserved for P2's F1/F2; next free D-number D51.
+
+**W1 — pure port (TDD, new files only; no existing file changed).**
+
+- `shared/web-address.js`: `PLATFORM_APEX`, `PLATFORM_LABELS` (the 18 refused names of D44),
+  `SUBDOMAIN_RE`, `VERCEL_CNAME_RE`, `VERCEL_CNAME_TARGET`, `ADDRESS_STATES`; `labelProblem` →
+  `label-invalid` | `label-reserved`; `labelFromInput` (ui `subdomainFromInput`) → `{label, problem}`
+  with the extra code `label-not-single`; `hostOf`; `webAddressRecords` (≤ 4 rows);
+  `recommendedCnameOf` (also falls back when Vercel's value is not a Vercel DNS name);
+  `addressStateOf` (web-address.mjs `stateOf`).
+- `backend/lib/golive-env.js`: `buildEnv` (exact; a fresh `target` array per entry),
+  `realtimeEnvOf`, `realtimeOffEnv`, `GOLIVE_ENV_KEYS` (21, buildEnv order); `envClientOf` maps
+  `pos.image` + the vault's `mongo.uri` / `image.keys` to the go-live client shape (a selected
+  store missing any value → `inputs-missing`, never written as blanks); `mintSecrets` (also mints
+  `realtimePublishSecret`, 32 bytes hex like go-live's `ensureRealtime`); `mintPosAdminPassword`
+  (144 random bits + a digit, passes the seeder's rule); `envFp` = first 16 hex of
+  HMAC(HMAC(VAULT_KEY, `sandbee-env-fp-v1`), JSON `[key, value]`); `envFingerprints`; `envDrift`
+  (one reason per key: `missing` / `type` / `targets` / `value` (plain only: the W2 adapter
+  fingerprints plain values in memory and drops them; encrypted values are never read) /
+  `edited` (Vercel `updatedAt` newer than admin's write); per-environment rows merged; ≤ 30);
+  `missingEnvKeys` (names-only `env-keys-missing`).
+- `backend/lib/realtime.js`: `workerNameOf` (code `realtime-name`: a slug longer than 50 chars
+  cannot get a Worker — W4's check step reports it), `parseWorkerUrl`, `signedPublishRequest`,
+  `publishVerdict` (`ok` / `realtime-tenant-refused` / `realtime-secret-mismatch` /
+  `realtime-envelope` / `realtime-probe-failed`; W4 adds the new codes to §9), probe constants,
+  `realtimeNeedsDeploy`, `subdomainCandidate`, `validateCloudflare` (bad field names; no block =
+  realtime off), `parseRealtimeDescriptor` (allowlist below), `uploadMetadataOf` (the multipart
+  `metadata`: main module, date, DO + `TENANT_ID` plain + `REALTIME_PUBLISH_SECRET` secret
+  bindings; migrations as wrangler sends them: all on a new script, none at the last tag, the
+  later steps after an older tag, an unknown tag refused; bad tenant/secret → `inputs-missing`).
+- `backend/lib/dns-check.js`: `createDnsCheck({dns, Resolver, timeoutMs})` → `authoritative`
+  (≤ 8 nameserver IPs, Resolver timeout 4 s × 2 tries), `checkRecords` (codes only, CNAME ≤ 253,
+  ≤ 8 TXT rows of ≤ 1024 chars, chunks joined), `lookupLabel` (D44 "foreign record": an unknown
+  answer throws `dns-unreachable`, never reads as free). go-live's `probeHealth` is not ported
+  (TLS probe = W2 `safe-https`). Deviation from §11: the dns-check tests live in
+  `test/stage3-lib.test.js` (W1), not `stage3-adapters`.
+- Descriptor `realtime.json` v1 (pos-builder `scripts/realtime-descriptor.mjs` writes it, admin
+  `parseRealtimeDescriptor` reads it): `{v: 1, main: "index.js", compatibilityDate,
+  compatibilityFlags: [], durableObjects: [{name, className}], migrations: [{tag,
+  newSqliteClasses}], bundleSha256, bundleBytes ≤ 1 MiB}`; `vars` are not carried (admin sets
+  `TENANT_ID`).
+- `tools/p5-parity.mjs` (dev PC; imports `F:\lucifer\scripts\go-live\{lib,realtime,dns-check}.mjs`
+  and `ui\pure.mjs` read only).
+
+Evidence (Windows dev PC): `node --test test/stage3-lib.test.js` → `# tests 50 # pass 50 # fail 0`.
+`node tools/p5-parity.mjs` → 30/30 PASS: `buildEnv` for 3 image stores × 3 realtime modes
+(untouched/off/on) × 2 tenants (17-21 keys, same keys/order/types/targets/values), `mintSecrets`,
+`realtimeEnvOf`, `realtimeOffEnv`, `signedPublishRequest`, `workerNameOf`, `parseWorkerUrl`,
+`webAddressRecords`, `VERCEL_CNAME_RE`, `SUBDOMAIN_RE`, `isStrongPassword`, label input (admin
+also refuses `store`, `pos`, `wa` — D44). **Full `npm test` was not run in session 2** (the agent's
+permission system refused it); it is the first step of session 3.
+
+**Spikes.**
+
+- S2 bundle half proven on the dev PC with the exact workflow steps: pos-builder branch
+  `spike-realtime` @ f92d4c3 (local commit) adds `.github/workflows/realtime.yml` (fetch job:
+  sparse checkout of `workers/realtime` only, token only in that step; bundle job: no secrets,
+  `npm ci --ignore-scripts` of `tools/wrangler` = wrangler 4.140.0 lockfile, `deploy --dry-run
+  --outdir`, descriptor; artifact `pos-realtime-<id>` = `index.js` + `realtime.json`; spike-only
+  `push` trigger with lucifer main 1d30ac6), `scripts/realtime-descriptor.mjs` and
+  `tools/wrangler/`. Local result: `index.js` 6,299 bytes, sha256 `d2a7c079…0dbe31`, date
+  2026-01-01, binding `CAFE_ROOM`, migration `v1`; admin's allowlist accepted it and
+  `uploadMetadataOf` produced the 3 bindings + `{new_tag: v1, steps: [{new_sqlite_classes:
+  [CafeRoom]}]}`. wrangler also writes `index.js.map` (sources inside) and `README.md`: neither
+  is shipped; `index.js` keeps a `sourceMappingURL` comment (harmless without the map).
+- S3 line verified on the dev PC (`ns=2 ns-ips=2 authoritative-udp=ok(1) tcp53=ok`); the server
+  run is the owner's.
+- Owner-pending (the agent's push and the tokens were not available): push `spike-realtime`, set
+  `SPIKE_VERCEL_TOKEN`/`SPIKE_CF_TOKEN`, run S1 (`node tools/spikes/p5-vercel.mjs create`, enter the
+  printed records at GoDaddy, `… check`), S2 upload (`node tools/spikes/p5-realtime.mjs <dir>`) and
+  S3 on the server. W2/W3 wait for S1/S2.
