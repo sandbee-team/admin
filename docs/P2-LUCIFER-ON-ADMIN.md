@@ -149,10 +149,10 @@ only admin's deployments remain, and the live deployment's Source tab shows comp
 ## 4. Owner questions (recommended default in bold)
 
 1. F1: set the **Function Region to Mumbai (bom1) by hand** on Lucifer's project before its first admin
-   deploy (and on demo's, then Redeploy demo, if step 0 shows `iad1`); no code now; record as D41 (D39 went to P3, D40 to P4).
+   deploy (and on demo's, then Redeploy demo, if step 0 shows `iad1`); no code now; record as D49 (D39 went to P3, D40 to P4, D41-D48 are reserved by the P5 plan).
    (Alternative later: admin passes `--regions`, a code change.) **Yes.**
 2. F2: the local stop for Lucifer = **remove the `lucifer007` profile before Unlock** (copy in the
-   password manager) and revoke the old token in step 5; record as D42. **Yes.**
+   password manager) and revoke the old token in step 5; record as D50. **Yes.**
 3. Skip Image store keys, Auth secret, Realtime publish secret and POS admin password for now (stored
    only; nothing in verify, deploy or usage reads them; Stage 3 needs them). **Skip.**
 4. Branch for the first deploy: **`main`**, only if Lucifer's live commit is on it and nothing
