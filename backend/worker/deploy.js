@@ -14,6 +14,7 @@ import { waitHealthy } from "../lib/pos-health.js";
 import { buildInputs, buildKeyOf } from "../lib/build-inputs.js";
 import { BuildCacheError } from "../lib/build-cache.js";
 import { transaction } from "../db.js";
+import { newBuildRow } from "../lib/deploy-job.js";
 import {
   CANCELLABLE_STEPS,
   JOB_STEPS,
@@ -60,7 +61,7 @@ import {
   productionOf,
 } from "./verify.js";
 
-const MAX_WAITERS = 20;
+export const MAX_WAITERS = 20;
 const META_KEY = "sandbeeRequest";
 const vercelUrl = (url) =>
   url ? (/^https?:\/\//.test(url) ? url : `https://${url}`) : "";
@@ -335,26 +336,18 @@ const commitSeed = (jr) => {
 async function ensureRow(jr, rowId) {
   const { ctx, job } = jr;
   const { state } = ctx.coll;
-  const row = () => ({
-    _id: rowId,
-    kind: "build",
-    status: "queued",
-    sha: job.sha,
-    buildKey: job.buildKey,
-    inputs: job.buildInputs,
-    branch: job.branch,
-    commit: commitSeed(jr),
-    lease: { owner: null, until: null, fence: 0 },
-    attempt: 0,
-    runId: null,
-    runUrl: null,
-    artifactId: null,
-    waiters: [jr.rid],
-    prepared: null,
-    error: null,
-    createdAt: new Date(ctx.now()),
-    finishedAt: null,
-  });
+  const row = () =>
+    newBuildRow({
+      _id: rowId,
+      sha: job.sha,
+      buildKey: job.buildKey,
+      inputs: job.buildInputs,
+      branch: job.branch,
+      commit: commitSeed(jr),
+      waiters: [jr.rid],
+      prepared: null,
+      now: new Date(ctx.now()),
+    });
   for (let i = 0; i < 3; i++) {
     try {
       await state.insertOne(row());
@@ -1081,6 +1074,10 @@ export async function finalizeLive(jr, { deployment, healthy, error }) {
     durationMs: durationOf(jr),
     runUrl: job.runUrl ?? null,
     status: "succeeded",
+    // false = it went live but failed its health check (the job stays in
+    // `current` as unhealthy, which a dismiss removes): the rollout (P3) must
+    // not read this version as a success or as already live.
+    healthy: healthy === true,
     build,
     commit: commitOf(jr),
   };

@@ -52,6 +52,12 @@ Files: S3 only ever receives ciphertext (`SBF1` + IV + AES-256-GCM + tag, additi
 - **GitHub holds no AWS credentials.** Only the admin worker writes to S3 (`builds/*` and `files/*` under the admin IAM user). The builder workflow produces an artifact that the worker downloads (digest-checked), scans, seals and stores.
 - **Known limits.** The cache depends on the owner's lifecycle rule and IAM policy (`docs/POS-STAGE2-REV2.md` 2.8 and 2.9). A planted ciphertext cannot be authenticated without `VAULT_KEY`, but an attacker with write access can delete or block builds (a rebuild covers this).
 
+## Rollout to all clients (P3)
+
+- **Authority.** Starting or resuming a rollout needs the owner role (`deploy`), a fresh authenticator step-up and, for the start, the typed phrase `deploy all`; the start is also bound to the previewed commit and client order by a digest. The worker then runs the rollout for a long time without a browser, so before EVERY client it re-checks the person whose authority it runs under (staff active, same role and `authVersion` as at start/resume, still allowed to `deploy`): a password reset, "sign out everywhere", a role change or a disabled account stops the rollout (`not-authorized`). The freeze switch, Cancel and the per-client lock stop or narrow it at any time.
+- **Same job, same gates.** Each client gets the normal deploy job through the same slot claim as the API (`pos.rev`, `deployLock:false`, free slot), after the same client readiness rule (`shared/rollout.js`); nothing bypasses the deploy worker's own checks (preflight, build integrity, health check with automatic rollback).
+- **No secrets.** The rollout row and its views hold ids, slugs, status codes and readiness ids only; the Vercel token is reduced to a presence flag inside MongoDB for every rollout decision, so no secret box is read for it. One row only (D4); Dismiss deletes it; the audit trail keeps every start, resume, cancel, per-client enqueue and the end.
+
 ## Usage checks (Phase 2)
 
 - **On demand only.** A check runs only after an owner/admin (`credentials`) presses "Check now" or "Check watched clients"; the API queues one slot per installation (`pos.usage.check`) inside a transaction with `authorizeWrite` and an audit row, refuses while the worker is offline (503) and rate-limits (10 per installation and 6 batches per staff per hour). Nothing is scheduled, so an idle admin makes no outbound calls.

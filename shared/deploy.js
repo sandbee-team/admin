@@ -155,6 +155,17 @@ export const sha7 = (sha) => (isSha(sha) ? sha.slice(0, 7) : "");
 //                     ids], prepared{by,at} | null, error, createdAt,
 //                     finishedAt}. The unique _id is the single-flight lock
 //   pos-retention     daily copy-forward sweep: {_id, status, at, lease, result}
+//   pos-rollout       (P3, shared/rollout.js) the current or last "deploy this
+//                     commit to all clients": {_id, id, status running|
+//                     cancelling|stopped|cancelled|completed, branch, sha,
+//                     commit, by{id,name}, auth{id, name, authVersion, role} (server
+//                     only), resumed{by,at}|null, startedAt, finishedAt,
+//                     stopOnFailure:true, cancelRequested, stop{slug,code}|
+//                     null, prepared, lease{owner,until,fence}, targets[<=100
+//                     {installationId, slug, status pending|building|
+//                     deploying|succeeded|failed|skipped, requestId, buildKey,
+//                     prebuild cached|queued|joined|unavailable|null,
+//                     error{code, items?}|null, startedAt, finishedAt}]}
 // ============================================================================
 export const STEP_STATES = ["pending", "running", "done", "skipped", "failed"];
 export const TASK_STATES = [

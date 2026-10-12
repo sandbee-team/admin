@@ -21,6 +21,7 @@ import { runRollback } from "./rollback.js";
 import { failTask, runVerify } from "./verify.js";
 import { runPurge, runPurgePreview } from "./purge.js";
 import { claimRetention, runRetention } from "./retention.js";
+import { rolloutStep } from "./rollout.js";
 import {
   claimUsage,
   expireStaleChecks,
@@ -117,6 +118,14 @@ export function createLoop(ctx) {
     let started = 0;
     const freeze = await ctx.coll.state.findOne({ _id: "pos-deploy-freeze" });
     const frozen = freeze?.on === true;
+    // The rollout (P3) enqueues its next client here, so the deploy lane
+    // below can claim it in the same pass.
+    started += await rolloutStep(ctx).catch((error) => {
+      ctx.log("rollout-step-failed", {
+        code: String(error?.code ?? error?.name ?? "error").slice(0, 40),
+      });
+      return 0;
+    });
     while (free("deploy")) {
       const claim = await claimDeploy(ctx, { frozen });
       if (!claim) break;
@@ -227,7 +236,12 @@ export function createLoop(ctx) {
       for (let pass = 0; pass < maxPasses; pass++) {
         const started = await tick();
         const all = running();
-        if (!started && !all.length) return;
+        // A job can finish during a pass after the rollout step looked at it:
+        // settled only when one more pass also finds nothing to do.
+        if (!started && !all.length) {
+          if (!(await tick()) && !running().length) return;
+          continue;
+        }
         if (all.length) await Promise.race([...all, ctx.sleep(ctx.t.pollMs)]);
       }
       throw new Error("drain did not settle");

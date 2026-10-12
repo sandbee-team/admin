@@ -194,6 +194,10 @@ for (const name of [
   "u",
   "v",
   "w",
+  // rollout.spec.js
+  "x",
+  "y",
+  "z",
 ]) {
   const _id = randomUUID();
   await db.collection("staff").insertOne({
@@ -707,6 +711,15 @@ const SCENARIOS = {
     ...READY,
     unlocked: false,
   },
+  // rollout.spec.js: the canary a rollout deploys first. Its live sha(6) is
+  // newer than main (the fake compare says "behind"), so main moves it back.
+  demo: {
+    n: 30,
+    slug: "demo",
+    customer: "Demo Cafe",
+    ...READY,
+    last: () => version(6),
+  },
 };
 const task = (status, extra = {}) => ({
   id: randomUUID(),
@@ -929,7 +942,9 @@ const github = {
   compare: (base, head, options) =>
     base === sha(7)
       ? Promise.resolve({ status: "diverged", aheadBy: 1, behindBy: 1 })
-      : realGitHub.compare(base, head, options),
+      : base === sha(6)
+        ? Promise.resolve({ status: "behind", aheadBy: 0, behindBy: 2 })
+        : realGitHub.compare(base, head, options),
 };
 fakeGitHub.state.branches[0].sha = "a".repeat(40);
 fakeGitHub.state.branches[1].sha = "b".repeat(40);
@@ -1012,6 +1027,122 @@ const control = createServer(async (req, res) => {
         ? Object.keys(SCENARIOS)
         : [scenario])
         await seedPos(name);
+      // No spec ever starts with a rollout left over from another one.
+      await db.collection("system_state").deleteOne({ _id: "pos-rollout" });
+    } else if (url.pathname === "/pos/rollout") {
+      // Moves the row a real POST /pos/rollout created, as the worker would:
+      // ?target=SLUG&tstatus=..[&code=..&items=a,b] (one client),
+      // ?prebuild=SLUG:queued|joined|unavailable, ?stop=SLUG:CODE,
+      // ?status=running|cancelling|stopped|cancelled|completed; ?clear=1
+      // deletes it. Never creates a row.
+      const rollouts = db.collection("system_state");
+      if (query("clear") === "1") {
+        await rollouts.deleteOne({ _id: "pos-rollout" });
+        return res.writeHead(200).end("{}");
+      }
+      const row = await rollouts.findOne({ _id: "pos-rollout" });
+      if (!row) return res.writeHead(409).end('{"error":"No rollout."}');
+      const now = new Date(),
+        targets = row.targets.map((t) => ({ ...t })),
+        find = (slug) => targets.find((t) => t.slug === slug),
+        next = {};
+      const errorOf = (code) =>
+        code
+          ? {
+              code,
+              ...(query("items") ? { items: query("items").split(",") } : {}),
+            }
+          : null;
+      if (query("target")) {
+        const t = find(query("target"));
+        if (!t) return res.writeHead(404).end('{"error":"No such client."}');
+        const status = query("tstatus") ?? t.status;
+        t.status = status;
+        t.startedAt = status === "pending" ? null : (t.startedAt ?? now);
+        t.finishedAt = ["succeeded", "failed", "skipped"].includes(status)
+          ? now
+          : null;
+        t.requestId =
+          status === "pending" ? null : (t.requestId ?? randomUUID());
+        t.error = ["failed", "skipped"].includes(status)
+          ? (errorOf(query("code")) ?? t.error)
+          : null;
+        // &job=1: the client's own deploy job, as the worker enqueued it.
+        if (query("job") === "1" && ["building", "deploying"].includes(status))
+          await db.collection("installations").updateOne(
+            { _id: t.installationId },
+            {
+              $set: {
+                "pos.deploy.current": job({
+                  status: "running",
+                  step: status === "deploying" ? "upload" : "build",
+                  branch: row.branch,
+                  target: row.sha,
+                  requestId: t.requestId,
+                }),
+              },
+            },
+          );
+      }
+      if (query("prebuild")) {
+        const [slug, state] = query("prebuild").split(":");
+        const t = find(slug);
+        if (!t) return res.writeHead(404).end('{"error":"No such client."}');
+        if (!["queued", "joined", "unavailable"].includes(state))
+          return res.writeHead(400).end('{"error":"No such pre-build state."}');
+        t.prebuild = state;
+        // No build row behind the key, so the panel reads it as ready.
+        t.buildKey = ["queued", "joined"].includes(state)
+          ? "ab".repeat(32)
+          : null;
+      }
+      if (query("stop")) {
+        const [slug, code] = query("stop").split(":");
+        const t = find(slug);
+        if (!t) return res.writeHead(404).end('{"error":"No such client."}');
+        // The client it stopped at carries the reason; like the worker, a
+        // freeze, lost authority or a cancel skip it, anything else fails it.
+        Object.assign(t, {
+          status: ["frozen", "not-authorized", "cancelled"].includes(code)
+            ? "skipped"
+            : "failed",
+          startedAt: t.startedAt ?? now,
+          finishedAt: now,
+          error: errorOf(code),
+        });
+        next.stop = { slug, code };
+      }
+      const status = query("status");
+      if (status) {
+        next.status = status;
+        next.cancelRequested = status === "cancelling";
+        const ended = ["stopped", "cancelled", "completed"].includes(status);
+        next.finishedAt = ended ? now : null;
+        if (status === "running") next.stop = null;
+        // Stopped or cancelled: the clients not reached are skipped.
+        if (status === "stopped" || status === "cancelled")
+          for (const t of targets)
+            if (t.status === "pending")
+              Object.assign(t, {
+                status: "skipped",
+                finishedAt: now,
+                error: {
+                  code: status === "stopped" ? "rollout-stopped" : "cancelled",
+                },
+              });
+      }
+      await rollouts.updateOne(
+        { _id: "pos-rollout" },
+        { $set: { ...next, targets } },
+      );
+    } else if (url.pathname === "/pos/lock") {
+      // /pos/lock?scenario=NAME&on=1|0: that client's deploy lock.
+      await db
+        .collection("installations")
+        .updateOne(
+          { _id: nid("d", SCENARIOS[scenario].n) },
+          { $set: { "pos.deployLock": query("on") === "1" } },
+        );
     } else if (url.pathname === "/pos/freeze") {
       await db.collection("system_state").updateOne(
         { _id: "pos-deploy-freeze" },

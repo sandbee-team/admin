@@ -198,6 +198,8 @@ async function finalizeRollback(jr, { live, previous, healthy, res }) {
       ),
       runUrl: null,
       status: "rolled-back-to",
+      // This version's own health verdict, never one copied from `previous`.
+      healthy: healthy === true,
       build: newLastBuild ?? base?.build ?? null,
     };
     const newPrevious = deploy.last

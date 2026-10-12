@@ -19,7 +19,16 @@ import {
   sha7,
   jobBlocks,
   NEXT_PUBLIC_KEYS,
+  READINESS_IDS,
+  buildRowId,
 } from "../../shared/deploy.js";
+import { isKnownCode } from "../../shared/deploy-errors.js";
+import {
+  MAX_TARGETS,
+  ROLLOUT_STATES,
+  TARGET_STATES,
+  rolloutCounts,
+} from "../../shared/rollout.js";
 
 export const cleanText = (value, max) => clean(value, max);
 const clean = (value, max) =>
@@ -290,3 +299,80 @@ export const workerView = (row, now = Date.now()) => {
   };
 };
 export const cutoverView = (deploy) => date(deploy?.cutoverAt);
+
+// ---- rollout (P3) ---------------------------------------------------------------
+// The plan and the start are bound by the commit AND the exact client order.
+export const rolloutDigest = (sha, ids) =>
+  createHash("sha256")
+    .update(JSON.stringify([String(sha), [...ids].map(String)]))
+    .digest("hex");
+const knownOr = (code) =>
+  ERROR_CODE_RE.test(code ?? "") && isKnownCode(code) ? code : "internal";
+const ACTIVE_BUILD = [
+  "queued",
+  "dispatching",
+  "building",
+  "collecting",
+  "storing",
+];
+// A waiting client's pre-build: building, ready (a stored or cache-adopted
+// row is deleted by the build lane, so a missing row reads as ready) or failed.
+function prebuildView(target, row, builds) {
+  if (!["queued", "joined"].includes(target.prebuild)) return null;
+  const build = builds.get(buildRowId(row.sha, target.buildKey));
+  if (!build) return "ready";
+  if (ACTIVE_BUILD.includes(build.status)) return "building";
+  return build.status === "ready" ? "ready" : "failed";
+}
+// The one pos-rollout row as the panel sees it: never the lease, the
+// starter's authority fields, job request ids, build keys or the full sha.
+// `builds` = Map of build-row id -> {status} for the pre-built keys.
+export function rolloutView(row, builds = new Map()) {
+  if (!row) return null;
+  const targets = (Array.isArray(row.targets) ? row.targets : [])
+    .slice(0, MAX_TARGETS)
+    .map((t) => ({
+      installationId: clean(t?.installationId, 64),
+      slug: clean(t?.slug, 60),
+      status: oneOf(TARGET_STATES, t?.status, "pending"),
+      build: prebuildView(t ?? {}, row, builds),
+      error: t?.error
+        ? {
+            code: knownOr(t.error.code),
+            items: Array.isArray(t.error.items)
+              ? t.error.items.filter((id) => READINESS_IDS.includes(id))
+              : [],
+          }
+        : null,
+      startedAt: date(t?.startedAt),
+      finishedAt: date(t?.finishedAt),
+    }));
+  return {
+    id: clean(row.id, 64),
+    status: oneOf(ROLLOUT_STATES, row.status, "stopped"),
+    branch: isBranch(row.branch) ? row.branch : "",
+    sha7: sha7(row.sha),
+    commit: row.commit
+      ? {
+          headline: clean(row.commit.headline, 120),
+          authorName: clean(row.commit.authorName, 100),
+          date: date(row.commit.date),
+        }
+      : null,
+    by: { name: clean(row.by?.name, 120) },
+    resumed: row.resumed
+      ? {
+          by: { name: clean(row.resumed.by?.name, 120) },
+          at: date(row.resumed.at),
+        }
+      : null,
+    startedAt: date(row.startedAt),
+    finishedAt: date(row.finishedAt),
+    cancelRequested: row.cancelRequested === true,
+    stop: row.stop
+      ? { slug: clean(row.stop.slug, 60), code: knownOr(row.stop.code) }
+      : null,
+    counts: rolloutCounts(targets),
+    targets,
+  };
+}

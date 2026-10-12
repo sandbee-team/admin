@@ -111,6 +111,16 @@ export function canonicalNextPublic(pos) {
     NEXT_PUBLIC_KEYS.map((key) => [key, canonicalEnvValue(key, env[key])]),
   );
 }
+// Can these image/realtime settings be used for a build? (readiness item
+// image-realtime)
+export function inputsOkOf(pos) {
+  try {
+    canonicalNextPublic(pos);
+    return true;
+  } catch {
+    return false;
+  }
+}
 // inputs = {v, settings, env, builder}. `env` is exactly the three
 // NEXT_PUBLIC_* keys for now (outcome A of rev 2 section 2.1).
 export function buildInputs({ pos, builderSha, builder }) {

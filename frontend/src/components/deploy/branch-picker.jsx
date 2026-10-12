@@ -83,6 +83,8 @@ export function BranchPicker({
   plan,
   live,
   cacheOn,
+  // false: no per-branch build chip (the rollout panel has no installation).
+  showCache = true,
 }) {
   return (
     <div className="branch-picker">
@@ -134,7 +136,11 @@ export function BranchPicker({
                     : ""}
                 </span>
               </span>
-              <span className="branch-cache">{cacheChip(branch, cacheOn)}</span>
+              {showCache && (
+                <span className="branch-cache">
+                  {cacheChip(branch, cacheOn)}
+                </span>
+              )}
             </label>
           ))}
         </div>

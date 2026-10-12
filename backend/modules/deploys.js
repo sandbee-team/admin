@@ -10,24 +10,43 @@ import { deploySchemas } from "../../shared/schemas.js";
 import {
   ACTIVE_STATES,
   ACTIVE_TASK_STATES,
-  CANCELLABLE_STEPS,
-  DEAD_LEASE_MS,
-  JOB_STEPS,
   PURGE_WINDOW_MS,
-  QUEUED_EXPIRY_MS,
   TERMINAL_STATES,
   blockedFor,
   buildRowId,
   isActiveState,
   BUILDER_CHECK_MAX_AGE_MS,
+  isBranch,
   isSha,
   jobBlocks,
   taskBlocks,
-  workerStale,
   readinessOf,
   sha7,
   verifyStateOf,
 } from "../../shared/deploy.js";
+import {
+  MAX_TARGETS,
+  ROLLOUT_ACTIVE,
+  ROLLOUT_CONFIRM,
+  ROLLOUT_FINISHED,
+  ROLLOUT_GATE,
+  ROLLOUT_ROW_ID,
+  TARGET_PROJECTION,
+  classifyTarget,
+  newRolloutTarget,
+  orderTargets,
+  resumeTargets,
+  targetFacts,
+} from "../../shared/rollout.js";
+import {
+  cancelFields,
+  freeSlot,
+  leaseless,
+  newBuildRow,
+  newJob,
+  person,
+  releasePrebuilds,
+} from "../lib/deploy-job.js";
 import { HttpError, ensure, staleError } from "../lib/errors.js";
 import { audit } from "../lib/audit.js";
 import { consume } from "../lib/limiter.js";
@@ -40,6 +59,7 @@ import {
   buildInputs,
   buildKeyOf,
   canonicalNextPublic,
+  inputsOkOf,
   parseBuilderJson,
 } from "../lib/build-inputs.js";
 import { isConflict } from "../lib/s3.js";
@@ -51,6 +71,8 @@ import {
   key8,
   storedCommit,
   purgeDigest,
+  rolloutDigest,
+  rolloutView,
   taskView,
   verifyView,
   versionView,
@@ -60,6 +82,11 @@ import { fleetUsageStalled, fleetUsageView } from "../lib/usage-view.js";
 import { busyError } from "./pos.js";
 
 export { deployView };
+// {a: 1} -> {"<path>.a": 1}
+const prefixed = (path, fields) =>
+  Object.fromEntries(
+    Object.entries(fields).map(([key, value]) => [`${path}.${key}`, value]),
+  );
 const conflict = (code, message, items) => {
   const error = new HttpError(409, message);
   error.apiCode = code;
@@ -78,15 +105,6 @@ const failure = (error) => {
   }
   return error;
 };
-const person = (staff) => ({ id: staff._id, name: staff.name });
-const stepsFor = (kind) =>
-  JOB_STEPS[kind === "rollback" ? "rollback" : "deploy"].map((name) => ({
-    name,
-    state: "pending",
-    startedAt: null,
-    endedAt: null,
-    note: "",
-  }));
 // {on, reason, by, at}: reason is free text typed by the owner, so it is
 // cleaned (control and bidi characters) and capped; nothing else is exposed.
 const freezeView = (row) => {
@@ -104,32 +122,6 @@ const freezeView = (row) => {
     at: on ? (row.at ?? null) : null,
   };
 };
-const leaseless = () => ({ owner: null, until: null, fence: 0 });
-// A slot is free when empty, finished, expired while queued, or its lease has
-// been dead for DEAD_LEASE_MS (mirrors jobBlocks in shared/deploy.js).
-const freeSlot = (path, active, now, workerAt) => ({
-  $or: [
-    { [path]: null },
-    { [`${path}.status`]: { $nin: active } },
-    // A queued item only counts as expired when the worker has been silent
-    // for QUEUED_EXPIRY_MS (shared/deploy.js queuedExpired).
-    ...(workerStale(workerAt, now)
-      ? [
-          {
-            [`${path}.status`]: "queued",
-            [`${path}.requestedAt`]: {
-              $lt: new Date(now - QUEUED_EXPIRY_MS),
-            },
-          },
-        ]
-      : []),
-    {
-      [`${path}.status`]: { $in: active.filter((s) => s !== "queued") },
-      [`${path}.lease.until`]: { $lt: new Date(now - DEAD_LEASE_MS) },
-    },
-  ],
-});
-
 export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
   const router = Router(),
     installations = db.collection("installations"),
@@ -482,42 +474,6 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
       throw staleError("POS settings changed. Reload and try again.");
     }
   }
-  const newJob = ({
-    kind,
-    branch,
-    sha,
-    buildKey,
-    commit,
-    staff,
-    now,
-    target,
-  }) => ({
-    kind,
-    requestId: randomUUID(),
-    branch,
-    sha,
-    buildKey: buildKey ?? null,
-    commit: commit ?? null,
-    by: person(staff),
-    requestedAt: new Date(now),
-    status: "queued",
-    step: "queued",
-    steps: stepsFor(kind),
-    lease: leaseless(),
-    attempt: 0,
-    heartbeatAt: null,
-    runId: null,
-    runUrl: null,
-    artifactId: null,
-    uploadStartedAt: null,
-    vercelDeploymentId: target ?? null,
-    url: null,
-    baseline: null,
-    cancelRequested: false,
-    error: null,
-    finishedAt: null,
-  });
-
   router.post(
     "/installations/:id/pos/deploys",
     auth.permit("deploy"),
@@ -574,7 +530,7 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
           sha,
           buildKey: built?.key,
           commit,
-          staff: req.staff,
+          by: person(req.staff),
           now,
         });
         await claimDeploySlot(session, fresh, next, now);
@@ -634,7 +590,7 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
           sha: isSha(target.sha) ? target.sha : "",
           buildKey: target.build?.buildKey,
           commit: storedCommit(target.commit, target.sha, target.branch),
-          staff: req.staff,
+          by: person(req.staff),
           now,
           target: target.vercelDeploymentId,
         });
@@ -681,24 +637,13 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
           409,
           "This deploy has already finished.",
         );
-        let set;
-        if (job.status === "queued")
-          set = {
-            "pos.deploy.current.status": "cancelled",
-            "pos.deploy.current.cancelRequested": true,
-            "pos.deploy.current.finishedAt": new Date(),
-          };
-        else {
-          if (!CANCELLABLE_STEPS.includes(job.step)) {
-            const error = new HttpError(409, "Too late to cancel.");
-            error.apiCode = "too-late";
-            throw error;
-          }
-          set = {
-            "pos.deploy.current.status": "cancelling",
-            "pos.deploy.current.cancelRequested": true,
-          };
+        const fields = cancelFields(job, Date.now());
+        if (!fields) {
+          const error = new HttpError(409, "Too late to cancel.");
+          error.apiCode = "too-late";
+          throw error;
         }
+        const set = prefixed("pos.deploy.current", fields);
         const done = await installations.updateOne(
           {
             _id: id,
@@ -1038,26 +983,18 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
           ...extra,
         },
       });
-      const fresh = () => ({
-        _id,
-        kind: "build",
-        status: "queued",
-        sha,
-        buildKey: built.key,
-        inputs: built.inputs,
-        branch,
-        commit: storedCommit(commit, sha, branch),
-        lease: leaseless(),
-        attempt: 0,
-        runId: null,
-        runUrl: null,
-        artifactId: null,
-        waiters: [],
-        prepared: { by: person(req.staff), at: now },
-        error: null,
-        createdAt: now,
-        finishedAt: null,
-      });
+      const fresh = () =>
+        newBuildRow({
+          _id,
+          sha,
+          buildKey: built.key,
+          inputs: built.inputs,
+          branch,
+          commit: storedCommit(commit, sha, branch),
+          waiters: [],
+          prepared: { by: person(req.staff), at: now },
+          now,
+        });
       const logRequest = (session) =>
         audit(
           db,
@@ -1075,14 +1012,22 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
       async function joinExisting() {
         const existing = await state.findOne({ _id });
         if (!existing) return null;
+        // A rollout's marker (P3) is taken over too, so cancelling that
+        // rollout no longer cancels this build.
         if (
-          !existing.prepared &&
+          (!existing.prepared || existing.prepared.rollout) &&
           !["failed", "cancelled"].includes(existing.status)
         ) {
           const marked = await transaction(client, async (session) => {
             await authorizeWrite(db, session, req.staff, "deploy");
             const done = await state.updateOne(
-              { _id, prepared: null },
+              {
+                _id,
+                $or: [
+                  { prepared: null },
+                  { "prepared.rollout": { $exists: true } },
+                ],
+              },
               { $set: { prepared: { by: person(req.staff), at: now } } },
               { session },
             );
@@ -1413,6 +1358,576 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
       ),
     });
   });
+
+  // ---- rollout (P3): "deploy this commit to all clients" -----------------------
+  // One system_state row (shared/rollout.js, docs/P3-ROLLOUT.md). The worker
+  // drives it one client at a time through the normal deploy job; the API
+  // plans, starts, cancels, resumes, dismisses and reads it.
+  const rolloutRow = (session) =>
+    state.findOne({ _id: ROLLOUT_ROW_ID }, { session });
+  // Whose authority the worker's deploys run under (re-checked per client).
+  const authOf = (staff) => ({
+    id: staff._id,
+    name: staff.name,
+    authVersion: staff.authVersion,
+    role: staff.role,
+  });
+  // Readiness ids that block the whole rollout, plus "build-cache" when off.
+  async function rolloutGate(staff, session) {
+    const [worker, freeze] = await Promise.all([
+      state.findOne({ _id: "pos-worker" }, { session }),
+      state.findOne({ _id: "pos-deploy-freeze" }, { session }),
+    ]);
+    const view = readinessOf({
+      now: Date.now(),
+      worker,
+      sources: {
+        source: gh.configured().source,
+        builder: worker?.builderConfigured === true,
+      },
+      cacheConfigured: Boolean(cacheStore),
+      authenticator: Boolean(staff?.totp?.enabledAt),
+      freeze,
+    });
+    const items = view.items
+      .filter((i) => ROLLOUT_GATE.includes(i.id) && i.state === "blocked")
+      .map((i) => i.id);
+    return { worker, items: cacheStore ? items : [...items, "build-cache"] };
+  }
+  function refuseGate(gate) {
+    if (gate.items.includes("build-cache"))
+      throw conflict(
+        "cache-off",
+        "The build cache is off: a rollout needs it.",
+      );
+    if (gate.items.length)
+      throw conflict("not-ready", "Deploys are not ready yet.", gate.items);
+  }
+  // Slugs of the clients with a deploy job that still blocks.
+  async function activeDeploys(session) {
+    const worker = await state.findOne(
+      { _id: "pos-worker" },
+      { session, projection: { at: 1 } },
+    );
+    const rows = await installations
+      .find(
+        { "pos.deploy.current.status": { $in: ACTIVE_STATES } },
+        { session, projection: { "pos.slug": 1, "pos.deploy.current": 1 } },
+      )
+      .limit(MAX_TARGETS)
+      .toArray();
+    const now = Date.now();
+    return rows
+      .filter((r) => jobBlocks(r.pos.deploy.current, now, worker?.at ?? null))
+      .map((r) => r.pos.slug);
+  }
+  function refuseBusy(slugs) {
+    if (slugs.length)
+      throw conflict(
+        "busy",
+        `A deploy is running for ${slugs.slice(0, 3).join(", ")}. Try again when it finishes.`,
+      );
+  }
+  const busyRollout = () => conflict("busy", "A rollout is already running.");
+  // Every POS client with its verdict for `sha`, targets in rollout order,
+  // plus the clients with a deploy running now.
+  async function rolloutCandidates(sha, session) {
+    const product = await db
+      .collection("products")
+      .findOne({ slug: "pos" }, { session, projection: { _id: 1 } });
+    const rows = product
+      ? await installations
+          .find(
+            { productId: product._id, pos: { $exists: true } },
+            { session, projection: TARGET_PROJECTION },
+          )
+          .sort({ "pos.slug": 1 })
+          .limit(MAX_TARGETS + 1)
+          .maxTimeMS(4000)
+          .toArray()
+      : [];
+    const customers = new Map(
+      (
+        await db
+          .collection("customers")
+          .find(
+            { _id: { $in: [...new Set(rows.map((r) => r.customerId))] } },
+            { session, projection: { name: 1, status: 1 } },
+          )
+          .toArray()
+      ).map((customer) => [customer._id, customer]),
+    );
+    const workerAt =
+      (
+        await state.findOne(
+          { _id: "pos-worker" },
+          { session, projection: { at: 1 } },
+        )
+      )?.at ?? null;
+    const now = Date.now();
+    const targets = [],
+      excluded = [],
+      busy = [];
+    for (const row of rows.slice(0, MAX_TARGETS)) {
+      const customer = customers.get(row.customerId);
+      const facts = targetFacts(row, customer, inputsOkOf(row.pos), now);
+      const pos = facts.pos;
+      const entry = {
+        pos,
+        installationId: row._id,
+        slug: pos.slug,
+        customerName: cleanText(customer?.name, 120),
+      };
+      if (jobBlocks(pos.deploy?.current, now, workerAt)) busy.push(pos.slug);
+      const verdict = classifyTarget(facts, sha);
+      if (verdict.kind === "target") targets.push(entry);
+      else
+        excluded.push({ ...entry, code: verdict.code, items: verdict.items });
+    }
+    return {
+      targets: orderTargets(targets),
+      excluded,
+      busy,
+      limited: rows.length > MAX_TARGETS,
+    };
+  }
+
+  // The view with each waiting client's pre-build read from its build row.
+  async function viewOf(row, session) {
+    const ids = row
+      ? [
+          ...new Set(
+            (row.targets ?? [])
+              .filter(
+                (t) => ["queued", "joined"].includes(t.prebuild) && t.buildKey,
+              )
+              .map((t) => buildRowId(row.sha, t.buildKey)),
+          ),
+        ]
+      : [];
+    const builds = new Map(
+      ids.length
+        ? (
+            await state
+              .find(
+                { _id: { $in: ids } },
+                { session, projection: { status: 1 } },
+              )
+              .toArray()
+          ).map((b) => [b._id, b])
+        : [],
+    );
+    return rolloutView(row, builds);
+  }
+  // A short audit detail: the branch is capped so "#id8" always fits in 200.
+  const rolloutRef = (row) =>
+    `${String(row.branch).slice(0, 80)}@${sha7(row.sha)}`;
+
+  router.get("/pos/rollout", auth.permit("credentials"), async (req, res) => {
+    const [row, worker, freeze] = await Promise.all([
+      rolloutRow(),
+      workerRow(),
+      state.findOne({ _id: "pos-deploy-freeze" }),
+    ]);
+    const frozen = freezeView(freeze);
+    res.json({
+      rollout: await viewOf(row),
+      freeze: { on: frozen.on, reason: frozen.reason },
+      workerOnline: workerView(worker).online,
+    });
+  });
+
+  router.get(
+    "/pos/rollout/plan",
+    auth.permit("credentials"),
+    async (req, res) => {
+      const { branch } = deploySchemas.rolloutPlan.parse(req.query);
+      await consume(db, `rollout-plan:${req.staff._id}`, 120, 3600000);
+      let head;
+      try {
+        head = await headOf(branch);
+      } catch (error) {
+        if (error instanceof ProviderError && error.code === "not-found")
+          throw conflict(
+            "sha-not-on-branch",
+            "That branch no longer exists. Reload the branch list.",
+          );
+        throw failure(error);
+      }
+      const commit = await remember(`commit:${head.sha}`, () =>
+        gh.commit(head.sha),
+      ).catch(() => null);
+      const [gate, found, row] = await Promise.all([
+        rolloutGate(req.staff),
+        rolloutCandidates(head.sha),
+        rolloutRow(),
+      ]);
+      const targets = await Promise.all(
+        found.targets.map(async (t) => {
+          const last = t.pos.deploy?.last;
+          let relation = null;
+          if (isSha(last?.sha))
+            try {
+              // behind: the live commit is newer (the rollout moves it back);
+              // diverged: the live commit is not on this branch.
+              relation = (await compareOf(last.sha, head.sha)).status;
+            } catch {
+              relation = null;
+            }
+          const built = await buildKeyFor(t.pos, gate.worker);
+          const cache = await cacheState(head.sha, built?.key);
+          return {
+            installationId: t.installationId,
+            slug: t.slug,
+            customerName: t.customerName,
+            live: last
+              ? {
+                  branch: isBranch(last.branch) ? last.branch : "",
+                  sha7: sha7(last.sha),
+                }
+              : null,
+            older: relation === "behind",
+            diverged: relation === "diverged",
+            // Live on this very commit but it failed its health check.
+            unhealthy: last?.sha === head.sha && last?.healthy === false,
+            cached:
+              cache.state === "cached"
+                ? true
+                : cache.state === "will-build"
+                  ? false
+                  : null,
+          };
+        }),
+      );
+      res.json({
+        branch,
+        head: {
+          sha: head.sha,
+          sha7: sha7(head.sha),
+          headline: head.headline,
+          authorName: cleanText(commit?.authorName, 100),
+          date: head.date,
+        },
+        targets,
+        excluded: found.excluded.map((e) => ({
+          installationId: e.installationId,
+          slug: e.slug,
+          customerName: e.customerName,
+          code: e.code,
+          ...(e.items ? { items: e.items } : {}),
+        })),
+        blocked: gate.items,
+        busy: found.busy,
+        active: ROLLOUT_ACTIVE.includes(row?.status),
+        limited: found.limited,
+        digest: rolloutDigest(
+          head.sha,
+          found.targets.map((t) => t.installationId),
+        ),
+      });
+    },
+  );
+
+  router.post(
+    "/pos/rollout",
+    auth.permit("deploy"),
+    auth.requireStepUp,
+    async (req, res) => {
+      const input = body(deploySchemas.rolloutStart, req);
+      ensure(
+        input.confirm === ROLLOUT_CONFIRM,
+        400,
+        "Type deploy all to confirm.",
+      );
+      refuseGate(await rolloutGate(req.staff));
+      if (ROLLOUT_ACTIVE.includes((await rolloutRow())?.status))
+        throw busyRollout();
+      refuseBusy(await activeDeploys());
+      await consume(db, `rollout:${req.staff._id}`, 10, 3600000);
+      await verifySha(input.branch, input.sha);
+      const found = await rolloutCandidates(input.sha);
+      ensure(
+        !found.limited,
+        409,
+        "More than 100 POS clients: a rollout covers at most 100.",
+      );
+      if (!found.targets.length)
+        throw conflict("no-targets", "No client needs this commit.");
+      if (
+        rolloutDigest(
+          input.sha,
+          found.targets.map((t) => t.installationId),
+        ) !== input.digest
+      )
+        throw conflict(
+          "targets-changed",
+          "The list of clients changed. Preview again.",
+        );
+      let commit = null;
+      try {
+        commit = storedCommit(
+          await gh.commit(input.sha),
+          input.sha,
+          input.branch,
+        );
+      } catch {
+        commit = null;
+      }
+      const doc = {
+        _id: ROLLOUT_ROW_ID,
+        id: randomUUID(),
+        status: "running",
+        branch: input.branch,
+        sha: input.sha,
+        commit,
+        by: person(req.staff),
+        auth: authOf(req.staff),
+        resumed: null,
+        startedAt: new Date(),
+        finishedAt: null,
+        stopOnFailure: true,
+        cancelRequested: false,
+        stop: null,
+        prepared: false,
+        lease: leaseless(),
+        targets: found.targets.map((t) =>
+          newRolloutTarget(t.installationId, t.slug),
+        ),
+      };
+      try {
+        await transaction(client, async (session) => {
+          await authorizeWrite(db, session, req.staff, "deploy");
+          refuseGate(await rolloutGate(req.staff, session));
+          refuseBusy(await activeDeploys(session));
+          const existing = await rolloutRow(session);
+          if (ROLLOUT_ACTIVE.includes(existing?.status)) throw busyRollout();
+          if (existing) {
+            const done = await state.replaceOne(
+              { _id: ROLLOUT_ROW_ID, id: existing.id, status: existing.status },
+              doc,
+              { session },
+            );
+            if (done.matchedCount !== 1) throw busyRollout();
+            await releasePrebuilds(state, existing.id, new Date(), {
+              session,
+            });
+          } else await state.insertOne(doc, { session });
+          await audit(
+            db,
+            session,
+            req.staff,
+            "pos.rollout.started",
+            "system",
+            ROLLOUT_ROW_ID,
+            `${rolloutRef(doc)} ${doc.targets.length} clients #${doc.id.slice(0, 8)}`,
+            req,
+          );
+        });
+      } catch (error) {
+        // Two starts at once: the second insert of the one row loses.
+        if (error?.code === 11000) throw busyRollout();
+        throw error;
+      }
+      res.status(201).json({ rollout: rolloutView(doc) });
+    },
+  );
+
+  router.post(
+    "/pos/rollout/cancel",
+    auth.permit("deploy"),
+    async (req, res) => {
+      const { id } = body(deploySchemas.rollout, req);
+      const view = await transaction(client, async (session) => {
+        await authorizeWrite(db, session, req.staff, "deploy");
+        const row = await rolloutRow(session);
+        ensure(row?.id === id, 404, "No such rollout.");
+        if (row.status === "cancelling") return viewOf(row, session);
+        ensure(
+          row.status === "running",
+          409,
+          "This rollout has already finished.",
+        );
+        const done = await state.updateOne(
+          { _id: ROLLOUT_ROW_ID, id, status: "running" },
+          { $set: { status: "cancelling", cancelRequested: true } },
+          { session },
+        );
+        if (done.matchedCount !== 1)
+          throw staleError("The rollout changed. Reload and try again.");
+        // The client in flight: cancelled exactly like the per-client Cancel
+        // (queued at once, running before upload); after upload it finishes.
+        const flight = (row.targets ?? []).find(
+          (t) => ["building", "deploying"].includes(t.status) && t.requestId,
+        );
+        const inst = flight
+          ? await installations.findOne(
+              { _id: flight.installationId },
+              { session, projection: { "pos.deploy.current": 1 } },
+            )
+          : null;
+        const job = inst?.pos?.deploy?.current;
+        const fields =
+          job?.requestId === flight?.requestId &&
+          ["queued", "running"].includes(job?.status)
+            ? cancelFields(job, Date.now())
+            : null;
+        if (fields) {
+          const cancelled = await installations.updateOne(
+            {
+              _id: flight.installationId,
+              "pos.deploy.current.requestId": job.requestId,
+              "pos.deploy.current.status": job.status,
+              "pos.deploy.current.step": job.step,
+            },
+            { $set: prefixed("pos.deploy.current", fields) },
+            { session },
+          );
+          if (cancelled.matchedCount === 1)
+            await audit(
+              db,
+              session,
+              req.staff,
+              "pos.deploy.cancel-requested",
+              "installations",
+              flight.installationId,
+              `${rolloutRef(job)} #${job.requestId.slice(0, 8)} rollout #${id.slice(0, 8)}`,
+              req,
+            );
+        }
+        await audit(
+          db,
+          session,
+          req.staff,
+          "pos.rollout.cancel-requested",
+          "system",
+          ROLLOUT_ROW_ID,
+          `${rolloutRef(row)} #${id.slice(0, 8)}`,
+          req,
+        );
+        return viewOf(await rolloutRow(session), session);
+      });
+      res.json({ rollout: view });
+    },
+  );
+
+  router.post(
+    "/pos/rollout/resume",
+    auth.permit("deploy"),
+    auth.requireStepUp,
+    async (req, res) => {
+      const { id } = body(deploySchemas.rollout, req);
+      const row = await rolloutRow();
+      ensure(row?.id === id, 404, "No such rollout.");
+      ensure(
+        row.status === "stopped",
+        409,
+        "Only a stopped rollout can be resumed.",
+      );
+      refuseGate(await rolloutGate(req.staff));
+      refuseBusy(await activeDeploys());
+      await consume(db, `rollout:${req.staff._id}`, 10, 3600000);
+      await verifySha(row.branch, row.sha);
+      const view = await transaction(client, async (session) => {
+        await authorizeWrite(db, session, req.staff, "deploy");
+        refuseGate(await rolloutGate(req.staff, session));
+        const fresh = await rolloutRow(session);
+        if (fresh?.id !== id || fresh.status !== "stopped")
+          throw staleError("The rollout changed. Reload and try again.");
+        // The client it stopped at and every client not reached get their
+        // turn again; succeeded clients and deliberate skips stay.
+        const targets = resumeTargets(fresh.targets);
+        const done = await state.updateOne(
+          { _id: ROLLOUT_ROW_ID, id, status: "stopped" },
+          {
+            $set: {
+              status: "running",
+              targets,
+              stop: null,
+              cancelRequested: false,
+              finishedAt: null,
+              prepared: false,
+              resumed: { by: person(req.staff), at: new Date() },
+              auth: authOf(req.staff),
+            },
+          },
+          { session },
+        );
+        if (done.matchedCount !== 1)
+          throw staleError("The rollout changed. Reload and try again.");
+        await audit(
+          db,
+          session,
+          req.staff,
+          "pos.rollout.resumed",
+          "system",
+          ROLLOUT_ROW_ID,
+          `${rolloutRef(fresh)} #${id.slice(0, 8)}`,
+          req,
+        );
+        return viewOf(await rolloutRow(session), session);
+      });
+      res.json({ rollout: view });
+    },
+  );
+
+  router.post(
+    "/pos/rollout/dismiss",
+    auth.permit("deploy"),
+    async (req, res) => {
+      const { id } = body(deploySchemas.rollout, req);
+      await transaction(client, async (session) => {
+        await authorizeWrite(db, session, req.staff, "deploy");
+        const row = await rolloutRow(session);
+        ensure(row?.id === id, 404, "No such rollout.");
+        ensure(
+          ROLLOUT_FINISHED.includes(row.status) || row.status === "cancelling",
+          409,
+          "A running rollout cannot be dismissed. Cancel it first.",
+        );
+        if (row.status === "cancelling") {
+          // Escape hatch when the worker cannot end a cancelled rollout: only
+          // once its client in flight has no deploy job still running.
+          const flight = (row.targets ?? []).find(
+            (t) => ["building", "deploying"].includes(t.status) && t.requestId,
+          );
+          const job = flight
+            ? (
+                await installations.findOne(
+                  { _id: flight.installationId },
+                  { session, projection: { "pos.deploy.current": 1 } },
+                )
+              )?.pos?.deploy?.current
+            : null;
+          if (
+            job?.requestId === flight?.requestId &&
+            jobBlocks(job, Date.now(), await heartbeatAt(session))
+          )
+            throw conflict(
+              "busy",
+              "A client of this rollout is still deploying. Try again when it finishes.",
+            );
+        }
+        const gone = await state.deleteOne(
+          { _id: ROLLOUT_ROW_ID, id, status: row.status },
+          { session },
+        );
+        if (gone.deletedCount !== 1)
+          throw staleError("The rollout changed. Reload and try again.");
+        await releasePrebuilds(state, id, new Date(), { session });
+        await audit(
+          db,
+          session,
+          req.staff,
+          "pos.rollout.dismissed",
+          "system",
+          ROLLOUT_ROW_ID,
+          `${rolloutRef(row)} ${row.status} #${id.slice(0, 8)}`,
+          req,
+        );
+      });
+      res.json({ ok: true });
+    },
+  );
   return router;
 }
 // Headline, author name and date of the live commit, cleaned (never an e-mail).

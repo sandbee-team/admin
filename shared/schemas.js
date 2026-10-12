@@ -611,6 +611,18 @@ export const deploySchemas = {
     })
     .strict(),
   plan: z.object({ branch: deployBranch }).strict(),
+  // P3 rollout: the plan is read with a branch; the start repeats the commit
+  // and the plan's digest, and `confirm` must be the phrase "deploy all".
+  rolloutPlan: z.object({ branch: deployBranch }).strict(),
+  rolloutStart: z
+    .object({
+      branch: deployBranch,
+      sha: deploySha,
+      digest: z.string().regex(/^[0-9a-f]{64}$/, "Preview the rollout again."),
+      confirm: z.string().max(40),
+    })
+    .strict(),
+  rollout: z.object({ id }).strict(),
   branches: z.object({ installation: id.optional() }).strict(),
   fleet: z
     .object({

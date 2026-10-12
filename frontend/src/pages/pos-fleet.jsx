@@ -13,6 +13,7 @@ import { usePoll } from "../hooks/use-poll";
 import { api } from "../lib/api";
 import { can } from "../../../shared/policy";
 import { StaleBanner } from "../components/deploy/stale-banner";
+import { RolloutPanel } from "../components/deploy/rollout-panel";
 import { when } from "../components/deploy/format";
 import { SiteBadge } from "../components/usage/badges";
 import {
@@ -244,6 +245,11 @@ export function PosFleet({ user }) {
         </div>
       ) : (
         <>
+          <RolloutPanel
+            user={user}
+            fleet={fleet.data}
+            onFleetRefresh={fleet.refresh}
+          />
           <p className="fleet-summary status-line" aria-label="Summary">
             <span>
               <strong>{rows.length}</strong> client

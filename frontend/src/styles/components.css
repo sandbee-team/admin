@@ -825,3 +825,107 @@
   background: var(--danger-bg);
   box-shadow: inset 4px 0 0 var(--danger);
 }
+/* "Deploy a commit to all clients" panel on the fleet page (P3). */
+.rollout-panel {
+  margin-bottom: var(--space-4);
+}
+.notice + .rollout-panel {
+  margin-top: var(--space-3);
+}
+.rollout-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: 0 23px 23px;
+  font-size: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.rollout-body p {
+  margin: 0;
+}
+.rollout-status {
+  font-weight: 500;
+}
+.rollout-plan,
+.rollout-head {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.rollout-live:empty {
+  position: absolute;
+}
+.rollout-warn,
+.rollout-older {
+  color: var(--warning);
+  font-weight: 500;
+}
+.rollout-stop {
+  padding: var(--space-3) var(--space-4);
+  border-radius: 12px;
+  background: var(--danger-bg);
+  box-shadow: inset 4px 0 0 var(--danger);
+}
+.rollout-list {
+  max-height: 360px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.rollout-list th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.rollout-list th,
+.rollout-list td {
+  padding: 10px 14px;
+}
+/* Wrap at word breaks only; below these widths the table scrolls instead. */
+.rollout-list td.rollout-wrap {
+  white-space: normal;
+  overflow-wrap: break-word;
+  min-width: 16ch;
+}
+.rollout-list tr[data-target-status="building"] td:first-child,
+.rollout-list tr[data-target-status="deploying"] td:first-child {
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+.rollout-list tr[data-target-status="failed"] td {
+  background: var(--danger-bg);
+}
+.rollout-excluded h3 {
+  font-size: 13px;
+  margin-bottom: var(--space-1);
+}
+.rollout-excluded ul {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding-left: var(--space-4);
+}
+.rollout-choose-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+.rollout-choose-bar .button {
+  white-space: normal;
+}
+.rollout-choose {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.rollout-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  gap: var(--space-3);
+}
+@media (max-width: 600px) {
+  .rollout-body {
+    padding-inline: 16px;
+  }
+}

@@ -11,6 +11,8 @@ const add = (code, step, title, plainMessage, action) => {
   T[code] = { step, title, plainMessage, action };
 };
 const NONE = "No action needed.";
+// The action text of codes that need nothing (the rollout panel hides it).
+export const NO_ACTION = NONE;
 const RETRY = "Try again in a few minutes.";
 const LOOK = "Open the GitHub run for details.";
 
@@ -842,6 +844,50 @@ add(
   "Storage off",
   "File storage is not configured.",
   "Set up S3 storage first.",
+);
+// ---- rollout: "deploy this commit to all clients" (P3) --------------------------------
+// Stored per client on the pos-rollout row (and as the rollout's stop code).
+add(
+  "rollout-stopped",
+  "rollout",
+  "Not reached",
+  "The rollout stopped at an earlier client, so this one was not deployed.",
+  "Fix the client it stopped at, then press Resume.",
+);
+add(
+  "already-live",
+  "rollout",
+  "Already live",
+  "This client already runs this commit.",
+  NONE,
+);
+add(
+  "target-not-ready",
+  "rollout",
+  "Client not ready",
+  "This client was not ready when its turn came, so the rollout stopped here.",
+  "Fix the listed items (often: run Verify now), then press Resume.",
+);
+add(
+  "target-busy",
+  "rollout",
+  "Client busy",
+  "Another deploy was running for this client when its turn came.",
+  "Wait for it to finish, then press Resume.",
+);
+add(
+  "job-lost",
+  "rollout",
+  "Deploy result lost",
+  "This client's deploy was dismissed or replaced before its result was read.",
+  "Check the client's Deploy tab, then press Resume.",
+);
+add(
+  "not-authorized",
+  "rollout",
+  "Access changed",
+  "The person who started the rollout can no longer deploy, so it stopped.",
+  "An owner can press Resume after checking.",
 );
 
 export const ERROR_CODES = Object.freeze(T);
