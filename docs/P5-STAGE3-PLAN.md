@@ -38,7 +38,7 @@ job — without the local go-live console and without a POS code change (recomme
 | D41 | **Go-live job.** One embedded slot `installations.pos.golive` (current state only, D4) with its own worker lane `golive: 1`; shaped like a deploy job (requestId, status, step, steps[], lease+fence, attempt, cancelRequested, error). A run does every automatic step it can and ENDS in `waiting` when the owner must act (DNS at GoDaddy, unlock-and-deploy); nothing holds a lease while waiting. Every step is idempotent (check before create, save after learn, as F1). While a go-live run is queued/running the installation is busy for deploys, tasks and POS setup writes (and vice versa). |
 | D42 | **Provider writes (amends D25).** Admin creates or adopts a Vercel project ONLY in a go-live and ONLY when the project has no production deployment (a live project is an existing client: import/P2 path). At creation it sets `BUILD_SETTINGS` (`backend/lib/build-inputs.js:11-19`) and **Function Region `bom1`** (fixes P2 finding F1 for new clients). It writes the env (D43), the project domain `<label>.sandbee.in` and the 308 redirects of the project's `*.vercel.app` names. After go-live the project settings are never changed again; env only through the owner's "Sync env". Admin never deletes a project, Worker, domain or env var (go-live's fresh start is not ported). |
 | D43 | **Env = exact `buildEnv` port** (F2): same keys, order, values, types (`encrypted`/`plain`), targets (`production`,`preview`), blanks for the unused store, realtime triple (blank when realtime is off). Upsert only. Admin stores per key only name, type, targets, a keyed 16-hex fingerprint (HMAC under a key derived from VAULT_KEY, label `sandbee-env-fp-v1`) and Vercel's `updatedAt` at write time; drift = key missing, type/target changed, plain value differs, or `updatedAt` newer than admin's write (edited by hand). Vercel env values are never read back or decrypted. `authSecret`, `healthStatsToken`, `realtimePublishSecret` and (if empty) `posAdmin.password` are minted by the worker once, only when missing, never re-minted; minting the stats token sets `statsHost` to the go-live host (D37's list of writers gains "the go-live secrets step"). Imported/hand-entered clients get a names-only parity warning in Verify (`env-keys-missing`); admin does not write their env in P5. |
-| D44 | **Web address while DNS is at GoDaddy (D40).** One label per installation: `SUBDOMAIN_RE`; refused: the platform names `@ www admin store gstapi ocrapi _dmarc _domainconnect app api hub` (P4 §7) and the names reserved by code/docs `ecom ocr pos notify whatsapp wa waadmin` (P4 F9); a label held by another installation (unique partial index on `pos.subdomain`); a label whose authoritative DNS already answers with a record that is not this project's (catches clients still only in the local console, D14). Host `<label>.sandbee.in`, `TENANT_ID` = label, `ROOT_DOMAIN` = `sandbee.in` (`PLATFORM_APEX` constant). Admin shows the exact records (CNAME `<label>` → Vercel's rank-1 `recommendedCNAME`; `_vercel.<label>` TXT only when Vercel's `verification[]` asks); the owner enters them at GoDaddy by hand and presses **Check DNS**: the worker asks the apex's own nameservers (F4), then Vercel verify + config, then a TLS probe of the host. No GoDaddy key on the server. A `dnsProvider` seam (`manual` now; `cloudflare` after P4 with the zone token of P4 §7: `apply(records)` creates them, the check stays the same) means P4 adds one adapter and no flow change. All records DNS only. |
+| D44 | **Web address while DNS is at GoDaddy (D40).** One label per installation: `SUBDOMAIN_RE`; refused: the platform names `@ www admin store gstapi ocrapi _dmarc _domainconnect app api hub` (P4 §7) and the names reserved by code/docs `ecom ocr pos notify whatsapp wa waadmin` (P4 F9); a label held by another installation (unique partial index on `pos.subdomain`; as built: on `pos.golive.address.label`, D51); a label whose authoritative DNS already answers with a record that is not this project's (catches clients still only in the local console, D14). Host `<label>.sandbee.in`, `TENANT_ID` = label, `ROOT_DOMAIN` = `sandbee.in` (`PLATFORM_APEX` constant). Admin shows the exact records (CNAME `<label>` → Vercel's rank-1 `recommendedCNAME`; `_vercel.<label>` TXT only when Vercel's `verification[]` asks); the owner enters them at GoDaddy by hand and presses **Check DNS**: the worker asks the apex's own nameservers (F4), then Vercel verify + config, then a TLS probe of the host. No GoDaddy key on the server. A `dnsProvider` seam (`manual` now; `cloudflare` after P4 with the zone token of P4 §7: `apply(records)` creates them, the check stays the same) means P4 adds one adapter and no flow change. All records DNS only. |
 | D45 | **POS admin login (amends D3's "needs a POS change"; Q1).** The worker seeds it exactly as `seed-admin.ts` does (F6): only when the client's core DB has no `role:"admin"` staff; never changes or replaces an existing admin (reported as `admin-exists`); bcryptjs (exact version 2.4.3, the POS's own library) cost 12; read-back `compare` proves the stored hash matches the vault password. The password is minted by admin if the owner did not set one and handed to the client once through the existing reveal (owner, step-up, audited). Menu, tables and settings stay manual (D3). |
 | D46 | **Realtime Worker without wrangler on the server (Q2).** A NEW pos-builder workflow `realtime.yml` (build.yml untouched) checks out lucifer at the go-live commit, bundles `workers/realtime` with the pinned wrangler (`deploy --dry-run --outdir`, no Cloudflare credentials) and uploads `index.js` + `realtime.json` (compatibility date, DO bindings, migrations, main module, parsed from `wrangler.jsonc`). The admin worker downloads it (builder token, digest-checked), accepts only an allowlisted descriptor (one DO binding, `new_sqlite_classes` migrations only, date `YYYY-MM-DD`, ≤ 1 MB), uploads it over the Cloudflare REST API with `TENANT_ID` and the publish secret, enables workers.dev, and probes 426 + signed publish (ported). Name `pos-realtime-<slug>`; account = stored 32-hex id or the token's only account; workers.dev subdomain = existing, else `pos-<slug>` (+4 hex on conflict, ≤ 3 tries). Redeploy only when the bundle SHA-256, name, tenant or URL changed. The bundle is compiled worker code in the client's own Cloudflare account, as today (not POS app source; D7 unchanged). |
 | D47 | **First deploy.** `verifyStateOf` gains `bootstrap`: every flag ok except `health = "not-deployed"`, which Verify writes only when the project has no production deployment. Unlock accepts `bootstrap` only for an installation whose go-live waits for its first deploy (`waitingFor: "deploy"`); rollout (D39) and every other gate still need `ok`. The owner's single action **Unlock and deploy** (`deploy` + step-up + typed slug) unlocks (same fields as `/pos/unlock`; no local-lock attestation, there is no local file) and enqueues the normal deploy job of the go-live commit in one transaction. The go-live is `live` only after that job is healthy, an inline Verify is `ok`, and the redirects are applied (a redirect failure is a warning, as in go-live). |
@@ -311,7 +311,7 @@ temporary GoDaddy record `p5spike` is allowed), Q5 existing screens.
 - Q5 New client entry: **existing screens (Customer → Installation → POS setup, as in P2 step 1)**;
   a one-form "New client" page later (P8) if it feels slow?
 
-## 16. As built (session 2, 2026-10-13)
+## 16. As built (session 2, 2026-10-13; session 3, 2026-10-14)
 
 **Docs.** Plan approved unchanged; D41-D48 recorded in `docs/POS-INTEGRATION.md` (main @ 4082048).
 D49/D50 stay reserved for P2's F1/F2; next free D-number D51.
@@ -396,3 +396,117 @@ fail 0, cancelled 0, skipped 6 (the Linux-only ones), todo 0 (727 of P3 + 50 new
   `SPIKE_VERCEL_TOKEN`/`SPIKE_CF_TOKEN`, run S1 (`node tools/spikes/p5-vercel.mjs create`, enter the
   printed records at GoDaddy, `… check`) and S2 upload (`node tools/spikes/p5-realtime.mjs <dir>`).
   W2/W3 wait for S1/S2.
+
+### Session 3 (2026-10-14): W4 contract + API + data model, W3 realtime bundle
+
+The owner reordered the units: W4 and W3 now (no spike tokens needed); W2 and W5 wait for S1/S2.
+
+**W4 (TDD: `test/stage3-api.test.js` written first, red on the routes, then green).**
+
+- `shared/golive.js` (new): the stored contract (its comment block = §4 as built),
+  `GOLIVE_STATES`, `GOLIVE_ACTIVE` (= queued/running, the busy states), `GOLIVE_ACTIONS`,
+  `GOLIVE_STEPS` (11: the §3 steps + `deploy`, `finish`), `GOLIVE_RUN_STEPS` per action (start =
+  check … ready; check = dns, ready; sync-env = secrets, env; realtime = realtime, env),
+  `WAITING_FOR`, `GOLIVE_LIMITS`, `GOLIVE_RATE` (start 10/h, check 30/h), `goliveBlocks` (the
+  task slot's queue-expiry and dead-lease rule), `goliveActionProblem` (busy | golive-state per
+  action and state; a dead run counts as ended; once `liveAt` is set only sync-env/realtime
+  run; cancel = queued/running/waiting), `goliveStepsFor` (check keeps the steps before `dns`),
+  `goliveReadinessOf` (12 items; worker, builder, source-token, authenticator, customer-active
+  and vercel-token are read from `readinessOf` so both checklists agree; new-client, mongo-uri,
+  web-address, image (warn without a store), pos-admin, realtime (warn = realtime off; blocked
+  for a bad account id or a slug > 50)), `GOLIVE_GATES`, `goliveBlockedFor` (a realtime warning
+  blocks the `realtime` action).
+- `shared/deploy.js`: `verifyStateOf` → `bootstrap` (all flags ok except `health =
+  "not-deployed"`; older than 24 h → `stale`); `readinessOf` ctx `bootstrap` — only then does a
+  bootstrap verify satisfy `verified` (blocked otherwise: "no production deployment yet").
+- `shared/deploy-errors.js`: 32 go-live codes (§9 + W1's `label-invalid`, `label-not-single`,
+  `realtime-name`, `realtime-tenant-refused`, `realtime-secret-mismatch`, `realtime-envelope` +
+  W3's `realtime-bundle-refused`, `realtime-bundle-timeout`).
+- `shared/schemas.js`: `goliveSchemas` (run = start|realtime {rev, branch, sha, confirm} |
+  sync-env {rev, confirm}; check {rev}; deploy {rev, confirm}; cancel {requestId}); the POS setup
+  subdomain refuses `PLATFORM_LABELS` (D44) instead of the old 5 names.
+- `backend/lib/deploy-job.js`: `newGolive` (learned parts carried, run fields new), `goliveFree`
+  (filter part), `labelHolderFilter`. `backend/lib/deploy-view.js`: `goliveView` (no lease, no
+  `fp16`, `bundle8` instead of the digest, DNS names normalised, unknown codes → `internal`,
+  only known warnings), `goliveBadge` (status + waitingFor; also in `posView`).
+- `backend/modules/deploys.js`: the loading/readiness/enqueue helpers moved unchanged into an
+  exported `deployHelpers(deps)` (+ `factsOf`, readiness `extra`), used by both route modules;
+  `claimDeploySlot` and `claimTaskSlot` also require `goliveFree`.
+- `backend/modules/golive.js` (new, mounted after `deployRoutes`): GET (rev, golive view,
+  readiness, address preview, `allowed` per action, `deployBlocked`, busy, worker, freeze,
+  verifyState/verify); POST start/sync-env/realtime (deploy + step-up + typed slug; the typed
+  slug is checked before the 10/h limit; the sha is re-checked on the branch; start derives
+  `host`/`tenantId`/`rootDomain` = `<label>.sandbee.in`, label, `sandbee.in`, and bumps `rev` +
+  clears `verify` only when they change); POST check (credentials, 30/h, waiting only); POST
+  deploy = Unlock and deploy (D47: readiness of the block as unlocked + bootstrap, gate `deploy`
+  incl. not-frozen; sets the `/pos/unlock` fields without the local-lock attestation and
+  `pos.deploy.current` = a normal deploy job of the go-live commit; go-live → `deploying`, step
+  `deploy` running, `deployRequestId`; audits `pos.unlocked` + `pos.golive.deploy`); POST cancel
+  {requestId} (queued/waiting → cancelled now; running with a live lease → `cancelRequested`; a
+  dead lease → cancelled now with a new fence value). Every write = `{_id, pos.rev}` + deploy,
+  task and go-live slots free, in one transaction; audits `pos.golive.started|check|deploy|cancelled`.
+- `backend/modules/pos.js`: `idle()` refuses EVERY setup write (config, any secret, removal)
+  while a go-live run blocks (the deploy/task rules are unchanged); PUT config refuses a
+  subdomain that another installation's go-live holds on the apex (`label-taken`).
+- `backend/db.js`: partial `{"pos.golive.status": 1}`; unique partial
+  `{"pos.golive.address.label": 1}` (where it is a string).
+
+Deviations from the plan (recorded as D51 in `docs/POS-INTEGRATION.md`):
+
+1. **Label uniqueness**: not a unique index on `pos.subdomain` (§4) — existing blocks
+   (imported/hand-entered, other root domains) and the test fixtures share subdomains, so that
+   index would fail at boot or refuse valid data. Instead: a unique partial index on
+   `pos.golive.address.label` (decides two concurrent starts; a duplicate key → 409
+   `label-taken`) + the start's transactional holder query (another installation with that
+   go-live label, the same host, or the same label on `sandbee.in`) + the PUT config check. D44's
+   authoritative "foreign record" check (W5) still covers the local console's clients.
+2. The data model's `at` is stored as `requestedAt` (the shared queue-expiry rule reads it).
+3. Sync env, Update realtime Worker, Check DNS and Unlock and deploy refuse with 409
+   `golive-address` when `subdomain`/`host` no longer match the go-live's address (they would
+   write or check another tenant); Start re-derives the address.
+4. `/pos/unlock` and the normal deploy routes never accept `bootstrap`; only Unlock and deploy.
+5. `db-backup` (read-only on the client DB) is not blocked by a go-live run.
+
+**W3 (realtime bundle).**
+
+- `backend/worker/realtime-bundle.js` (new): `realtimeGitHubOf(c)` (builder repo + token,
+  workflow `realtime.yml`, run-name prefix `pos-realtime`; `backend/lib/github.js` gained the
+  `runPrefix` option, default `pos-build`), `fetchRealtimeBundle(ctx, {github, sha, dir, prior,
+  onDispatched, signal, t})`: reuses `prior` {id, runId, at} (takeover; found by run-name when
+  only the id is stored; a prior run whose artifact is gone is bundled once more), else
+  dispatches `{run_id, sha}` (`onDispatched` before and after, so W5 can store the run); polls
+  (queued > 10 min or total > 15 min → cancel + `realtime-bundle-timeout`); failed/cancelled →
+  `realtime-bundle-failed` (message from the failed step's name); provenance (path, `main`,
+  `workflow_dispatch`, run-name) and exactly one fresh, digest-carrying `pos-realtime-<id>`
+  artifact, else `realtime-bundle-refused`; download ≤ 2 MiB (digest checked by the adapter);
+  zip = exactly `index.js` (≤ 1 MiB) + `realtime.json` (≤ 16 KB); `parseRealtimeDescriptor` +
+  the bundle's sha256/size, else `realtime-descriptor`. Returns the bundle in memory, deletes the
+  GitHub artifact, removes every local file. Provider errors are left to W5's failure mapping
+  (`github-<code>`, as in the build lane).
+- `test/stage3-bundle.test.js` (new; the fake builder lives in the file, `test/fakes/builder.js`
+  stays W2's): 10 tests (happy path, takeover reuse by run id and by run-name, re-bundle when the
+  artifact is gone, inputs/token, failed/cancelled/slow runs, 4 provenance fields, 5 artifact
+  cases, 4 zip cases, 6 descriptor cases, the adapter's workflow path/inputs/run-name). A mutation
+  check (digest and branch checks removed) turns 2 of them red.
+- pos-builder (local branch `realtime` @ fb6f921 off `main` @ 60ceb7b, **not pushed** — waits for
+  the owner's OK): production `.github/workflows/realtime.yml` = the spike minus the `push`
+  trigger and `SPIKE_SHA`, `run_id` must be a UUID, `overwrite: false`, plus a `cleanup` job
+  (`always()`, the only job with `actions: write`) running `scripts/delete-artifacts.mjs` with
+  `IN_KIND=realtime` (deletes `rtsrc-<run_id>` only, never `pos-realtime-<run_id>`; build.yml's
+  src/raw cleanup unchanged; both kinds checked against a fake GitHub);
+  `scripts/realtime-descriptor.mjs` and `tools/wrangler/` from the spike; README section.
+  `build.yml` untouched.
+
+**Contract notes for W5.** Claim `pos.golive` with `GOLIVE_ACTIVE` (copy of `claimDeploy`); run
+`GOLIVE_RUN_STEPS[action]`; end in `waiting` (`waitingFor` dns|deploy) with no lease; write
+`cancelled` for `cancelRequested` between steps; observe `deploying` through `deployRequestId`
+and set `liveAt` once at `live`; store the bundle run from `onDispatched` (suggested
+`pos.golive.realtime.run = {id, runId, at}`); `backend/worker/rollout.js` `advance()` must add
+`goliveFree` to its deploy-slot claim (D41 both ways).
+
+Evidence (Windows dev PC, 2026-10-14, branch `p5-stage3`): `node --test test/stage3-api.test.js` →
+`# tests 27 # pass 27 # fail 0`; `node --test test/stage3-bundle.test.js` → `# tests 10 # pass 10
+# fail 0`; `npm test` → tests 814, suites 162, pass 808, fail 0, cancelled 0, skipped 6 (the
+Linux-only ones), todo 0 (777 before + 37 new); `npm run build` → `✓ built in 4.98s` (the existing
+> 500 kB chunk warning only; no frontend file imports the go-live yet, so no Playwright run).
+Changed files were formatted with prettier (only those files).

@@ -29,6 +29,15 @@ import {
   TARGET_STATES,
   rolloutCounts,
 } from "../../shared/rollout.js";
+import {
+  GOLIVE_ACTIONS,
+  GOLIVE_LIMITS,
+  GOLIVE_STATES,
+  GOLIVE_STEPS,
+  WAITING_FOR,
+  goliveBlocks,
+} from "../../shared/golive.js";
+import { ADDRESS_STATES } from "../../shared/web-address.js";
 
 export const cleanText = (value, max) => clean(value, max);
 const clean = (value, max) =>
@@ -299,6 +308,149 @@ export const workerView = (row, now = Date.now()) => {
   };
 };
 export const cutoverView = (deploy) => date(deploy?.cutoverAt);
+
+// ---- go-live (P5, shared/golive.js) ----------------------------------------------
+// The panel never sees the lease, the env fingerprints, the full bundle digest
+// or any unknown field; worker strings are capped and cleaned, codes outside
+// the table read as "internal". DNS names and answers are public data.
+const NAME_RE = /^[a-z0-9_@](?:[a-z0-9_.-]{0,251}[a-z0-9])?$/;
+const ENV_KEY_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+const dnsName = (value) => {
+  const v = String(value ?? "")
+    .toLowerCase()
+    .replace(/\.+$/, "");
+  return NAME_RE.test(v) && v.length <= GOLIVE_LIMITS.found ? v : "";
+};
+const recordView = (r) => ({
+  type: oneOf(["CNAME", "TXT"], r?.type, ""),
+  name: dnsName(r?.name),
+  value:
+    r?.type === "CNAME"
+      ? dnsName(r?.value)
+      : clean(r?.value, GOLIVE_LIMITS.found),
+});
+const answer = (part, many) =>
+  part
+    ? {
+        ok: part.ok === true ? true : part.ok === false ? false : null,
+        found: many
+          ? (Array.isArray(part.found) ? part.found : [])
+              .slice(0, GOLIVE_LIMITS.txtFound)
+              .map((v) => clean(v, GOLIVE_LIMITS.found))
+          : part.found
+            ? dnsName(part.found)
+            : null,
+      }
+    : null;
+const addressView = (a) =>
+  a
+    ? {
+        label: dnsName(a.label),
+        host: dnsName(a.host),
+        records: (Array.isArray(a.records) ? a.records : [])
+          .slice(0, GOLIVE_LIMITS.records)
+          .map(recordView),
+        cname: answer(a.cname, false),
+        txt: answer(a.txt, true),
+        verified: a.verified === true,
+        configured:
+          a.configured === true ? true : a.configured === false ? false : null,
+        tls: a.tls === true,
+        state: oneOf(ADDRESS_STATES, a.state, "pending-dns"),
+        checkedAt: date(a.checkedAt),
+      }
+    : null;
+const envView = (e) =>
+  e
+    ? {
+        at: date(e.at),
+        keys: (Array.isArray(e.keys) ? e.keys : [])
+          .filter((k) => ENV_KEY_RE.test(k?.name ?? ""))
+          .slice(0, GOLIVE_LIMITS.envKeys)
+          .map((k) => ({
+            name: k.name,
+            type: oneOf(["encrypted", "plain"], k.type, "encrypted"),
+            targets: (Array.isArray(k.targets) ? k.targets : []).filter((t) =>
+              ["production", "preview"].includes(t),
+            ),
+            set: k.set === true,
+            updatedAt: date(k.updatedAt),
+          })),
+      }
+    : null;
+const goliveStepView = (step) => ({
+  name: oneOf(GOLIVE_STEPS, step?.name, ""),
+  state: oneOf(STEP_STATES, step?.state, "pending"),
+  startedAt: date(step?.startedAt),
+  endedAt: date(step?.endedAt),
+  note: clean(step?.note, GOLIVE_LIMITS.note),
+});
+export function goliveView(golive, now = Date.now(), workerAt) {
+  if (!golive) return null;
+  const until = date(golive.lease?.until);
+  return {
+    status: oneOf(GOLIVE_STATES, golive.status, "failed"),
+    action: oneOf(GOLIVE_ACTIONS, golive.action, "start"),
+    requestId: clean(golive.requestId, 64),
+    by: person(golive.by),
+    requestedAt: date(golive.requestedAt),
+    startedAt: date(golive.startedAt),
+    endedAt: date(golive.endedAt),
+    branch: isBranch(golive.branch) ? golive.branch : "",
+    sha: isSha(golive.sha) ? golive.sha : "",
+    step: oneOf(["queued", ...GOLIVE_STEPS], golive.step, "queued"),
+    steps: Array.isArray(golive.steps)
+      ? golive.steps.slice(0, GOLIVE_LIMITS.steps).map(goliveStepView)
+      : [],
+    waitingFor:
+      golive.status === "waiting"
+        ? oneOf(WAITING_FOR, golive.waitingFor)
+        : null,
+    stalled:
+      golive.status === "running" && Boolean(until) && until.getTime() < now,
+    blocking: goliveBlocks(golive, now, workerAt),
+    cancelRequested: golive.cancelRequested === true,
+    error: golive.error
+      ? {
+          step: oneOf(GOLIVE_STEPS, golive.error.step, ""),
+          code: knownOr(golive.error.code),
+          message: clean(golive.error.message, GOLIVE_LIMITS.message),
+        }
+      : null,
+    warnings: (Array.isArray(golive.warnings) ? golive.warnings : [])
+      .filter((c) => ERROR_CODE_RE.test(c ?? "") && isKnownCode(c))
+      .slice(0, GOLIVE_LIMITS.warnings),
+    address: addressView(golive.address),
+    env: envView(golive.env),
+    realtime: golive.realtime
+      ? {
+          bundle8: key8(golive.realtime.bundleSha256),
+          sha7: sha7(golive.realtime.sha),
+          deployedAt: date(golive.realtime.deployedAt),
+          verifiedAt: date(golive.realtime.verifiedAt),
+        }
+      : null,
+    admin: golive.admin
+      ? {
+          state: oneOf(["seeded", "exists"], golive.admin.state),
+          at: date(golive.admin.at),
+        }
+      : null,
+    deployRequestId: clean(golive.deployRequestId, 64),
+    liveAt: date(golive.liveAt),
+  };
+}
+// What the POS settings view and the fleet need to know (tab, badge).
+export const goliveBadge = (golive) =>
+  golive
+    ? {
+        status: oneOf(GOLIVE_STATES, golive.status, "failed"),
+        waitingFor:
+          golive.status === "waiting"
+            ? oneOf(WAITING_FOR, golive.waitingFor)
+            : null,
+      }
+    : null;
 
 // ---- rollout (P3) ---------------------------------------------------------------
 // The plan and the start are bound by the commit AND the exact client order.

@@ -41,6 +41,7 @@ import {
 import {
   cancelFields,
   freeSlot,
+  goliveFree,
   leaseless,
   newBuildRow,
   newJob,
@@ -80,6 +81,7 @@ import {
 } from "../lib/deploy-view.js";
 import { fleetUsageStalled, fleetUsageView } from "../lib/usage-view.js";
 import { busyError } from "./pos.js";
+import { goliveBlocks } from "../../shared/golive.js";
 
 export { deployView };
 // {a: 1} -> {"<path>.a": 1}
@@ -87,13 +89,13 @@ const prefixed = (path, fields) =>
   Object.fromEntries(
     Object.entries(fields).map(([key, value]) => [`${path}.${key}`, value]),
   );
-const conflict = (code, message, items) => {
+export const conflict = (code, message, items) => {
   const error = new HttpError(409, message);
   error.apiCode = code;
   if (items) error.items = items;
   return error;
 };
-const failure = (error) => {
+export const failure = (error) => {
   if (error instanceof ProviderError) {
     const out = new HttpError(
       502,
@@ -107,7 +109,7 @@ const failure = (error) => {
 };
 // {on, reason, by, at}: reason is free text typed by the owner, so it is
 // cleaned (control and bidi characters) and capped; nothing else is exposed.
-const freezeView = (row) => {
+export const freezeView = (row) => {
   const on = row?.on === true;
   const text = cleanText(row?.reason, 200);
   return {
@@ -122,9 +124,10 @@ const freezeView = (row) => {
     at: on ? (row.at ?? null) : null,
   };
 };
-export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
-  const router = Router(),
-    installations = db.collection("installations"),
+// The loading, readiness and enqueue helpers of the deploy routes. The go-live
+// routes (backend/modules/golive.js) use the same ones, so both gate alike.
+export function deployHelpers({ db, c, s3, github, buildCache }) {
+  const installations = db.collection("installations"),
     state = db.collection("system_state");
   const gh =
     github ??
@@ -142,7 +145,6 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
       : buildCache;
   // Short-lived caches: nothing here is secret (names, shas, headlines).
   const memo = new LRUCache({ max: 500, ttl: 60000 });
-  const compareMemo = new LRUCache({ max: 1000, ttl: 600000 });
   async function remember(key, load) {
     if (memo.has(key)) return memo.get(key);
     const pending = Promise.resolve().then(load);
@@ -154,10 +156,6 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
       throw error;
     }
   }
-  router.use(auth.requireAuth);
-  const iid = (req) => z.uuid().parse(req.params.id);
-  const body = (schema, req) => schema.parse(req.body ?? {});
-
   // ---- loading and readiness -------------------------------------------------
   async function loadRow(id, session) {
     const row = await installations.findOne(
@@ -179,7 +177,8 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
     ensure(row.pos, 404, "POS settings have not been set up.");
     return row;
   }
-  async function readiness(row, staff, session) {
+  // The facts every readiness check reads (readinessOf ctx, shared/deploy.js).
+  async function factsOf(row, staff, session) {
     const [worker, freeze, customer] = await Promise.all([
       state.findOne({ _id: "pos-worker" }, { session }),
       state.findOne({ _id: "pos-deploy-freeze" }, { session }),
@@ -199,7 +198,7 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
     return {
       worker,
       freeze,
-      view: readinessOf({
+      ctx: {
         now: Date.now(),
         installationId: row._id,
         customerId: row.customerId,
@@ -215,8 +214,14 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
         inputsOk,
         customerStatus: customer?.status,
         installationStatus: row.status,
-      }),
+      },
     };
+  }
+  // `extra` overrides facts (go-live Unlock and deploy: the block as it will
+  // be once unlocked, and bootstrap, D47).
+  async function readiness(row, staff, session, extra = {}) {
+    const { worker, freeze, ctx } = await factsOf(row, staff, session);
+    return { worker, freeze, view: readinessOf({ ...ctx, ...extra }) };
   }
   // 409 {code:"not-ready", items} when a required item of the gate blocks.
   const gate = (view, name) => {
@@ -230,7 +235,6 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
       400,
       "Type the installation slug to confirm.",
     );
-
   // ---- GitHub and build cache ------------------------------------------------
   const workerRow = () => state.findOne({ _id: "pos-worker" });
   // The builder descriptor the worker last verified, from its heartbeat; null
@@ -268,34 +272,6 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
     } catch {
       return null;
     }
-  }
-  // cached | will-build | unavailable | off
-  async function cacheState(sha, key) {
-    if (!cacheStore) return { state: "off", builtAt: null };
-    if (!key) return { state: "unavailable", builtAt: null };
-    try {
-      const found = await remember(`cache:${sha}:${key}`, () =>
-        cacheStore.lookup({ sha, buildKey: key }),
-      );
-      return found.state === "hit"
-        ? { state: "cached", builtAt: new Date(found.manifest.builtAt) }
-        : { state: "will-build", builtAt: null };
-    } catch {
-      return { state: "unavailable", builtAt: null };
-    }
-  }
-  async function headOf(branch) {
-    return remember(`head:${branch}`, () => gh.branchHead(branch));
-  }
-  // Promises are stored, so rows asking for the same pair at once share one call.
-  function compareOf(base, head) {
-    const key = `${base}:${head}`;
-    if (!compareMemo.has(key)) {
-      const pending = Promise.resolve().then(() => gh.compare(base, head));
-      compareMemo.set(key, pending);
-      pending.catch(() => compareMemo.delete(key));
-    }
-    return compareMemo.get(key);
   }
   // Builder review L3: the sha must be reachable from the branch right now.
   async function verifySha(branch, sha) {
@@ -336,6 +312,112 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
       "sha-not-on-branch",
       "That commit is not on the selected branch.",
     );
+  }
+  // ---- enqueue ---------------------------------------------------------------
+  const heartbeatAt = async (session) =>
+    (
+      await state.findOne(
+        { _id: "pos-worker" },
+        { session, projection: { at: 1 } },
+      )
+    )?.at ?? null;
+  async function claimDeploySlot(session, row, job, now) {
+    const workerAt = await heartbeatAt(session);
+    const done = await installations.updateOne(
+      {
+        _id: row._id,
+        "pos.rev": row.pos.rev,
+        "pos.deployLock": false,
+        // No deploy job and no go-live run may still hold the installation.
+        $and: [
+          freeSlot("pos.deploy.current", ACTIVE_STATES, now, workerAt),
+          goliveFree(now, workerAt),
+        ],
+      },
+      { $set: { "pos.deploy.current": job } },
+      { session },
+    );
+    if (done.matchedCount !== 1) {
+      const now2 = await installations.findOne(
+        { _id: row._id },
+        { session, projection: { pos: 1 } },
+      );
+      if (jobBlocks(now2?.pos?.deploy?.current, Date.now(), workerAt))
+        throw busyError("A deploy is already running for this installation.");
+      if (goliveBlocks(now2?.pos?.golive, Date.now(), workerAt))
+        throw busyError("A go-live run is active for this installation.");
+      throw staleError("POS settings changed. Reload and try again.");
+    }
+  }
+  return {
+    gh,
+    cacheStore,
+    remember,
+    loadRow,
+    factsOf,
+    readiness,
+    gate,
+    typed,
+    workerRow,
+    builderOf,
+    buildKeyFor,
+    verifySha,
+    heartbeatAt,
+    claimDeploySlot,
+  };
+}
+export function deployRoutes(deps) {
+  const { db, client, c, auth, s3 } = deps;
+  const router = Router(),
+    installations = db.collection("installations"),
+    state = db.collection("system_state");
+  const {
+    gh,
+    cacheStore,
+    remember,
+    loadRow,
+    readiness,
+    gate,
+    typed,
+    workerRow,
+    buildKeyFor,
+    verifySha,
+    heartbeatAt,
+    claimDeploySlot,
+  } = deployHelpers(deps);
+  const compareMemo = new LRUCache({ max: 1000, ttl: 600000 });
+  router.use(auth.requireAuth);
+  const iid = (req) => z.uuid().parse(req.params.id);
+  const body = (schema, req) => schema.parse(req.body ?? {});
+
+  // ---- GitHub and build cache ------------------------------------------------
+  // cached | will-build | unavailable | off
+  async function cacheState(sha, key) {
+    if (!cacheStore) return { state: "off", builtAt: null };
+    if (!key) return { state: "unavailable", builtAt: null };
+    try {
+      const found = await remember(`cache:${sha}:${key}`, () =>
+        cacheStore.lookup({ sha, buildKey: key }),
+      );
+      return found.state === "hit"
+        ? { state: "cached", builtAt: new Date(found.manifest.builtAt) }
+        : { state: "will-build", builtAt: null };
+    } catch {
+      return { state: "unavailable", builtAt: null };
+    }
+  }
+  async function headOf(branch) {
+    return remember(`head:${branch}`, () => gh.branchHead(branch));
+  }
+  // Promises are stored, so rows asking for the same pair at once share one call.
+  function compareOf(base, head) {
+    const key = `${base}:${head}`;
+    if (!compareMemo.has(key)) {
+      const pending = Promise.resolve().then(() => gh.compare(base, head));
+      compareMemo.set(key, pending);
+      pending.catch(() => compareMemo.delete(key));
+    }
+    return compareMemo.get(key);
   }
 
   // ---- state for polling -----------------------------------------------------
@@ -445,35 +527,6 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
   );
 
   // ---- enqueue ---------------------------------------------------------------
-  const heartbeatAt = async (session) =>
-    (
-      await state.findOne(
-        { _id: "pos-worker" },
-        { session, projection: { at: 1 } },
-      )
-    )?.at ?? null;
-  async function claimDeploySlot(session, row, job, now) {
-    const workerAt = await heartbeatAt(session);
-    const done = await installations.updateOne(
-      {
-        _id: row._id,
-        "pos.rev": row.pos.rev,
-        "pos.deployLock": false,
-        ...freeSlot("pos.deploy.current", ACTIVE_STATES, now, workerAt),
-      },
-      { $set: { "pos.deploy.current": job } },
-      { session },
-    );
-    if (done.matchedCount !== 1) {
-      const now2 = await installations.findOne(
-        { _id: row._id },
-        { session, projection: { pos: 1 } },
-      );
-      if (jobBlocks(now2?.pos?.deploy?.current, Date.now(), workerAt))
-        throw busyError("A deploy is already running for this installation.");
-      throw staleError("POS settings changed. Reload and try again.");
-    }
-  }
   router.post(
     "/installations/:id/pos/deploys",
     auth.permit("deploy"),
@@ -807,13 +860,19 @@ export function deployRoutes({ db, client, c, auth, s3, github, buildCache }) {
       {
         _id: id,
         ...extra,
-        ...freeSlot("pos.task", ACTIVE_TASK_STATES, now, workerAt),
+        // No task and no go-live run may still hold the installation (D41).
+        $and: [
+          freeSlot("pos.task", ACTIVE_TASK_STATES, now, workerAt),
+          goliveFree(now, workerAt),
+        ],
       },
       { $set: { "pos.task": task } },
       { session },
     );
     if (done.matchedCount !== 1)
-      throw busyError("Another task is already running for this installation.");
+      throw busyError(
+        "Another task or a go-live run is active for this installation.",
+      );
   }
   async function enqueueTask(
     req,

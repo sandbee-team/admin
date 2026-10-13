@@ -2,6 +2,7 @@ import { z } from "zod";
 import { MODELS, INSTALL_STATES, CHECKS } from "./policy.js";
 import { PROVIDERS } from "./product-models.js";
 import { BRANCH_RE, SHA_RE } from "./deploy.js";
+import { PLATFORM_LABELS, SUBDOMAIN_RE } from "./web-address.js";
 const text = (max) => z.string().trim().max(max);
 const name = text(120).min(2);
 const id = z.uuid();
@@ -234,12 +235,9 @@ export const POS_SECRET_FIELDS = [
   "generated.realtimePublishSecret",
   "posAdmin.password",
 ];
-// Copied (not imported) from the go-live tool's validation so both agree.
-const RESERVED_SUBDOMAINS = ["www", "app", "api", "admin", "hub"];
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,50}[a-z0-9])?$/;
 const USERNAME_RE = /^[a-z0-9][a-z0-9._-]{2,31}$/;
 const MONGO_URI_WITH_DB_RE = /^mongodb(\+srv)?:\/\/[^/?]+\/[^/?]+/;
-const SUBDOMAIN_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const APEX_RE =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const PLACEHOLDER_RE = /<[^<>\s]+>/;
@@ -281,8 +279,9 @@ export const posConfigSchema = z
     slug: z
       .string()
       .regex(SLUG_RE, "Use lowercase letters, digits and hyphens (max 52)."),
+    // The go-live label rules (D44, shared/web-address.js PLATFORM_LABELS).
     subdomain: posPattern(SUBDOMAIN_RE, "Use one DNS label.").refine(
-      (v) => !RESERVED_SUBDOMAINS.includes(v),
+      (v) => !PLATFORM_LABELS.includes(v),
       "This subdomain is reserved.",
     ),
     host: posPattern(APEX_RE, "Use a lowercase host name.", 253),
@@ -631,6 +630,43 @@ export const deploySchemas = {
       light: z.literal("1").optional(),
     })
     .strict(),
+};
+
+// ---- go-live of a new client (P5 Stage 3) ------------------------------------
+// `rev` binds every request to the POS settings the owner saw; `confirm` is
+// the typed slug. start/realtime name the commit (re-checked on the branch).
+const goliveRev = z.number().int().min(1);
+export const goliveSchemas = {
+  run: z.discriminatedUnion("action", [
+    z
+      .object({
+        action: z.literal("start"),
+        rev: goliveRev,
+        branch: deployBranch,
+        sha: deploySha,
+        confirm: slugConfirm,
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("realtime"),
+        rev: goliveRev,
+        branch: deployBranch,
+        sha: deploySha,
+        confirm: slugConfirm,
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("sync-env"),
+        rev: goliveRev,
+        confirm: slugConfirm,
+      })
+      .strict(),
+  ]),
+  check: z.object({ rev: goliveRev }).strict(),
+  deploy: z.object({ rev: goliveRev, confirm: slugConfirm }).strict(),
+  cancel: z.object({ requestId: id }).strict(),
 };
 
 // ---- POS usage checks (Phase 2) ---------------------------------------------

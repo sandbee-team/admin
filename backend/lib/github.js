@@ -73,6 +73,8 @@ export function createGitHub({
   builderToken = "",
   workflow = "build.yml",
   ref = "main",
+  // The workflow's run-name prefix: `<runPrefix> <id>` (realtime.yml: P5).
+  runPrefix = "pos-build",
   fetch: fetchImpl = globalThis.fetch,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now = () => Date.now(),
@@ -176,7 +178,7 @@ export function createGitHub({
     },
     // Starts the builder workflow. With return_run_details the 200 body has the
     // run id; if it is missing (204 or odd body) the run is found by its
-    // run-name `pos-build <buildId>`.
+    // run-name `<runPrefix> <buildId>`.
     async dispatch({ buildId, inputs, signal }) {
       if (!BUILD_ID_RE.test(buildId ?? "")) throw bad();
       const entries = Object.entries(inputs ?? {});
@@ -240,7 +242,7 @@ export function createGitHub({
         );
         const run = (json?.workflow_runs ?? []).find(
           (r) =>
-            r?.display_title === `pos-build ${buildId}` &&
+            r?.display_title === `${runPrefix} ${buildId}` &&
             Number.isSafeInteger(r?.id),
         );
         if (run) return { runId: run.id, htmlUrl: runUrl(run.id) };

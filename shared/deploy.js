@@ -142,6 +142,10 @@ export const sha7 = (sha) => (isSha(sha) ? sha.slice(0, 7) : "");
 //   createdAt, target, state}], total, keep}), error {code, message <= 160}
 // installations.pos.verify = {at, by, vercel, project, env, mongo,
 //   cloudflare, health}, each "ok" | a fixed code | null (skipped).
+//   health "not-deployed" = the project has no production deployment yet
+//   (verifyStateOf "bootstrap", P5 D47).
+// installations.pos.golive: the go-live of a new client (P5), see
+//   shared/golive.js. While it is queued/running the installation is busy.
 //
 // system_state rows:
 //   pos-worker        heartbeat: {_id, at, workerId, version, cliVersion,
@@ -265,7 +269,9 @@ export function taskBlocks(task, now = Date.now(), workerAt) {
 //   sources{source (API source token), builder (the WORKER's builder token,
 //   from its heartbeat builderConfigured)}, cacheConfigured,
 //   authenticator (staff has TOTP), freeze ({on} | null), pos (stored pos),
-//   inputsOk (build inputs derivable), customerStatus, installationStatus}
+//   inputsOk (build inputs derivable), customerStatus, installationStatus,
+//   bootstrap (true only for Unlock and deploy of a go-live waiting for its
+//   first deploy: a "bootstrap" verify then counts as verified, D47)}
 // Item: {id, group, required, state: ok|blocked|warn, reason, fix}
 const link = (to, label) => ({ kind: "link", to, label });
 const note = (value) => ({ kind: "text", text: value });
@@ -303,15 +309,18 @@ export const GATES = {
   ],
 };
 // "ok" | "failed" (a flag is not ok) | "stale" (all ok but older than 24 h)
-// | "missing" (never verified).
+// | "missing" (never verified) | "bootstrap" (P5 D47: every flag ok except
+// health = "not-deployed", which Verify writes only for a project without a
+// production deployment; only Unlock and deploy of a go-live accepts it).
 export function verifyStateOf(verify, now = Date.now()) {
   if (!verify) return "missing";
-  const flagsOk =
-    ["vercel", "project", "env", "mongo", "health"].every(
+  const base =
+    ["vercel", "project", "env", "mongo"].every(
       (key) => verify[key] === "ok",
     ) && [undefined, null, "ok"].includes(verify.cloudflare);
-  if (!flagsOk) return "failed";
-  return now - ms(verify.at) <= VERIFY_MAX_AGE_MS ? "ok" : "stale";
+  if (!base || !["ok", "not-deployed"].includes(verify.health)) return "failed";
+  if (now - ms(verify.at) > VERIFY_MAX_AGE_MS) return "stale";
+  return verify.health === "ok" ? "ok" : "bootstrap";
 }
 export function readinessOf(ctx) {
   const now = ctx.now ?? Date.now();
@@ -394,7 +403,12 @@ export function readinessOf(ctx) {
               "The last verification is older than 24 hours.",
               note("Run Verify now."),
             )
-          : OK,
+          : verified === "bootstrap" && ctx.bootstrap !== true
+            ? no(
+                "The client has no production deployment yet.",
+                note("Finish its go-live with Unlock and deploy."),
+              )
+            : OK,
     host: pos?.host
       ? OK
       : no("The web address is not set.", link(`${base}#host`, "Set host")),

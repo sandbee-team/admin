@@ -159,6 +159,23 @@ export async function indexes(db) {
         { kind: 1, status: 1 },
         { partialFilterExpression: { kind: "build" } },
       ),
+    // P5 go-live: the worker claims by status; one label per installation
+    // (backs the API's label check against two concurrent starts, D44).
+    db
+      .collection("installations")
+      .createIndex(
+        { "pos.golive.status": 1 },
+        { partialFilterExpression: { "pos.golive.status": { $exists: true } } },
+      ),
+    db.collection("installations").createIndex(
+      { "pos.golive.address.label": 1 },
+      {
+        unique: true,
+        partialFilterExpression: {
+          "pos.golive.address.label": { $type: "string" },
+        },
+      },
+    ),
   ]);
 }
 export async function transaction(client, operation) {

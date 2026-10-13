@@ -9,17 +9,29 @@ import { transaction } from "../db.js";
 import { authorizeWrite } from "./records.js";
 import {
   deployView,
+  goliveBadge,
   nextPublicView,
   taskView,
   verifyView,
 } from "../lib/deploy-view.js";
 import { jobBlocks, taskBlocks } from "../../shared/deploy.js";
+import { goliveBlocks } from "../../shared/golive.js";
+import { PLATFORM_APEX } from "../../shared/web-address.js";
 
 // Settings that a running job reads are frozen while it is active.
 const JOB_FIELDS = ["vercel.token", "mongo.uri", "cloudflare.token"];
 export const busyError = (message) => {
   const error = new HttpError(409, message);
   error.apiCode = "busy";
+  return error;
+};
+// 409 when another installation holds the web address label (P5, D44).
+export const labelTakenError = () => {
+  const error = new HttpError(
+    409,
+    "Another installation already uses this web address.",
+  );
+  error.apiCode = "label-taken";
   return error;
 };
 // 409 error for a gate that names readiness item ids (shared with deploys.js).
@@ -106,6 +118,8 @@ export const posView = (pos) => ({
   deploy: deployView(pos.deploy),
   task: taskView(pos.task),
   verify: verifyView(pos.verify),
+  // The Go live tab and badge only (full view: GET .../pos/golive).
+  golive: goliveBadge(pos.golive),
   secrets: Object.fromEntries(
     POS_SECRET_FIELDS.map((field) => [
       field,
@@ -165,13 +179,20 @@ export function posRoutes({ db, client, c, auth }) {
     installations = db.collection("installations");
   router.use(auth.requireAuth);
   const iid = (req) => z.uuid().parse(req.params.id);
-  // 409 busy while a deploy job or a task (verify, purge, backup) is active.
-  async function idle(pos, session) {
+  // 409 busy while a deploy job or a task (verify, purge, backup) is active
+  // (`jobs`), and for every setup write while a go-live run is queued or
+  // running (it reads the whole block, D41).
+  async function idle(pos, session, { jobs = true } = {}) {
     const worker = await db
       .collection("system_state")
       .findOne({ _id: "pos-worker" }, { session, projection: { at: 1 } });
     const workerAt = worker?.at ?? null;
     const now = Date.now();
+    if (goliveBlocks(pos.golive, now, workerAt))
+      throw busyError(
+        "A go-live run is active for this installation. Wait for it or cancel it.",
+      );
+    if (!jobs) return;
     if (jobBlocks(pos.deploy?.current, now, workerAt))
       throw busyError(
         "A deploy is running for this installation. Wait for it to finish or cancel it.",
@@ -229,6 +250,20 @@ export function posRoutes({ db, client, c, auth }) {
       const view = await transaction(client, async (session) => {
         await authorizeWrite(db, session, req.staff, "credentials");
         const row = await load(id, session);
+        // A label another installation's go-live holds cannot be entered for
+        // a client on the platform apex (D44; the go-live start re-checks).
+        if (
+          config.subdomain &&
+          ["", PLATFORM_APEX].includes(config.rootDomain) &&
+          (await installations.findOne(
+            {
+              _id: { $ne: id },
+              "pos.golive.address.label": config.subdomain,
+            },
+            { session, projection: { _id: 1 } },
+          ))
+        )
+          throw labelTakenError();
         if (rev === 0) {
           if (row.pos) throw staleError("POS settings already exist. Reload.");
           await installations.updateOne(
@@ -293,7 +328,7 @@ export function posRoutes({ db, client, c, auth }) {
       const view = await transaction(client, async (session) => {
         await authorizeWrite(db, session, req.staff, "credentials");
         const pos = requirePos(await load(id, session), rev);
-        if (JOB_FIELDS.includes(field)) await idle(pos, session);
+        await idle(pos, session, { jobs: JOB_FIELDS.includes(field) });
         if (field === "cloudflare.token")
           ensure(pos.cloudflare, 409, "Save the Cloudflare details first.");
         if (field === "image.keys") {
@@ -351,7 +386,7 @@ export function posRoutes({ db, client, c, auth }) {
       const view = await transaction(client, async (session) => {
         await authorizeWrite(db, session, req.staff, "secrets");
         const pos = requirePos(await load(id, session), rev);
-        if (JOB_FIELDS.includes(field)) await idle(pos, session);
+        await idle(pos, session, { jobs: JOB_FIELDS.includes(field) });
         ensure(at(pos, field), 404, "Nothing is stored in this field.");
         const done = await installations.updateOne(
           guarded(id, rev),
