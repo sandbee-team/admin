@@ -363,8 +363,10 @@ Evidence (Windows dev PC): `node --test test/stage3-lib.test.js` → `# tests 50
 (untouched/off/on) × 2 tenants (17-21 keys, same keys/order/types/targets/values), `mintSecrets`,
 `realtimeEnvOf`, `realtimeOffEnv`, `signedPublishRequest`, `workerNameOf`, `parseWorkerUrl`,
 `webAddressRecords`, `VERCEL_CNAME_RE`, `SUBDOMAIN_RE`, `isStrongPassword`, label input (admin
-also refuses `store`, `pos`, `wa` — D44). **Full `npm test` was not run in session 2** (the agent's
-permission system refused it); it is the first step of session 3.
+also refuses `store`, `pos`, `wa` — D44). Full suite on `p5-stage3` (owner ran it on the dev PC,
+2026-10-14; the agent's permission system refused it): `npm test` → tests 777, suites 151, pass 771,
+fail 0, cancelled 0, skipped 6 (the Linux-only ones), todo 0 (727 of P3 + 50 new). `npm run build`
+→ `✓ built in 9.08s` (the existing > 500 kB chunk warning only; no frontend file imports W1 yet).
 
 **Spikes.**
 
