@@ -379,11 +379,18 @@ permission system refused it); it is the first step of session 3.
   `uploadMetadataOf` produced the 3 bindings + `{new_tag: v1, steps: [{new_sqlite_classes:
   [CafeRoom]}]}`. wrangler also writes `index.js.map` (sources inside) and `README.md`: neither
   is shipped; `index.js` keeps a `sourceMappingURL` comment (harmless without the map).
+- **S2 bundle on GitHub done (2026-10-14):** branch `spike-realtime` @ f92d4c3 on origin; the
+  `realtime` run ("pos-realtime spike", push trigger) is green and its summary reads
+  `realtime-descriptor: ok bytes=6299 sha256=d2a7c079f566084a8b5228c459cf67f64d8c91059558930f102ad2e9df0dbe31
+  date=2026-01-01 binding=CAFE_ROOM migrations=v1` — byte-identical to the dev PC bundle, so the
+  pinned wrangler bundle is deterministic across Linux and Windows (the digest is a stable
+  redeploy key for D46). Sparse checkout + `npm ci --ignore-scripts` + dry-run work on the runner
+  with no Cloudflare credentials.
 - **S3 done (2026-10-13, owner on the server, `~/admin`, worker container):**
   `S3 ns=2 ns-ips=2 authoritative-udp=ok(1) tcp53=ok` — the worker reaches GoDaddy's nameservers
   directly over UDP and TCP 53, so the authoritative DNS check (D44) works from production; no
   egress change needed. (Same result on the dev PC.)
-- Owner-pending (the agent's push and the tokens were not available): push `spike-realtime`, set
+- Owner-pending (the tokens were not available to the agent): set
   `SPIKE_VERCEL_TOKEN`/`SPIKE_CF_TOKEN`, run S1 (`node tools/spikes/p5-vercel.mjs create`, enter the
   printed records at GoDaddy, `… check`) and S2 upload (`node tools/spikes/p5-realtime.mjs <dir>`).
   W2/W3 wait for S1/S2.
