@@ -15,6 +15,8 @@ import {
 import {
   BillToFields,
   DocumentTable,
+  GstTextWarning,
+  ReadinessNotice,
   cleanBillTo,
   money,
 } from "../components/sales";
@@ -59,7 +61,7 @@ function SalesOverview({ customerId, user }) {
       <PageTitle
         eyebrow="CUSTOMER"
         title="Sales"
-        description="Deals, quotations, agreements and tax invoices for this customer."
+        description="Deals, quotations, agreements and invoices for this customer."
         action={
           <Button onClick={() => setCreating(true)}>
             <Plus size={16} />
@@ -81,15 +83,10 @@ function SalesOverview({ customerId, user }) {
       <Resource resource={resource}>
         {(data) => (
           <div className="sales-stack">
-            {!data.ready.quotation && (
-              <div className="notice notice-warning">
-                <span>
-                  The company profile is incomplete, so no document can be
-                  issued yet.{" "}
-                  <Link href="/sales-settings">Open Sales settings</Link>
-                </span>
-              </div>
-            )}
+            <ReadinessNotice
+              ready={data.ready}
+              intro="The company profile is incomplete, so some documents cannot be issued yet. "
+            />
             {data.limited && (
               <p className="small subtle">
                 Showing the newest 200 deals and documents.
@@ -163,6 +160,7 @@ function SalesOverview({ customerId, user }) {
             <ProfileForm
               customerId={customerId}
               initial={data.profile}
+              registered={data.ready.registered}
               templates={data.templates}
               user={user}
               onStale={() => {
@@ -243,6 +241,7 @@ function NewDealModal({ customerId, onClose, onCreated }) {
 function ProfileForm({
   customerId,
   initial,
+  registered,
   templates,
   user,
   onSaved,
@@ -303,6 +302,7 @@ function ProfileForm({
         <BillToFields
           value={form.billTo}
           prefix="Billing"
+          stateRequired={registered}
           onChange={(billTo) => change({ ...form, billTo })}
         />
       </section>
@@ -361,6 +361,12 @@ function ProfileForm({
                     maxLength={key === "agreementBody" ? 20000 : 4000}
                   />
                 </Field>
+              )}
+              {custom && (
+                <GstTextWarning
+                  registered={registered}
+                  text={form.overrides[key]}
+                />
               )}
             </fieldset>
           );

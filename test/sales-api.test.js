@@ -2,11 +2,12 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { request as httpRequest } from "node:http";
 import { BSON } from "mongodb";
-import { startApp, VAULT_KEY, BACKUP_KEY } from "./helpers.js";
+import { startApp, assertNoSecrets, VAULT_KEY, BACKUP_KEY } from "./helpers.js";
 import { createFakeS3 } from "./fake-s3.js";
 import { digest, encrypt } from "../backend/lib/crypto.js";
 import { makeSnapshot, parseSnapshot } from "../backend/lib/snapshot.js";
 import { fyOf } from "../shared/sales.js";
+import { LEGACY_DEFAULT_TEMPLATES } from "../shared/sales-schemas.js";
 import {
   LOGO,
   SIGNATURE,
@@ -93,8 +94,12 @@ function rawUpload(path, session, length) {
     r.flushHeaders();
   });
 }
+// The sample company is GST-registered; the jurisdiction is only needed for
+// agreements.
+const COMPANY_J = { ...COMPANY, jurisdiction: "Pune" };
 const SETTINGS = {
-  company: COMPANY,
+  company: COMPANY_J,
+  gst: { registered: true },
   bank: BANK,
   signatory: { name: "A. Founder", title: "Director" },
 };
@@ -214,7 +219,8 @@ describe("sales: permissions and settings", () => {
     const refused = await issue(d, "quotation");
     assert.equal(refused.status, 409);
     assert.equal(refused.data.code, "settings-incomplete");
-    assert.deepEqual(refused.data.items, ["legal-name", "address", "state"]);
+    // Not registered (the default): name, e-mail and phone only.
+    assert.deepEqual(refused.data.items, ["legal-name", "email", "phone"]);
     await ctx.db.collection("sales_deals").deleteOne({ _id: d.id });
   });
   it("validates settings without echoing values; stale rev is 409", async () => {
@@ -225,7 +231,7 @@ describe("sales: permissions and settings", () => {
       body: {
         rev: 0,
         ...SETTINGS,
-        company: { ...COMPANY, gstin: "27AAACS9999K1ZX" },
+        company: { ...COMPANY_J, gstin: "27AAACS9999K1ZX" },
       },
     });
     assert.equal(bad.status, 400);
@@ -246,15 +252,16 @@ describe("sales: permissions and settings", () => {
     const saved = await req("/sales/settings", {
       method: "PUT",
       session: owner,
-      body: { rev: 0, ...SETTINGS, company: { ...COMPANY, gstin: "" } },
+      body: { rev: 0, ...SETTINGS, company: { ...COMPANY_J, gstin: "" } },
     });
     assert.equal(saved.status, 200, JSON.stringify(saved.data));
     assert.equal(saved.data.rev, 1);
     assert.deepEqual(saved.data.ready, {
+      registered: true,
       quotation: true,
       agreement: true,
       invoice: false,
-      missing: ["gstin"],
+      missing: { quotation: [], agreement: [], invoice: ["gstin"] },
     });
     const stale = await req("/sales/settings", {
       method: "PUT",
@@ -443,7 +450,7 @@ describe("sales: deals and documents", () => {
         rev: s.rev,
         ...SETTINGS,
         templates: { ...s.templates, quotationTerms: "NEW GLOBAL TERMS" },
-        company: { ...COMPANY, legalName: "Renamed Pvt Ltd" },
+        company: { ...COMPANY_J, legalName: "Renamed Pvt Ltd" },
       },
     });
     assert.equal(changed.status, 200);
@@ -516,7 +523,8 @@ describe("sales: deals and documents", () => {
       "TAX INVOICE",
       `INV/${FY}/0001`,
       `QT/${FY}/0001 v2`,
-      "GSTIN: 27AAACS9999K1ZD",
+      "GSTIN",
+      "27AAACS9999K1ZD",
       "Reverse charge",
       "854.15",
       "11,199.00",
@@ -1152,5 +1160,399 @@ describe("sales: backups", () => {
         BACKUP_KEY,
       ),
     );
+  });
+});
+
+describe("sales: a seller without GST registration", () => {
+  let C;
+  const NAME_ONLY = {
+    company: {
+      legalName: "Sandbee Technologies",
+      email: "hello@sandbee.example",
+      phone: "+91 98000 00000",
+    },
+    gst: { registered: false },
+  };
+  const put = async (body) => {
+    await stepUp(owner);
+    const current = (await req("/sales/settings", { session: admin })).data;
+    const done = await req("/sales/settings", {
+      method: "PUT",
+      session: owner,
+      body: { rev: current.rev, ...body },
+    });
+    assert.equal(done.status, 200, JSON.stringify(done.data));
+    assertNoSecrets(done.data, [], "settings");
+    return done.data;
+  };
+  const finalize = async (d) =>
+    (
+      await req(`/sales/deals/${d.id}/status`, {
+        method: "POST",
+        session: admin,
+        body: { rev: d.rev, action: "finalize" },
+      })
+    ).data;
+  // No place of supply and no client state: not needed without GST.
+  const bare = async (cid, title) => {
+    const made = await req(`/customers/${cid}/sales/deals`, {
+      method: "POST",
+      session: admin,
+      body: { title },
+    });
+    assert.equal(made.status, 201, JSON.stringify(made.data));
+    const saved = await req(`/sales/deals/${made.data.id}`, {
+      method: "PUT",
+      session: admin,
+      body: {
+        rev: made.data.rev,
+        ...DEAL,
+        title,
+        billTo: { ...BILL_TO, stateCode: "", gstin: "" },
+        placeOfSupply: "",
+      },
+    });
+    assert.equal(saved.status, 200, JSON.stringify(saved.data));
+    return saved.data;
+  };
+  before(async () => {
+    C = await customer("Plain Traders", "c@plain.example");
+  });
+  it("needs only name, e-mail and phone; the agreement also a jurisdiction", async () => {
+    const view = await put(NAME_ONLY);
+    assert.deepEqual(view.ready, {
+      registered: false,
+      quotation: true,
+      agreement: false,
+      invoice: true,
+      missing: { quotation: [], agreement: ["jurisdiction"], invoice: [] },
+    });
+    assert.equal(view.gst.registered, false);
+    const partial = await put({
+      company: { legalName: "Sandbee Technologies" },
+      gst: { registered: false },
+    });
+    assert.deepEqual(partial.ready.missing, {
+      quotation: ["email", "phone"],
+      agreement: ["email", "phone", "jurisdiction"],
+      invoice: ["email", "phone"],
+    });
+    await put(NAME_ONLY);
+  });
+  it("completes and totals a deal without place of supply or client state, with no tax", async () => {
+    const d = await bare(C, "No GST deal");
+    assert.equal(d.registered, false);
+    assert.equal(d.placeOfSupply, "");
+    assert.equal(d.totals.registered, false);
+    assert.equal(d.totals.cgst + d.totals.sgst + d.totals.igst, 0);
+    assert.deepEqual(d.totals.rates, []);
+    assert.equal(d.totals.total, d.totals.taxable);
+    assert.deepEqual(d.ready.missing.invoice, []);
+    const list = await req(`/customers/${C}/sales`, { session: admin });
+    assert.equal(list.data.ready.registered, false);
+    const row = list.data.deals.find((x) => x.id === d.id);
+    assert.equal(row.payable, d.totals.payable);
+    assertNoSecrets(list.data, [], "customer sales");
+    const fin = await finalize(d);
+    assert.equal(fin.status, "final", JSON.stringify(fin));
+  });
+  it("issues a quotation and an invoice titled Invoice; the agreement waits for a jurisdiction", async () => {
+    const d = await bare(C, "Issue without GST");
+    const final = await finalize(d);
+    const q = await issue(final, "quotation");
+    assert.equal(q.status, 201, JSON.stringify(q.data));
+    assert.equal(q.data.payable, d.totals.payable);
+    const again = await deal(d.id);
+    const inv = await issue(again, "invoice");
+    assert.equal(inv.status, 201, JSON.stringify(inv.data));
+    assert.equal(inv.data.title, "Invoice");
+    assert.equal(inv.data.payable, d.totals.payable);
+    const ag = await issue(await deal(d.id), "agreement");
+    assert.equal(ag.status, 409);
+    assert.equal(ag.data.code, "settings-incomplete");
+    assert.deepEqual(ag.data.items, ["jurisdiction"]);
+    assert.match(ag.data.error, /jurisdiction city \(for the agreement\)/);
+    await put({
+      ...NAME_ONLY,
+      company: { ...NAME_ONLY.company, jurisdiction: "Ahmedabad" },
+    });
+    const ok = await issue(await deal(d.id), "agreement");
+    assert.equal(ok.status, 201, JSON.stringify(ok.data));
+    assert.equal(ok.data.title, "Agreement");
+    assertNoSecrets(ok.data, [], "document");
+  });
+  it("registered again: place of supply and client state are required to complete a deal", async () => {
+    const view = await put(SETTINGS);
+    assert.equal(view.ready.registered, true);
+    const d = await bare(C, "Registered deal");
+    // The static schema accepts blanks; completeness needs them when registered.
+    const refused = await req(`/sales/deals/${d.id}/status`, {
+      method: "POST",
+      session: admin,
+      body: { rev: d.rev, action: "finalize" },
+    });
+    assert.equal(refused.status, 409);
+    assert.equal(refused.data.code, "deal-incomplete");
+    const preview = await req(`/sales/deals/${d.id}/preview`, {
+      method: "POST",
+      session: admin,
+      body: { type: "quotation" },
+    });
+    assert.equal(preview.status, 409);
+    assert.equal(preview.data.code, "deal-incomplete");
+    assert.ok(d.totals.cgst + d.totals.sgst + d.totals.igst >= 0);
+    // A GSTIN that disagrees with an empty state is still refused.
+    const bad = await req(`/sales/deals/${d.id}`, {
+      method: "PUT",
+      session: admin,
+      body: {
+        rev: d.rev,
+        ...DEAL,
+        billTo: { ...BILL_TO, stateCode: "" },
+        placeOfSupply: "",
+      },
+    });
+    assert.equal(bad.status, 400);
+    assert.match(bad.data.error, /GSTIN state/);
+  });
+});
+
+describe("sales: review fixes (old default texts, GST mode switches, seller GSTIN)", () => {
+  let D;
+  const NO_GST = {
+    company: {
+      legalName: "Sandbee Technologies",
+      email: "hello@sandbee.example",
+      phone: "+91 98000 00000",
+      jurisdiction: "Ahmedabad",
+    },
+    gst: { registered: false },
+  };
+  const send = async (body) => {
+    await stepUp(owner);
+    const current = (await req("/sales/settings", { session: admin })).data;
+    return req("/sales/settings", {
+      method: "PUT",
+      session: owner,
+      body: { rev: current.rev, ...body },
+    });
+  };
+  const put = async (body) => {
+    const done = await send(body);
+    assert.equal(done.status, 200, JSON.stringify(done.data));
+    return done.data;
+  };
+  const fin = async (d) =>
+    (
+      await req(`/sales/deals/${d.id}/status`, {
+        method: "POST",
+        session: admin,
+        body: { rev: d.rev, action: "finalize" },
+      })
+    ).data;
+  const ownRow = (quotationTerms) => ({
+    rev: 1,
+    billTo: BILL_TO,
+    overrides: { quotationTerms, agreementBody: null, invoiceTerms: null },
+  });
+  const stored = (patch) =>
+    ctx.db
+      .collection("sales_settings")
+      .updateOne({ _id: "company" }, { $set: patch });
+  before(async () => {
+    D = await customer("Old Texts", "d@old.example");
+  });
+  it("a settings row that kept the first release's default texts reads as the new defaults; edits are kept", async () => {
+    await put(NO_GST);
+    await stored({ templates: LEGACY_DEFAULT_TEMPLATES });
+    const view = await req("/sales/settings", { session: admin });
+    assert.deepEqual(view.data.templates, view.data.defaults);
+    assert.equal(
+      view.data.templates.quotationTerms.includes(
+        "GST is charged at the rates shown",
+      ),
+      false,
+    );
+    await stored({
+      "templates.quotationTerms": "Custom terms for {{client.name}}.",
+    });
+    const kept = await req("/sales/settings", { session: admin });
+    assert.equal(
+      kept.data.templates.quotationTerms,
+      "Custom terms for {{client.name}}.",
+    );
+    assert.equal(
+      kept.data.templates.agreementBody,
+      kept.data.defaults.agreementBody,
+    );
+    assert.equal(
+      kept.data.templates.invoiceTerms,
+      kept.data.defaults.invoiceTerms,
+    );
+    await stored({ templates: LEGACY_DEFAULT_TEMPLATES });
+    // The documents are issued with the new texts (the default source).
+    const d = await newDeal(D);
+    const q = await issue(await fin(d), "quotation");
+    assert.equal(q.status, 201, JSON.stringify(q.data));
+    assert.equal(q.data.textSource, "default");
+    const file = await raw(`/sales/documents/${q.data.id}/download`, {
+      session: admin,
+    });
+    const text = pdfText(file.buffer).join("\n");
+    assert.equal(/GST is charged at the rates shown/.test(text), false);
+    assert.match(text, /to accept this quotation/i);
+  });
+  it("a client text equal to the old default acts as no custom text", async () => {
+    await ctx.db.collection("sales_profiles").updateOne(
+      { _id: D },
+      {
+        $set: ownRow(LEGACY_DEFAULT_TEMPLATES.quotationTerms),
+      },
+      { upsert: true },
+    );
+    const view = await req(`/customers/${D}/sales`, { session: admin });
+    assert.equal(view.data.profile.overrides.quotationTerms, null);
+    const d = await newDeal(D, admin, "Legacy override");
+    const q = await issue(await fin(d), "quotation");
+    assert.equal(q.status, 201, JSON.stringify(q.data));
+    assert.equal(q.data.textSource, "default");
+    await ctx.db.collection("sales_profiles").updateOne(
+      { _id: D },
+      {
+        $set: {
+          "overrides.quotationTerms": "Own terms for {{client.name}}.",
+        },
+      },
+    );
+    const own = await newDeal(D, admin, "Own override");
+    const q2 = await issue(await fin(own), "quotation");
+    assert.equal(q2.data.textSource, "client");
+  });
+  it("switching GST registration after a quotation blocks the invoice and agreement until a new quotation", async () => {
+    // Without GST, then registered.
+    await put(NO_GST);
+    const d = await newDeal(D, admin, "Mode switch A");
+    const q = await issue(await fin(d), "quotation");
+    assert.equal(q.status, 201, JSON.stringify(q.data));
+    await put(SETTINGS);
+    const again = await deal(d.id);
+    assert.deepEqual(
+      again.modeChanged.map((m) => [m.label, m.gst]),
+      [[`Quotation ${q.data.label}`, false]],
+    );
+    for (const type of ["invoice", "agreement"]) {
+      const refused = await issue(again, type);
+      assert.equal(refused.status, 409);
+      assert.equal(refused.data.code, "gst-mode-changed");
+      assert.match(
+        refused.data.error,
+        new RegExp(
+          `${q.data.number} v1 was issued without GST, but you are now registered`,
+        ),
+      );
+    }
+    // A new quotation version is never blocked and clears the block.
+    const q2 = await issue(again, "quotation");
+    assert.equal(q2.status, 201, JSON.stringify(q2.data));
+    const inv = await issue(await deal(d.id), "invoice");
+    assert.equal(inv.status, 201, JSON.stringify(inv.data));
+    assert.equal(inv.data.title, "Tax invoice");
+    assert.deepEqual((await deal(d.id)).modeChanged, []);
+  });
+  it("and the other way round: registered quotation, then not registered", async () => {
+    await put(SETTINGS);
+    const d = await newDeal(D, admin, "Mode switch B");
+    const q = await issue(await fin(d), "quotation");
+    assert.equal(q.status, 201, JSON.stringify(q.data));
+    await put(NO_GST);
+    const refused = await issue(await deal(d.id), "agreement");
+    assert.equal(refused.status, 409);
+    assert.equal(refused.data.code, "gst-mode-changed");
+    assert.match(
+      refused.data.error,
+      /v1 was issued with GST, but you are no longer registered/,
+    );
+    assert.equal((await issue(await deal(d.id), "quotation")).status, 201);
+    const ok = await issue(await deal(d.id), "agreement");
+    assert.equal(ok.status, 201, JSON.stringify(ok.data));
+  });
+  it("the advice names the next step, and the banner list holds only what still blocks", async () => {
+    await put(SETTINGS);
+    const d = await newDeal(D, admin, "Mode advice");
+    const q = await issue(await fin(d), "quotation");
+    const ag = await issue(await deal(d.id), "agreement");
+    assert.equal(ag.status, 201, JSON.stringify(ag.data));
+    await put(NO_GST);
+    const view = await deal(d.id);
+    // Only the latest document in the other mode, the agreement.
+    assert.deepEqual(
+      view.modeChanged.map((m) => [m.type, m.label, m.gst]),
+      [["agreement", `Agreement ${ag.data.label}`, true]],
+    );
+    const refused = await issue(view, "invoice");
+    assert.equal(refused.status, 409);
+    assert.equal(refused.data.code, "gst-mode-changed");
+    assert.match(refused.data.error, /Issue a new agreement version first\./);
+    assert.equal(/reopen/i.test(refused.data.error), false);
+    assert.ok(q.data.label);
+    // A quotation with a past valid-until date also names reopening.
+    await ctx.db
+      .collection("sales_deals")
+      .updateOne({ _id: d.id }, { $set: { validUntil: "2020-01-01" } });
+    await put(SETTINGS);
+    await ctx.db
+      .collection("sales_documents")
+      .updateMany(
+        { dealId: d.id },
+        { $set: { "snapshot.gstRegistered": false } },
+      );
+    const old = await issue(await deal(d.id), "invoice");
+    assert.equal(old.status, 409);
+    assert.match(old.data.error, /agreement version first/);
+    await ctx.db
+      .collection("sales_documents")
+      .deleteOne({ dealId: d.id, type: "agreement" });
+    const qOld = await issue(await deal(d.id), "invoice");
+    assert.equal(qOld.status, 409);
+    assert.match(
+      qOld.data.error,
+      /new quotation version first \(and then the agreement\)/,
+    );
+    assert.match(
+      qOld.data.error,
+      /valid-until date has passed: reopen the deal/,
+    );
+    // An active invoice ends the banner for good (nothing can be remedied).
+    await ctx.db
+      .collection("sales_documents")
+      .updateMany(
+        { dealId: d.id },
+        { $set: { "snapshot.gstRegistered": true } },
+      );
+    const inv = await issue(await deal(d.id), "invoice");
+    assert.equal(inv.status, 201, JSON.stringify(inv.data));
+    await put(NO_GST);
+    assert.deepEqual((await deal(d.id)).modeChanged, []);
+    await put(SETTINGS);
+  });
+  it("the seller's GSTIN and state are only checked against each other while registered", async () => {
+    const company = {
+      ...NO_GST.company,
+      gstin: "27AAACS9999K1ZD",
+      stateCode: "",
+    };
+    assert.equal(
+      (await put({ ...NO_GST, company })).company.gstin,
+      company.gstin,
+    );
+    await put({ ...NO_GST, company: { ...company, stateCode: "29" } });
+    const refused = await send({
+      company: { ...company, address: ["x"], stateCode: "29" },
+      gst: { registered: true },
+    });
+    assert.equal(refused.status, 400);
+    assert.match(refused.data.error, /GSTIN/);
+    await put({ ...NO_GST, company: { ...NO_GST.company } });
+    await put(SETTINGS);
   });
 });

@@ -172,6 +172,9 @@ export const settingsFixture = (over = {}) => ({
     company: COMPANY,
     bank: BANK,
     signatory: { name: "A. Founder", title: "Director" },
+    // The sample company is GST-registered; pass gst: {registered: false}
+    // for a seller without registration (the schema's default).
+    gst: { registered: true },
     ...over,
   }),
   images: { logo: null, signature: null },

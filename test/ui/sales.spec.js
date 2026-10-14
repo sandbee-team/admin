@@ -97,35 +97,133 @@ test("owner fills Sales settings with step-up and uploads a logo", async ({
   await expect(
     page.getByText(/Missing before documents can be issued/),
   ).toBeVisible();
+  // Not registered under GST (the default): no GSTIN, SAC or rate fields.
+  await expect(page.getByLabel("GSTIN")).toHaveCount(0);
+  await expect(page.getByLabel("Default SAC")).toHaveCount(0);
+  await expect(
+    page.getByRole("combobox", { name: "Default GST rate", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByRole("switch")).not.toBeChecked();
   await page
     .getByLabel("Legal name")
     .fill("Sandbee Technologies Private Limited");
-  await page
-    .getByLabel("Address")
-    .fill("Office 4, Example Business Park\nBaner Road");
-  await page.getByLabel("City").fill("Pune");
-  await page.getByLabel("PIN code").fill("411045");
-  await choose(page, "State", "Maharashtra (27)");
-  await page.getByLabel("GSTIN").fill("27AAACS9999K1ZD");
   await page.getByLabel("Company e-mail").fill("accounts@example.test");
+  await page.getByLabel("Phone").fill("+91 20 0000 0000");
+  await page.getByLabel("Jurisdiction city").fill("Pune");
+  // A text that still speaks of GST is flagged; Restore brings the default back.
+  const warning = page.getByText(
+    "This text mentions GST, but you are not registered under GST.",
+  );
+  await page
+    .getByRole("textbox", { name: "Quotation terms" })
+    .fill("1. GST is charged at the rates shown.");
+  await expect(warning).toBeVisible();
+  await page
+    .getByRole("button", { name: "Restore default text: Quotation terms" })
+    .click();
+  await expect(warning).toHaveCount(0);
   await page.getByLabel("Account number").fill("000123456789");
-  await page.getByLabel("IFSC").fill("HDFC0000001");
-  await page.getByLabel("UPI ID").fill("sandbee@examplebank");
-  await page.getByLabel("Signatory name").fill("A. Founder");
-  await expect(page.getByText(`Next new number: INV/${FY}/0001`)).toBeVisible();
   await page.getByRole("button", { name: "Save settings" }).click();
   await confirmStepUp(page);
   await expect(page.getByText(/^Saved .* by sales owner a$/)).toBeVisible();
   await expect(
     page.getByText(/Missing before documents can be issued/),
   ).toHaveCount(0);
-  // Logo: the step-up above is still fresh, so no second prompt.
+
+  // A deal without GST: no place of supply, SAC or rate, and no tax rows.
+  await page.goto(`${CUSTOMER}/sales`);
+  // The same GST warning on a client's own text copy.
+  await page
+    .getByRole("checkbox", { name: "Custom text for this client" })
+    .first()
+    .check();
+  await page
+    .getByRole("textbox", { name: "Quotation terms (this client)" })
+    .fill("1. GST is charged at the rates shown.");
+  await expect(
+    page.getByText(
+      "This text mentions GST, but you are not registered under GST.",
+    ),
+  ).toBeVisible();
+  await page
+    .getByRole("checkbox", { name: "Custom text for this client" })
+    .first()
+    .uncheck();
+  await page.getByRole("button", { name: "Save billing details" }).click();
+  await expect(page.getByText(/Billing details saved/)).toBeVisible();
+  await page.getByRole("button", { name: "New deal" }).click();
+  await page.getByLabel("Deal title").fill("Plain deal");
+  await page.getByRole("button", { name: "Create deal" }).click();
+  await expect(page.getByRole("heading", { name: "Plain deal" })).toBeVisible();
+  await expect(page.getByLabel("Place of supply")).toHaveCount(0);
+  await page.getByRole("button", { name: "Add free line" }).click();
+  const plain = page.getByRole("group", { name: "Line 1" });
+  await plain.getByLabel("Description").fill("Setup");
+  await plain.getByLabel("Unit price (Rs.)").fill("1000");
+  await expect(plain.getByLabel("SAC")).toHaveCount(0);
+  await expect(
+    plain.getByRole("combobox", { name: "GST rate", exact: true }),
+  ).toHaveCount(0);
+  const plainTotals = page.getByLabel("Totals");
+  await expect(plainTotals).toContainText("Rs. 1,000.00");
+  await expect(plainTotals).not.toContainText("CGST");
+  await expect(plainTotals).not.toContainText("IGST");
+  await expect(plainTotals).not.toContainText("Taxable value");
+  await expect(
+    page.getByText("GST not charged - not registered under GST."),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Issue tax invoice" }),
+  ).toHaveCount(0);
+  await noViolations(page, "deal without GST");
+  await noOverflow(page, "Deal without GST");
+  await page.getByRole("button", { name: "Save deal" }).click();
+  await expect(page.getByText("Saved draft", { exact: true })).toBeVisible();
+
+  // Registering turns GSTIN, SAC and rate back on; the company then needs an
+  // address, a state and a GSTIN.
+  await page.getByRole("link", { name: "Sales settings" }).first().click();
+  await expect(
+    page.getByRole("heading", { name: "Sales settings", level: 1 }),
+  ).toBeVisible();
+  await page.getByRole("switch").check();
+  await expect(page.getByLabel("GSTIN")).toBeVisible();
+  await expect(page.getByLabel("Default SAC")).toBeVisible();
+  await expect(
+    page.getByRole("combobox", { name: "Default GST rate", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByLabel("Address")
+    .fill("Office 4, Example Business Park\nBaner Road");
+  await page.getByLabel("City", { exact: true }).fill("Pune");
+  await page.getByLabel("PIN code").fill("411045");
+  await choose(page, "State", "Maharashtra (27)");
+  await page.getByLabel("GSTIN").fill("27AAACS9999K1ZD");
+  await page.getByLabel("IFSC").fill("HDFC0000001");
+  await page.getByLabel("UPI ID").fill("sandbee@examplebank");
+  await page.getByLabel("Signatory name").fill("A. Founder");
+  await expect(page.getByText(`Next new number: INV/${FY}/0001`)).toBeVisible();
+  await page.getByRole("button", { name: "Save settings" }).click();
+  await expect(page.getByText("Unsaved changes", { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(page.getByText(/^Saved .* by sales owner a$/)).toBeVisible();
+  await expect(
+    page.getByText(/Missing before documents can be issued/),
+  ).toHaveCount(0);
+  // Logo: the step-up of the first save is still fresh, so no second prompt.
   await page
     .getByLabel("Upload logo")
     .setInputFiles({ name: "logo.png", mimeType: "image/png", buffer: LOGO });
   await expect(page.getByText("PNG, 120 × 48, 1 KB")).toBeVisible();
   await noViolations(page, "settings");
   await noOverflow(page, "Sales settings");
+  // A GSTIN on file stays visible (and clearable) while not registered.
+  await page.getByRole("switch").uncheck();
+  await expect(page.getByLabel("GSTIN")).toBeVisible();
+  await expect(
+    page.getByText("Not printed while you are not registered under GST."),
+  ).toBeVisible();
 });
 
 test("admin builds a deal with discounts and issues quotation, agreement and invoice", async ({
@@ -149,7 +247,7 @@ test("admin builds a deal with discounts and issues quotation, agreement and inv
   await expect(
     page.getByRole("heading", { name: "Sales", level: 1 }),
   ).toBeVisible();
-  await expect(page.getByText("No deals yet")).toBeVisible();
+  await expect(page.getByText("Plain deal")).toBeVisible();
   await page.getByRole("button", { name: "New deal" }).click();
   await page.getByLabel("Deal title").fill("POS setup and support");
   await page.getByRole("button", { name: "Create deal" }).click();

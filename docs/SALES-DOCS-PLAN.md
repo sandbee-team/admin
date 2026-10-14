@@ -1,5 +1,8 @@
 # Sales documents — quotation, agreement, invoice (plan)
 
+**LIVE since 2026-10-15** (main @ 99809c8). **Revision 2 (D53, 2026-10-15, §15):** seller without
+GST registration, new document design and standard texts — branch `sales-docs-2`.
+
 Status: **APPROVED by the owner 2026-10-14** — every recommended default in §13 (no-dependency PDF
 writer, `sales` = owner + admin and `billing` = owner + step-up, `QT/26-27/0001` numbering with the
 round-off line, one invoice per deal); recorded as D52. Branch `sales-docs` from main @ 4082048
@@ -345,3 +348,60 @@ reviewed like the P7 terms), and confirm the SAC and GST rate with your CA. Afte
 main into `p5-stage3` before its W7 (expected conflicts: `docs/POS-INTEGRATION.md` D51/D52 rows,
 `docs/ROADMAP.md`, `docs/API.md`, `docs/SECURITY.md`, `backend/app.js`, `backend/db.js`,
 `test/ui-server.js`).
+
+**Released 2026-10-15** (main @ 99809c8): Linux suite on the server 789 tests, 787 pass, 0 fail,
+2 skipped; app and worker healthy, `/ready` ok; the owner checked the panel.
+
+## 15. Revision 2 (2026-10-15, D53): seller without GST registration, design, texts
+
+The owner's company is not registered under GST and wants to give clients only its name, email and
+phone; the PDFs must look like a large SaaS product's; and the documents need standard terms and a
+proper agreement. Branch `sales-docs-2` from main @ 99809c8.
+
+- **GST switch** (`settings.gst.registered`, default off; rows saved before read as off). Off: an
+  unregistered person may not collect tax (CGST Act s.32), so `computeTotals(…, {registered:
+  false})` charges no tax on any line and returns no rate rows; no seller GSTIN (also blanked in
+  `{{company.gstin}}`), SAC, rates or place of supply on any screen or PDF; the invoice is titled
+  "Invoice" everywhere (PDF, view, e-mail, file name); `{{tax.note}}` = "GST is not charged: the
+  supplier is not registered under GST." On: D52's Rule 46 behaviour. Place of supply and the
+  client's state are required only when registered; the seller GSTIN-state check runs only then.
+- **Readiness per type** (`missing: {quotation, agreement, invoice}`): legal name, email, phone;
+  the agreement also `company.jurisdiction` (city of its courts and arbitration seat); registered
+  adds address and state, and the GSTIN for invoices.
+- **Mode switches mid-deal**: an agreement or invoice is refused (409 `gst-mode-changed`, with the
+  next step) while the deal's latest issued quotation/agreement of another type was issued in the
+  other mode; quotations are never blocked; the deal page shows the same advice (`modeChanged`,
+  empty once an invoice is active).
+- **Texts**: new `DEFAULT_TEMPLATES` (quotation terms, a 16-section Service Agreement, invoice
+  terms) with no address/GSTIN/PAN; new placeholders `{{tax.note}}`, `{{company.jurisdiction}}`.
+  `LEGACY_DEFAULT_TEMPLATES` = D52's defaults: a stored text (or client copy) exactly equal to one
+  is read as the new default; edited texts are kept. Settings: "Restore default text" per text and
+  a warning when an unregistered seller's text mentions GST (also on client copies).
+- **Design** (snapshot format 2): accent colour `settings.design.accent` (default `#355E45`), top
+  bar, header with logo or wordmark and a facts grid, From/Bill to (Provider/Client) cards with
+  only filled fields, items table with tinted header and repeated header on new pages, totals card,
+  payment card only when filled, texts with headings (`N. TITLE IN CAPITALS`, `# Title` ≤ 80
+  characters) and hanging-indent clauses, agreement with Schedule A and two signature blocks,
+  footer with contact and "Page X of Y". `pdf.js` gained Helvetica-Oblique, letter spacing (Tc)
+  and rounded rectangles; output without them is byte-identical to D52's.
+- **Format-1 documents** (issued under D52) render with the frozen D52 renderer
+  (`backend/lib/sales-pdf-v1.js`): byte-identical re-renders keep "Store copy" and the hash checks
+  working (a differential run of 2,400 random format-1 snapshots: 0 differences).
+- **Reviews**: one read-only opus review (1 high: stored D52 default texts kept printing GST; 3
+  medium: a ReDoS in the clause parser, GST mode switches changing a deal's money, a hidden GSTIN
+  blocking saves; 7 low) — all fixed except L5 (the API's draft totals still show IGST for a
+  registered deal without a place of supply; issuing is blocked) and L7 (kept: registered readiness
+  also needs email/phone/jurisdiction); re-review: all fixed, 3 new lows fixed.
+- `tools/sales-samples.mjs` (dev only) writes sample PDFs/PNGs to `test-results/sales-samples-v2/`.
+
+**Evidence** (Windows dev PC, 2026-10-15, branch `sales-docs-2`): `node --test
+test/sales-math.test.js test/sales-pdf.test.js test/sales-api.test.js` → 77 before the review
+fixes, all pass; `npm test` → tests 814, suites 159, pass 808, fail 0, cancelled 0, skipped 6 (the
+Linux-only ones), todo 0; `npm run build` → `✓ built in 2.90s` (the existing > 500 kB chunk warning
+only); `npx playwright test --reporter=line` → `52 passed (7.2m)`. Samples checked by eye
+(quotation, agreement, invoice without GST; tax invoice; 34-line quotation; GST draft).
+
+**Release** (house method step 4, `docs/DEPLOYMENT.md` "Sales documents release checklist"):
+`bash scripts/test-linux.sh` on the server, merge `sales-docs-2` into main, push, rebuild, reload
+open panel tabs, then the owner fills the jurisdiction city and checks one quotation. Owner: have a
+lawyer review the agreement text and the stamp duty; switch GST on once registered.

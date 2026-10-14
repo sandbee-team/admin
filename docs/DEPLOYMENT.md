@@ -156,6 +156,20 @@ P3 went live on 2026-10-12 (commit `e44649c`): Linux suite on the server 727 tes
 
 Operating notes: the rollout stops at the first client whose deploy fails, rolls back or is unhealthy, at a client that is not ready (for example a verify older than 24 hours) or busy with another deploy, when deploys are frozen, or when the person who started it loses the right to deploy; fix the cause and press **Resume** (step-up), which retries that client first. Locked clients are skipped, so Lock a client to leave it out. Resume keeps the rollout's pre-builds; Dismiss (or a new start) stops the ones still waiting. `docker compose -f compose.production.yaml logs worker` shows `rollout-finished` with the status and an 8-character id only.
 
+## Sales documents release checklist (D52, D53)
+
+Sales documents (docs/SALES-DOCS-PLAN.md): deals per customer and quotation, agreement and invoice PDFs. Six additive collections, created with their indexes at start. No new container, volume, `.env` variable or npm dependency.
+
+S1 (D52) went live on 2026-10-15 (commit `99809c8`, previous live commit `e44649c`): Linux suite on the server 789 tests, 787 pass, 0 fail, 2 skipped; app and worker healthy, `/ready` ok; the owner checked the panel.
+
+Revision 2 (D53: seller without GST registration, new design and texts):
+
+1. **Linux suite on the server** (before merging): `bash scripts/test-linux.sh` in a checkout of the release branch must end with 0 failures.
+2. **Build and start:** `cd ~/admin && git checkout main && git pull && unset RELEASE_TAG && docker compose -f compose.production.yaml up -d --build`, `docker image prune -f`, then `docker compose -f compose.production.yaml ps` (both healthy) and `curl -fsS http://127.0.0.1:8098/ready`.
+3. **Reload the panel** in every open browser tab (a page loaded before the release sends settings without the new fields and reads the readiness list in the old shape).
+4. **In the panel:** Sales settings → "Registered under GST" stays off; fill legal name, email, phone and the jurisdiction city; the three texts show the new defaults (a text still equal to D52's default is replaced automatically; an edited one is kept: use "Restore default text"). Issue one quotation to check the PDF.
+5. **Release rollback:** only before the first document of this release is issued: `git checkout 99809c8 && docker compose -f compose.production.yaml up -d --build`. Once a format-2 document exists, the previous release re-renders it wrongly (a "TAX INVOICE" with zero GST rows) for downloads without an archive copy and for cancelled copies, and refuses "Store copy" for it, so fix forward instead.
+
 ## Reverse proxy (Caddy)
 
 Production terminates TLS in Caddy (`/opt/edge/Caddyfile`) and proxies to Admin on a separate local port, which keeps the other live applications untouched:

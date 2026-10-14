@@ -4,6 +4,7 @@ import { Badge, Button, ErrorBox, Field, Modal, Select } from "./ui";
 import { ConfirmModal } from "./confirm";
 import { withStepUp } from "./step-up";
 import { api, download, dateTime } from "../lib/api";
+import { Link } from "../lib/router";
 import { can } from "../../../shared/policy";
 import { STATES, formatPaise } from "../../../shared/sales";
 
@@ -16,6 +17,59 @@ export const STATE_OPTIONS = [
     label: `${name} (${code})`,
   })),
 ];
+const MISSING_LABEL = {
+  "legal-name": "legal name",
+  address: "address",
+  state: "state",
+  gstin: "GSTIN",
+  email: "email",
+  phone: "phone",
+  jurisdiction: "jurisdiction city",
+};
+const TYPE_LABEL = (type, registered) =>
+  type === "invoice"
+    ? registered
+      ? "Tax invoice"
+      : "Invoice"
+    : type === "agreement"
+      ? "Agreement"
+      : "Quotation";
+// What the company profile still lacks, per document type (ready comes from
+// the API: {registered, quotation, agreement, invoice, missing:{type:[ids]}}).
+export function ReadinessNotice({ ready, intro, link = true }) {
+  const types = ["quotation", "agreement", "invoice"].filter((t) => !ready[t]);
+  if (types.length === 0) return null;
+  return (
+    <div className="notice notice-warning sales-ready">
+      <span>
+        {intro}
+        {types.map((t) => (
+          <span key={t} className="sales-ready-line">
+            {TYPE_LABEL(t, ready.registered)} needs:{" "}
+            {ready.missing[t].map((id) => MISSING_LABEL[id] ?? id).join(", ")}.
+          </span>
+        ))}
+        {link && (
+          <>
+            {" "}
+            <Link href="/sales-settings">Open Sales settings</Link>
+          </>
+        )}
+      </span>
+    </div>
+  );
+}
+// A text that still speaks of GST while the seller is not registered.
+export const mentionsGst = (text) =>
+  /\{\{\s*company\.gstin\s*\}\}|GST is charged/i.test(text ?? "");
+export function GstTextWarning({ registered, text }) {
+  if (registered || !mentionsGst(text)) return null;
+  return (
+    <p className="small sales-text-warning" role="status">
+      This text mentions GST, but you are not registered under GST.
+    </p>
+  );
+}
 // Saves a {blob, filename} from download() through a temporary link.
 export function saveFile({ blob, filename }) {
   const url = URL.createObjectURL(blob),
@@ -29,7 +83,14 @@ export function saveFile({ blob, filename }) {
 }
 
 // Bill-to fields shared by the client's billing details and the deal editor.
-export function BillToFields({ value, onChange, disabled, prefix }) {
+// stateRequired: only for a GST-registered seller (place of supply).
+export function BillToFields({
+  value,
+  onChange,
+  disabled,
+  prefix,
+  stateRequired = true,
+}) {
   const set = (key) => (event) =>
     onChange({ ...value, [key]: event.target.value });
   return (
@@ -86,7 +147,10 @@ export function BillToFields({ value, onChange, disabled, prefix }) {
           />
         </Field>
       </div>
-      <Field label="State">
+      <Field
+        label="State"
+        hint={stateRequired ? undefined : "Optional while GST is not charged."}
+      >
         <Select
           value={value.stateCode}
           onChange={set("stateCode")}

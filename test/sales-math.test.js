@@ -24,8 +24,10 @@ import {
   parsePercent,
   paiseText,
   localTaxLabel,
+  taxNoteOf,
+  PLACEHOLDERS,
 } from "../shared/sales.js";
-import { salesSchemas } from "../shared/sales-schemas.js";
+import { salesSchemas, DEFAULT_TEMPLATES } from "../shared/sales-schemas.js";
 
 const line = (over = {}) => ({
   id: "l1",
@@ -153,6 +155,40 @@ describe("computeTotals", () => {
     assert.equal(down.total, 10042);
     assert.equal(down.roundOff, -42);
     assert.equal(down.payable, 10000);
+  });
+  it("a seller without GST registration charges no tax (CGST Act s.32)", () => {
+    for (const sellerState of [MH, GJ, ""]) {
+      const t = computeTotals(discounted, {
+        sellerState,
+        roundOff: true,
+        registered: false,
+      });
+      assert.equal(t.registered, false);
+      assert.deepEqual(
+        t.lines.map((l) => [
+          l.taxable,
+          l.cgst,
+          l.sgst,
+          l.igst,
+          l.tax,
+          l.amount,
+        ]),
+        [
+          [855000, 0, 0, 0, 0, 855000],
+          [94050, 0, 0, 0, 0, 94050],
+        ],
+      );
+      assert.equal(t.tax, 0);
+      assert.equal(t.total, 949050);
+      assert.equal(t.roundOff, 50);
+      assert.equal(t.payable, 949100);
+      assert.deepEqual(t.rates, []);
+    }
+    // Registered stays the default, so older callers keep charging GST.
+    assert.equal(
+      computeTotals(discounted, { sellerState: MH, roundOff: true }).registered,
+      true,
+    );
   });
   it("round-off off keeps exact paise", () => {
     const t = computeTotals(discounted, { sellerState: MH, roundOff: false });
@@ -362,6 +398,15 @@ describe("identifiers and text", () => {
     assert.deepEqual(unprintable("a\nb", { multiline: true }), []);
     assert.deepEqual(unprintable("a\nb"), ["\n"]);
   });
+  it("states whether GST is charged", () => {
+    assert.equal(taxNoteOf(true), "GST is charged at the rates shown.");
+    assert.equal(
+      taxNoteOf(false),
+      "GST is not charged: the supplier is not registered under GST.",
+    );
+    assert.ok(PLACEHOLDERS.includes("tax.note"));
+    assert.ok(PLACEHOLDERS.includes("company.jurisdiction"));
+  });
   it("renders whitelisted placeholders only", () => {
     assert.equal(
       renderTemplate("Hello {{ client.name }}, {{deal.total}}.", {
@@ -441,6 +486,46 @@ describe("schemas", () => {
       }).success,
       false,
     );
+  });
+  it("defaults to a seller without GST registration, the brand accent and printable texts", () => {
+    const base = salesSchemas.settings.parse({});
+    assert.equal(base.gst.registered, false);
+    assert.equal(base.company.jurisdiction, "");
+    assert.equal(base.design.accent, "#355E45");
+    assert.equal(
+      salesSchemas.settings.parse({ design: { accent: "#1a2b3c" } }).design
+        .accent,
+      "#1A2B3C",
+    );
+    for (const accent of ["355E45", "#355E4", "#GGGGGG", "red"])
+      assert.equal(
+        salesSchemas.settings.safeParse({ design: { accent } }).success,
+        false,
+        accent,
+      );
+    // zod does not parse defaults, so the default texts are checked here.
+    for (const [key, text] of Object.entries(DEFAULT_TEMPLATES)) {
+      assert.deepEqual(unknownPlaceholders(text), [], key);
+      assert.deepEqual(unprintable(text, { multiline: true }), [], key);
+      assert.equal(base.templates[key], text, key);
+      assert.equal(
+        salesSchemas.settings.parse({ templates: { [key]: text } }).templates[
+          key
+        ],
+        text,
+        key,
+      );
+      // No address, GSTIN or PAN is assumed: the texts read well without them.
+      assert.equal(
+        /\{\{\s*(company|client)\.(address|gstin|pan)\s*\}\}/.test(text),
+        false,
+        key,
+      );
+      assert.equal(/SAMPLE/.test(text), false, key);
+    }
+    assert.ok(DEFAULT_TEMPLATES.agreementBody.length <= 20000);
+    assert.ok(DEFAULT_TEMPLATES.quotationTerms.length <= 4000);
+    assert.ok(DEFAULT_TEMPLATES.invoiceTerms.length <= 4000);
   });
   it("refuses unknown placeholders and long invoice prefixes in settings", () => {
     const base = salesSchemas.settings.parse({});

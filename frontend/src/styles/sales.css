@@ -221,3 +221,29 @@
     justify-self: start;
   }
 }
+.sales-totals-note {
+  margin: 8px 0 0;
+}
+.sales-ready-line {
+  display: block;
+}
+.sales-subheading {
+  margin: 20px 0 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.sales-colour {
+  width: 56px;
+  height: 40px;
+  padding: 2px;
+}
+.sales-text-field {
+  margin-bottom: 14px;
+}
+.sales-text-warning {
+  margin: 6px 0 0;
+  color: var(--warning);
+}
+.sales-text-field > .button {
+  margin-top: 8px;
+}

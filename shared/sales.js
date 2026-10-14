@@ -76,6 +76,12 @@ export const stateName = (code) => STATE_NAMES.get(code) ?? "";
 const UT_CODES = new Set(["04", "25", "26", "31", "35", "38", "97"]);
 export const localTaxLabel = (placeOfSupply) =>
   UT_CODES.has(placeOfSupply) ? "UTGST" : "SGST";
+// The {{tax.note}} sentence. A seller without GST registration may not charge
+// or collect GST (CGST Act s.32), so its documents say so instead.
+export const taxNoteOf = (registered) =>
+  registered
+    ? "GST is charged at the rates shown."
+    : "GST is not charged: the supplier is not registered under GST.";
 
 // ---- Money -----------------------------------------------------------------
 export function roundDiv(a, b) {
@@ -121,9 +127,12 @@ function discountOf(discount, base, what) {
   }
   throw new RangeError(`${what} has an unknown type.`);
 }
-// deal: {lines, discount, placeOfSupply}; options: {sellerState, roundOff}.
+// deal: {lines, discount, placeOfSupply}; options: {sellerState, roundOff,
+// registered}. registered: false (a seller without GST registration) charges
+// no tax on any line and returns no rate rows; omitted means registered.
 export function computeTotals({ lines, discount, placeOfSupply }, options) {
-  const intra = placeOfSupply === options.sellerState;
+  const registered = options.registered !== false,
+    intra = placeOfSupply === options.sellerState;
   const rows = lines.map((line, n) => {
     const qty = int(line.qty, 0, MAX_QTY, `Line ${n + 1} quantity`),
       price = int(line.unitPrice, 0, MAX_UNIT_PRICE, `Line ${n + 1} price`);
@@ -142,9 +151,9 @@ export function computeTotals({ lines, discount, placeOfSupply }, options) {
   const out = rows.map((r, i) => {
     const taxable = r.net - shares[i],
       rate = BigInt(r.rate);
-    const cgst = intra ? roundDiv(taxable * rate, 20000n) : 0n,
+    const cgst = registered && intra ? roundDiv(taxable * rate, 20000n) : 0n,
       sgst = cgst,
-      igst = intra ? 0n : roundDiv(taxable * rate, 10000n),
+      igst = registered && !intra ? roundDiv(taxable * rate, 10000n) : 0n,
       tax = cgst + sgst + igst;
     return {
       gross: num(r.gross),
@@ -181,6 +190,7 @@ export function computeTotals({ lines, discount, placeOfSupply }, options) {
       ? num(roundDiv(BigInt(total), 100n) * 100n)
       : total;
   return {
+    registered,
     intra,
     lines: out,
     gross: sum("gross"),
@@ -195,7 +205,9 @@ export function computeTotals({ lines, discount, placeOfSupply }, options) {
     total,
     roundOff: payable - total,
     payable,
-    rates: [...byRate.values()].sort((a, b) => a.rate - b.rate),
+    rates: registered
+      ? [...byRate.values()].sort((a, b) => a.rate - b.rate)
+      : [],
   };
 }
 
@@ -432,6 +444,7 @@ export const PLACEHOLDERS = [
   "company.pan",
   "company.email",
   "company.phone",
+  "company.jurisdiction",
   "client.name",
   "client.address",
   "client.gstin",
@@ -443,6 +456,7 @@ export const PLACEHOLDERS = [
   "deal.validUntil",
   "document.number",
   "document.date",
+  "tax.note",
 ];
 const PLACEHOLDER_RE = /\{\{\s*([A-Za-z.]{1,40})\s*\}\}/g;
 export const renderTemplate = (text, values) =>

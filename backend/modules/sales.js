@@ -6,7 +6,11 @@
 import { Router } from "express";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
-import { salesSchemas } from "../../shared/sales-schemas.js";
+import {
+  salesSchemas,
+  DEFAULT_TEMPLATES,
+  LEGACY_DEFAULT_TEMPLATES,
+} from "../../shared/sales-schemas.js";
 import {
   DOC_TITLES,
   DOC_TYPES,
@@ -58,22 +62,35 @@ const notConfigured = (message) => {
   return error;
 };
 
-// What each document type needs from the company profile (Rule 46 for invoices).
+// What each document type needs from the company profile. Without GST
+// registration (the default) only the name and contact details: no address,
+// state or GSTIN. Registered: Rule 46 particulars (GSTIN on invoices).
 export function readiness(settings) {
   const c = settings.company,
-    base = [
+    registered = settings.gst?.registered === true,
+    gaps = (pairs) => pairs.filter(([, v]) => !v).map(([id]) => id),
+    common = [
       ["legal-name", c.legalName],
-      ["address", c.address?.[0]],
-      ["state", c.stateCode],
-    ]
-      .filter(([, v]) => !v)
-      .map(([id]) => id);
-  const invoice = [...base, ...(c.gstin ? [] : ["gstin"])];
+      ...(registered
+        ? [
+            ["address", c.address?.[0]],
+            ["state", c.stateCode],
+          ]
+        : []),
+      ["email", c.email],
+      ["phone", c.phone],
+    ],
+    missing = {
+      quotation: gaps(common),
+      agreement: gaps([...common, ["jurisdiction", c.jurisdiction]]),
+      invoice: gaps([...common, ...(registered ? [["gstin", c.gstin]] : [])]),
+    };
   return {
-    quotation: base.length === 0,
-    agreement: base.length === 0,
-    invoice: invoice.length === 0,
-    missing: invoice,
+    registered,
+    quotation: missing.quotation.length === 0,
+    agreement: missing.agreement.length === 0,
+    invoice: missing.invoice.length === 0,
+    missing,
   };
 }
 const MISSING_TEXT = {
@@ -81,7 +98,38 @@ const MISSING_TEXT = {
   address: "the company address",
   state: "the company state",
   gstin: "the company GSTIN",
+  email: "the company email",
+  phone: "the company phone",
+  jurisdiction: "the jurisdiction city (for the agreement)",
 };
+
+// Without GST registration the invoice is just an "Invoice" (no GST charged).
+const docTitle = (doc) =>
+  doc.type === "invoice" && doc.snapshot?.totals?.registered === false
+    ? "Invoice"
+    : DOC_TITLES[doc.type];
+
+// A text stored exactly equal to the first release's default was never edited:
+// it reads as the current default (settings) or as "no custom text" (a client).
+const currentTemplates = (templates = {}) =>
+  Object.fromEntries(
+    Object.entries({ ...DEFAULT_TEMPLATES, ...templates }).map(([k, v]) => [
+      k,
+      v === LEGACY_DEFAULT_TEMPLATES[k] ? DEFAULT_TEMPLATES[k] : v,
+    ]),
+  );
+const currentOverrides = (overrides) =>
+  overrides &&
+  Object.fromEntries(
+    Object.entries(overrides).map(([k, v]) => [
+      k,
+      v === LEGACY_DEFAULT_TEMPLATES[k] ? null : v,
+    ]),
+  );
+// Documents already issued for a deal in the other GST mode (a snapshot
+// without gstRegistered is format 1 = registered).
+const modeOf = (doc) => doc.snapshot?.gstRegistered !== false;
+const modeText = (registered) => (registered ? "with GST" : "without GST");
 
 const imageMeta = (meta) =>
   meta
@@ -99,7 +147,8 @@ const settingsView = (s, next) => ({
   bank: s.bank,
   signatory: s.signatory,
   numbering: s.numbering,
-  gst: s.gst,
+  gst: { ...s.gst, registered: s.gst.registered === true },
+  design: s.design,
   quotation: s.quotation,
   invoice: s.invoice,
   templates: s.templates,
@@ -116,7 +165,7 @@ const settingsView = (s, next) => ({
 const profileView = (p) => ({
   rev: p.rev,
   billTo: p.billTo,
-  overrides: p.overrides,
+  overrides: currentOverrides(p.overrides),
   updatedAt: p.updatedAt ?? null,
 });
 // Totals for a stored deal with the current settings; null while the deal
@@ -126,6 +175,7 @@ function totalsOf(deal, settings) {
     return computeTotals(deal, {
       sellerState: settings.company.stateCode || deal.placeOfSupply,
       roundOff: settings.gst.roundOff,
+      registered: settings.gst.registered === true,
     });
   } catch {
     return null;
@@ -147,7 +197,7 @@ const docView = (doc, live) => ({
   dealId: doc.dealId,
   customerId: doc.customerId,
   type: doc.type,
-  title: DOC_TITLES[doc.type],
+  title: docTitle(doc),
   number: doc.number,
   version: doc.version,
   label: versionLabel(doc),
@@ -183,8 +233,16 @@ const DEAL_FIELDS = [
 ];
 const fieldsOf = (deal) =>
   Object.fromEntries(DEAL_FIELDS.map((k) => [k, deal[k]]));
-const complete = (deal) =>
-  deal.lines.length > 0 && salesSchemas.deal.safeParse(fieldsOf(deal)).success;
+// The static deal schema cannot know the settings: the place of supply and the
+// client's state are needed only for a GST-registered seller.
+const statesGiven = (deal, settings) =>
+  settings.gst.registered !== true ||
+  Boolean(deal.placeOfSupply && deal.billTo?.stateCode);
+const valid = (deal, settings) =>
+  salesSchemas.deal.safeParse(fieldsOf(deal)).success &&
+  statesGiven(deal, settings);
+const complete = (deal, settings) =>
+  deal.lines.length > 0 && valid(deal, settings);
 const fileName = (doc) =>
   `${doc.type}-${doc.number.replaceAll("/", "-")}${doc.type === "invoice" ? "" : `-v${doc.version}`}.pdf`;
 // Parsed logo/signature by hash (they never change): parsing re-inflates a PNG.
@@ -214,6 +272,14 @@ export function salesRoutes({ db, client, c, auth, s3, sendDocument }) {
     return {
       ...defaults,
       ...row,
+      // A section saved before a field existed gets that field's default.
+      ...Object.fromEntries(
+        ["company", "bank", "signatory", "gst", "design"].map((k) => [
+          k,
+          { ...defaults[k], ...row?.[k] },
+        ]),
+      ),
+      templates: currentTemplates(row?.templates),
       rev: row?.rev ?? 0,
       images: { logo: null, signature: null, ...row?.images },
     };
@@ -343,6 +409,30 @@ export function salesRoutes({ db, client, c, auth, s3, sendDocument }) {
       finalizedAt: deal.finalizedAt ?? null,
       sellerState: settings.company.stateCode,
       roundOff: settings.gst.roundOff,
+      registered: settings.gst.registered === true,
+      // Issued documents whose GST mode differs from the current setting.
+      // Only a quotation or agreement that still blocks the next document:
+      // nothing once an invoice is active, else the latest one in the other
+      // mode.
+      modeChanged: docs.some(
+        (d) => d.type === "invoice" && d.status === "issued",
+      )
+        ? []
+        : docs
+            .filter(
+              (d) =>
+                d.type !== "invoice" &&
+                d.status === "issued" &&
+                modeOf(d) !== (settings.gst.registered === true),
+            )
+            .slice(0, 1)
+            .map((d) => ({
+              id: d._id,
+              type: d.type,
+              label: `${docTitle(d)} ${versionLabel(d)}`,
+              gst: modeOf(d),
+            })),
+      ready: readiness(settings),
       storage: Boolean(s3),
       totals: totalsOf(deal, settings),
       documents: docs.map((d) => docView(d, live)),
@@ -605,7 +695,9 @@ export function salesRoutes({ db, client, c, auth, s3, sendDocument }) {
         },
       );
       const billingChange = PAYMENT_TEXTS.some(
-        (key) => (before?.overrides?.[key] ?? null) !== data.overrides[key],
+        (key) =>
+          (currentOverrides(before?.overrides)?.[key] ?? null) !==
+          data.overrides[key],
       );
       if (billingChange) {
         ensure(
@@ -787,7 +879,7 @@ export function salesRoutes({ db, client, c, auth, s3, sendDocument }) {
             409,
             "Only a draft deal can be finalised.",
           );
-          if (!complete(current))
+          if (!complete(current, await loadSettings(session)))
             throw conflict(
               "Complete the deal (bill-to, place of supply and at least one line) first.",
               "deal-incomplete",
@@ -840,18 +932,18 @@ export function salesRoutes({ db, client, c, auth, s3, sendDocument }) {
       const { type } = salesSchemas.preview.parse(req.body);
       await consume(db, `sales-preview:${req.staff._id}`, 60, HOUR);
       const deal = await loadDeal(req.params.dealId);
-      if (!salesSchemas.deal.safeParse(fieldsOf(deal)).success)
-        throw conflict(
-          "Save a complete deal (bill-to, place of supply) before previewing.",
-          "deal-incomplete",
-        );
       const [settings, profile] = await Promise.all([
         loadSettings(),
         profiles.findOne({ _id: deal.customerId }),
       ]);
+      if (!valid(deal, settings))
+        throw conflict(
+          "Save a complete deal (bill-to, place of supply) before previewing.",
+          "deal-incomplete",
+        );
       const snapshot = snapshotOf({
         settings,
-        overrides: profile?.overrides,
+        overrides: currentOverrides(profile?.overrides),
         deal,
         type,
         number: null,
@@ -883,24 +975,42 @@ export function salesRoutes({ db, client, c, auth, s3, sendDocument }) {
             "Finalise the deal before issuing an agreement or invoice.",
             "deal-not-final",
           );
-        if (!complete(deal))
+        const settings = await loadSettings(session),
+          ready = readiness(settings);
+        if (!complete(deal, settings))
           throw conflict(
             "Complete the deal (bill-to, place of supply and at least one line) first.",
             "deal-incomplete",
           );
-        const settings = await loadSettings(session),
-          ready = readiness(settings);
         if (!ready[type]) {
-          const missing =
-            type === "invoice"
-              ? ready.missing
-              : ready.missing.filter((m) => m !== "gstin");
+          const missing = ready.missing[type];
           const error = conflict(
             `Add ${missing.map((m) => MISSING_TEXT[m]).join(", ")} in Sales settings first.`,
             "settings-incomplete",
           );
           error.items = missing;
           throw error;
+        }
+        if (type !== "quotation") {
+          // Money printed on the earlier documents must stay the money of
+          // this one: refuse when they were issued in the other GST mode.
+          const registered = settings.gst.registered === true,
+            stale = await documents.findOne(
+              {
+                dealId: id,
+                status: "issued",
+                type: {
+                  $in: ["quotation", "agreement"].filter((t) => t !== type),
+                },
+                "snapshot.gstRegistered": registered ? false : { $ne: false },
+              },
+              { session, sort: { issuedAt: -1 } },
+            );
+          if (stale)
+            throw conflict(
+              `${DOC_TITLES[stale.type]} ${versionLabel(stale)} was issued ${modeText(modeOf(stale))}, but you are ${registered ? "now registered" : "no longer registered"}. Issue a new ${stale.type} version first${stale.type === "quotation" ? " (and then the agreement)" : ""}.${stale.type === "quotation" && deal.validUntil && deal.validUntil < istDate(new Date()) ? " The valid-until date has passed: reopen the deal and change it first." : ""}`,
+              "gst-mode-changed",
+            );
         }
         const issuedAt = new Date(),
           fy = fyOf(issuedAt);
@@ -965,7 +1075,7 @@ export function salesRoutes({ db, client, c, auth, s3, sendDocument }) {
         );
         const snapshot = snapshotOf({
           settings,
-          overrides: profile?.overrides,
+          overrides: currentOverrides(profile?.overrides),
           deal,
           type,
           number,
@@ -1248,7 +1358,7 @@ export function salesRoutes({ db, client, c, auth, s3, sendDocument }) {
       doc = await current();
       const s = doc.snapshot,
         label = versionLabel(doc),
-        title = DOC_TITLES[doc.type];
+        title = docTitle(doc);
       const text = [
         `Dear ${s.buyer.name},`,
         "",

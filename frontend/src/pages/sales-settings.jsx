@@ -9,7 +9,11 @@ import {
   Field,
   Select,
 } from "../components/ui";
-import { STATE_OPTIONS } from "../components/sales";
+import {
+  GstTextWarning,
+  ReadinessNotice,
+  STATE_OPTIONS,
+} from "../components/sales";
 import { withStepUp } from "../components/step-up";
 import { api, upload, isStale, dateTime } from "../lib/api";
 import { useNavigationGuard } from "../lib/router";
@@ -22,12 +26,6 @@ import {
   fyOf,
 } from "../../../shared/sales";
 
-const MISSING = {
-  "legal-name": "legal name",
-  address: "address",
-  state: "state",
-  gstin: "GSTIN (needed for tax invoices)",
-};
 const TEXTS = [
   ["quotationTerms", "Quotation terms", 4000],
   ["agreementBody", "Agreement text", 20000],
@@ -39,6 +37,7 @@ const editable = (s) => ({
   signatory: s.signatory,
   numbering: s.numbering,
   gst: s.gst,
+  design: s.design,
   quotation: s.quotation,
   invoice: s.invoice,
   templates: s.templates,
@@ -52,7 +51,7 @@ export function SalesSettings({ user }) {
       <PageTitle
         eyebrow="SALES"
         title="Sales settings"
-        description="Company profile, payment details, numbering, GST and the texts printed on quotations, agreements and tax invoices."
+        description="GST registration, company profile, payment details, numbering and the texts printed on quotations, agreements and invoices."
       />
       <div role="status">
         {stale && (
@@ -127,17 +126,76 @@ function SettingsForm({ data, canEdit, onSaved, onStale }) {
     }
   }
   const c = form.company,
-    b = form.bank;
+    b = form.bank,
+    registered = form.gst.registered === true;
+  const addressField = (
+    <Field
+      label="Address"
+      hint={registered ? "Required. Up to four lines." : "Up to four lines."}
+    >
+      <textarea
+        rows={3}
+        value={c.address.join("\n")}
+        aria-required={registered ? "true" : undefined}
+        onChange={(e) => {
+          setForm({
+            ...form,
+            company: {
+              ...c,
+              address: e.target.value.split("\n").slice(0, 4),
+            },
+          });
+          setDirty(true);
+        }}
+      />
+    </Field>
+  );
+  const stateField = (
+    <Field
+      label="State"
+      hint={
+        registered
+          ? "Required. Decides CGST + SGST (same state) or IGST (other states)."
+          : undefined
+      }
+    >
+      <Select
+        value={c.stateCode}
+        onChange={set("company", "stateCode")}
+        options={STATE_OPTIONS}
+        disabled={!canEdit}
+      />
+    </Field>
+  );
+  const gstinField = (
+    <Field
+      label="GSTIN"
+      hint={
+        registered
+          ? "Required for tax invoices."
+          : "Not printed while you are not registered under GST. Clear it if it is not yours."
+      }
+    >
+      <input
+        value={c.gstin}
+        onChange={(e) =>
+          set(
+            "company",
+            "gstin",
+          )({ target: { value: e.target.value.toUpperCase() } })
+        }
+        maxLength={15}
+        aria-required={registered ? "true" : undefined}
+      />
+    </Field>
+  );
   return (
     <>
-      {!data.ready.invoice && (
-        <div className="notice notice-warning">
-          <span>
-            Missing before documents can be issued:{" "}
-            {data.ready.missing.map((m) => MISSING[m]).join(", ")}.
-          </span>
-        </div>
-      )}
+      <ReadinessNotice
+        ready={data.ready}
+        intro="Missing before documents can be issued. "
+        link={false}
+      />
       {!canEdit && (
         <p className="small subtle sales-readonly">
           Only an owner can change these settings (with an authenticator
@@ -152,13 +210,31 @@ function SettingsForm({ data, canEdit, onSaved, onStale }) {
       >
         <fieldset disabled={!canEdit} className="sales-fieldset">
           <section className="form-section">
+            <h2>GST registration</h2>
+            <label className="check-row">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={form.gst.registered}
+                onChange={set("gst", "registered")}
+                aria-describedby="sales-registered-hint"
+              />
+              Registered under GST
+            </label>
+            <p id="sales-registered-hint" className="form-note">
+              Off: documents carry no GST and no GSTIN, and the invoice is
+              titled 'Invoice'. Turn it on only after you get a GSTIN.
+            </p>
+          </section>
+          <section className="form-section">
             <h2>Company</h2>
             <div className="form-grid">
-              <Field label="Legal name">
+              <Field label="Legal name" hint="Required.">
                 <input
                   value={c.legalName}
                   onChange={set("company", "legalName")}
                   maxLength={160}
+                  aria-required="true"
                 />
               </Field>
               <Field label="Trade name">
@@ -168,22 +244,56 @@ function SettingsForm({ data, canEdit, onSaved, onStale }) {
                   maxLength={160}
                 />
               </Field>
-              <Field label="Address" hint="Up to four lines.">
-                <textarea
-                  rows={3}
-                  value={c.address.join("\n")}
-                  onChange={(e) => {
-                    setForm({
-                      ...form,
-                      company: {
-                        ...c,
-                        address: e.target.value.split("\n").slice(0, 4),
-                      },
-                    });
-                    setDirty(true);
-                  }}
+              <Field
+                label="Company e-mail"
+                hint="Required. Replies to e-mailed documents go here."
+              >
+                <input
+                  type="email"
+                  value={c.email}
+                  onChange={set("company", "email")}
+                  maxLength={254}
+                  aria-required="true"
                 />
               </Field>
+              <Field label="Phone" hint="Required.">
+                <input
+                  value={c.phone}
+                  onChange={set("company", "phone")}
+                  maxLength={32}
+                  aria-required="true"
+                />
+              </Field>
+              <Field
+                label="Jurisdiction city"
+                hint="Required for agreements. Courts and arbitration seat named in the agreement, for example Ahmedabad."
+              >
+                <input
+                  value={c.jurisdiction}
+                  onChange={set("company", "jurisdiction")}
+                  maxLength={60}
+                />
+              </Field>
+              {registered && (
+                <>
+                  {addressField}
+                  {stateField}
+                  {gstinField}
+                </>
+              )}
+            </div>
+            <h3 className="sales-subheading">
+              {registered ? "Optional" : "Optional - printed only when filled"}
+            </h3>
+            <div className="form-grid">
+              {!registered && (
+                <>
+                  {addressField}
+                  {stateField}
+                  {/* A GSTIN already on file stays visible (and clearable). */}
+                  {data.company.gstin && gstinField}
+                </>
+              )}
               <div>
                 <Field label="City">
                   <input
@@ -201,29 +311,6 @@ function SettingsForm({ data, canEdit, onSaved, onStale }) {
                   />
                 </Field>
               </div>
-              <Field
-                label="State"
-                hint="Decides CGST + SGST (same state) or IGST (other states)."
-              >
-                <Select
-                  value={c.stateCode}
-                  onChange={set("company", "stateCode")}
-                  options={STATE_OPTIONS}
-                  disabled={!canEdit}
-                />
-              </Field>
-              <Field label="GSTIN">
-                <input
-                  value={c.gstin}
-                  onChange={(e) =>
-                    set(
-                      "company",
-                      "gstin",
-                    )({ target: { value: e.target.value.toUpperCase() } })
-                  }
-                  maxLength={15}
-                />
-              </Field>
               <Field label="PAN">
                 <input
                   value={c.pan}
@@ -234,24 +321,6 @@ function SettingsForm({ data, canEdit, onSaved, onStale }) {
                     )({ target: { value: e.target.value.toUpperCase() } })
                   }
                   maxLength={10}
-                />
-              </Field>
-              <Field
-                label="Company e-mail"
-                hint="Replies to e-mailed documents go here."
-              >
-                <input
-                  type="email"
-                  value={c.email}
-                  onChange={set("company", "email")}
-                  maxLength={254}
-                />
-              </Field>
-              <Field label="Phone">
-                <input
-                  value={c.phone}
-                  onChange={set("company", "phone")}
-                  maxLength={32}
                 />
               </Field>
               <Field label="Website">
@@ -266,8 +335,8 @@ function SettingsForm({ data, canEdit, onSaved, onStale }) {
           <section className="form-section">
             <h2>Payment details</h2>
             <p className="form-note">
-              Printed on quotations and invoices. Issued documents keep the
-              details they were issued with.
+              Optional: printed on invoices and quotations only when filled.
+              Issued documents keep the details they were issued with.
             </p>
             <div className="form-grid">
               <Field label="Account name">
@@ -335,9 +404,9 @@ function SettingsForm({ data, canEdit, onSaved, onStale }) {
             </div>
           </section>
           <section className="form-section">
-            <h2>Numbering and GST</h2>
+            <h2>{registered ? "Numbering and GST" : "Numbering"}</h2>
             <p className="form-note">
-              Numbers restart every 1 April and never skip. A tax invoice number
+              Numbers restart every 1 April and never skip. An invoice number
               may have at most 16 characters (Rule 46): the invoice prefix can
               have up to 6.
             </p>
@@ -368,28 +437,32 @@ function SettingsForm({ data, canEdit, onSaved, onStale }) {
                   />
                 </Field>
               ))}
-              <Field
-                label="Default SAC"
-                hint="998314 = IT design and development services."
-              >
-                <input
-                  value={form.gst.defaultSac}
-                  onChange={set("gst", "defaultSac")}
-                  maxLength={8}
-                  inputMode="numeric"
-                />
-              </Field>
-              <Field label="Default GST rate">
-                <Select
-                  value={String(form.gst.defaultRate)}
-                  onChange={set("gst", "defaultRate")}
-                  options={GST_RATES.map((r) => ({
-                    value: String(r),
-                    label: formatPercent(r),
-                  }))}
-                  disabled={!canEdit}
-                />
-              </Field>
+              {registered && (
+                <>
+                  <Field
+                    label="Default SAC"
+                    hint="998314 = IT design and development services."
+                  >
+                    <input
+                      value={form.gst.defaultSac}
+                      onChange={set("gst", "defaultSac")}
+                      maxLength={8}
+                      inputMode="numeric"
+                    />
+                  </Field>
+                  <Field label="Default GST rate">
+                    <Select
+                      value={String(form.gst.defaultRate)}
+                      onChange={set("gst", "defaultRate")}
+                      options={GST_RATES.map((r) => ({
+                        value: String(r),
+                        label: formatPercent(r),
+                      }))}
+                      disabled={!canEdit}
+                    />
+                  </Field>
+                </>
+              )}
               <Field label="Quotation valid for (days)">
                 <input
                   type="number"
@@ -418,10 +491,53 @@ function SettingsForm({ data, canEdit, onSaved, onStale }) {
               Round the total to the nearest rupee (printed as a separate "Round
               off" line)
             </label>
-            <p className="form-note">
-              E-invoicing (IRN and QR code) is not supported; it is required
-              only above Rs. 5 crore aggregate turnover.
-            </p>
+            {registered && (
+              <p className="form-note">
+                E-invoicing (IRN and QR code) is not supported; it is required
+                only above Rs. 5 crore aggregate turnover.
+              </p>
+            )}
+          </section>
+          <section className="form-section">
+            <h2>Document design</h2>
+            <div className="form-grid">
+              <Field
+                label="Document accent colour"
+                hint="Headings and rules on the PDFs. Default #355E45."
+              >
+                <input
+                  value={form.design.accent}
+                  onChange={(e) =>
+                    set(
+                      "design",
+                      "accent",
+                    )({ target: { value: e.target.value.toUpperCase() } })
+                  }
+                  maxLength={7}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </Field>
+              <div className="field">
+                <label htmlFor="sales-accent-picker">Pick a colour</label>
+                <input
+                  id="sales-accent-picker"
+                  type="color"
+                  className="sales-colour"
+                  value={
+                    /^#[0-9A-Fa-f]{6}$/.test(form.design.accent)
+                      ? form.design.accent.toLowerCase()
+                      : "#355e45"
+                  }
+                  onChange={(e) =>
+                    set(
+                      "design",
+                      "accent",
+                    )({ target: { value: e.target.value.toUpperCase() } })
+                  }
+                />
+              </div>
+            </div>
           </section>
           <section className="form-section">
             <h2>Default texts</h2>
@@ -430,20 +546,46 @@ function SettingsForm({ data, canEdit, onSaved, onStale }) {
               Placeholders: {PLACEHOLDERS.map((p) => `{{${p}}}`).join(", ")}.
             </p>
             {TEXTS.map(([key, label, max]) => (
-              <Field key={key} label={label}>
-                <textarea
-                  rows={key === "agreementBody" ? 12 : 5}
-                  value={form.templates[key]}
-                  onChange={(e) => {
-                    setForm({
-                      ...form,
-                      templates: { ...form.templates, [key]: e.target.value },
-                    });
-                    setDirty(true);
-                  }}
-                  maxLength={max}
+              <div key={key} className="sales-text-field">
+                <Field label={label}>
+                  <textarea
+                    rows={key === "agreementBody" ? 12 : 5}
+                    value={form.templates[key]}
+                    onChange={(e) => {
+                      setForm({
+                        ...form,
+                        templates: { ...form.templates, [key]: e.target.value },
+                      });
+                      setDirty(true);
+                    }}
+                    maxLength={max}
+                  />
+                </Field>
+                {canEdit && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={form.templates[key] === data.defaults[key]}
+                    aria-label={`Restore default text: ${label}`}
+                    onClick={() => {
+                      setForm({
+                        ...form,
+                        templates: {
+                          ...form.templates,
+                          [key]: data.defaults[key],
+                        },
+                      });
+                      setDirty(true);
+                    }}
+                  >
+                    Restore default text
+                  </Button>
+                )}
+                <GstTextWarning
+                  registered={registered}
+                  text={form.templates[key]}
                 />
-              </Field>
+              </div>
             ))}
           </section>
         </fieldset>

@@ -25,6 +25,7 @@ import { ConfirmModal } from "../components/confirm";
 import {
   BillToFields,
   DocumentTable,
+  ReadinessNotice,
   STATE_OPTIONS,
   cleanBillTo,
   money,
@@ -54,11 +55,8 @@ const DISCOUNT_OPTIONS = [
   { value: "percent", label: "Percent (%)" },
   { value: "amount", label: "Amount (Rs.)" },
 ];
-const ISSUE_LABEL = {
-  quotation: "quotation",
-  agreement: "agreement",
-  invoice: "tax invoice",
-};
+const issueLabel = (type, registered) =>
+  type === "invoice" ? (registered ? "tax invoice" : "invoice") : type;
 let nextId = 0;
 const lineId = () => `l${Date.now().toString(36)}${(nextId++).toString(36)}`;
 
@@ -225,6 +223,7 @@ function DealEditor({
     dirty ? "This deal has unsaved changes. Leave anyway?" : "",
   );
   const draft = deal.status === "draft",
+    registered = deal.registered === true,
     parsed = useMemo(() => toDeal(form), [form]),
     // {totals} or {problem}: the same RangeError text the server would give.
     computed = useMemo(() => {
@@ -234,12 +233,13 @@ function DealEditor({
           totals: computeTotals(parsed.deal, {
             sellerState: deal.sellerState || parsed.deal.placeOfSupply,
             roundOff: deal.roundOff,
+            registered,
           }),
         };
       } catch (e) {
         return { problem: e.message };
       }
-    }, [parsed, deal.sellerState, deal.roundOff]),
+    }, [parsed, deal.sellerState, deal.roundOff, registered]),
     totals = computed.totals ?? null;
   const change = (next) => {
     setForm(next);
@@ -345,9 +345,25 @@ function DealEditor({
       <PageTitle
         eyebrow="DEAL"
         title={deal.title}
-        description={`Created by ${deal.createdBy}. ${draft ? "Draft: edit, save, then issue a quotation or finalise." : deal.status === "final" ? "Final: the commercial terms are locked. Issue the agreement and the tax invoice." : "Closed as lost."}`}
+        description={`Created by ${deal.createdBy}. ${draft ? "Draft: edit, save, then issue a quotation or finalise." : deal.status === "final" ? `Final: the commercial terms are locked. Issue the agreement and the ${issueLabel("invoice", registered)}.` : "Closed as lost."}`}
         action={<Badge value={deal.status} />}
       />
+      {deal.modeChanged?.length > 0 && (
+        <div className="notice notice-warning" role="status">
+          <span>
+            {deal.modeChanged.map((m) => m.label).join(", ")}{" "}
+            {deal.modeChanged.length === 1 ? "was" : "were"} issued{" "}
+            {deal.modeChanged[0].gst ? "with" : "without"} GST, but you are{" "}
+            {registered ? "now" : "no longer"} registered under GST. Issue a new{" "}
+            {deal.modeChanged[0].type} version first
+            {deal.modeChanged[0].type === "quotation"
+              ? " (and then the agreement)"
+              : ""}
+            . If its valid-until date has passed, reopen the deal and change it
+            first.
+          </span>
+        </div>
+      )}
       <form className="panel edit-form" onSubmit={save} aria-label="Deal">
         <fieldset disabled={disabled} className="sales-fieldset">
           <section className="form-section">
@@ -361,25 +377,29 @@ function DealEditor({
                   required
                 />
               </Field>
-              <Field
-                label="Place of supply"
-                hint={
-                  deal.sellerState
-                    ? form.placeOfSupply === deal.sellerState
-                      ? "Same state as the company: CGST + SGST."
-                      : "Another state: IGST."
-                    : "Set the company state in Sales settings."
-                }
-              >
-                <Select
-                  value={form.placeOfSupply}
-                  onChange={(e) =>
-                    change({ ...form, placeOfSupply: e.target.value })
+              {registered && (
+                <Field
+                  label="Place of supply"
+                  hint={
+                    !form.placeOfSupply
+                      ? "Choose the place of supply to see GST."
+                      : deal.sellerState
+                        ? form.placeOfSupply === deal.sellerState
+                          ? "Same state as the company: CGST + SGST."
+                          : "Another state: IGST."
+                        : "Set the company state in Sales settings."
                   }
-                  options={STATE_OPTIONS}
-                  disabled={disabled}
-                />
-              </Field>
+                >
+                  <Select
+                    value={form.placeOfSupply}
+                    onChange={(e) =>
+                      change({ ...form, placeOfSupply: e.target.value })
+                    }
+                    options={STATE_OPTIONS}
+                    disabled={disabled}
+                  />
+                </Field>
+              )}
               <Field
                 label="Quotation valid until"
                 hint={`Blank: ${config.quotation.validityDays} days from the issue date.`}
@@ -407,6 +427,7 @@ function DealEditor({
             <BillToFields
               value={form.billTo}
               prefix="Client"
+              stateRequired={registered}
               disabled={disabled}
               onChange={(billTo) =>
                 change({
@@ -449,14 +470,18 @@ function DealEditor({
                           required
                         />
                       </Field>
-                      <Field label="SAC">
-                        <input
-                          value={line.sac}
-                          onChange={(e) => setLine(i, { sac: e.target.value })}
-                          maxLength={8}
-                          inputMode="numeric"
-                        />
-                      </Field>
+                      {registered && (
+                        <Field label="SAC">
+                          <input
+                            value={line.sac}
+                            onChange={(e) =>
+                              setLine(i, { sac: e.target.value })
+                            }
+                            maxLength={8}
+                            inputMode="numeric"
+                          />
+                        </Field>
+                      )}
                       <Field label="Quantity">
                         <input
                           value={line.qtyText}
@@ -512,22 +537,31 @@ function DealEditor({
                           />
                         </Field>
                       )}
-                      <Field label="GST rate">
-                        <Select
-                          value={line.gstRate}
-                          onChange={(e) =>
-                            setLine(i, { gstRate: e.target.value })
-                          }
-                          options={RATE_OPTIONS}
-                          disabled={disabled}
-                        />
-                      </Field>
+                      {registered && (
+                        <Field label="GST rate">
+                          <Select
+                            value={line.gstRate}
+                            onChange={(e) =>
+                              setLine(i, { gstRate: e.target.value })
+                            }
+                            options={RATE_OPTIONS}
+                            disabled={disabled}
+                          />
+                        </Field>
+                      )}
                       <div className="sales-line-amount">
                         <span className="small subtle">Line total</span>
                         <strong>
-                          {totals ? money(totals.lines[i].amount) : "—"}
+                          {totals
+                            ? money(
+                                registered
+                                  ? totals.lines[i].amount
+                                  : totals.lines[i].net,
+                              )
+                            : "—"}
                         </strong>
                         {totals &&
+                          registered &&
                           totals.lines[i].discount + totals.lines[i].share >
                             0 && (
                             <span className="small subtle">
@@ -616,6 +650,7 @@ function DealEditor({
                 problem={computed.problem}
                 discount={parsed.deal?.discount}
                 roundOff={deal.roundOff}
+                registered={registered}
                 placeOfSupply={form.placeOfSupply}
               />
             </div>
@@ -664,6 +699,7 @@ function DealEditor({
           </div>
         </div>
         <div className="sales-issue-body">
+          <ReadinessNotice ready={deal.ready} />
           <div className="sales-preview">
             <Field label="Preview type">
               <Select
@@ -672,7 +708,10 @@ function DealEditor({
                 options={[
                   { value: "quotation", label: "Quotation" },
                   { value: "agreement", label: "Agreement" },
-                  { value: "invoice", label: "Tax invoice" },
+                  {
+                    value: "invoice",
+                    label: registered ? "Tax invoice" : "Invoice",
+                  },
                 ]}
               />
             </Field>
@@ -696,7 +735,7 @@ function DealEditor({
                 onClick={() => issue("quotation")}
               >
                 <FilePlus2 size={15} />
-                Issue {ISSUE_LABEL.quotation}
+                Issue quotation
               </Button>
             )}
             {deal.status === "final" && (
@@ -708,7 +747,7 @@ function DealEditor({
                   onClick={() => issue("agreement")}
                 >
                   <FilePlus2 size={15} />
-                  Issue {ISSUE_LABEL.agreement}
+                  Issue agreement
                 </Button>
                 <Button
                   type="button"
@@ -717,7 +756,7 @@ function DealEditor({
                   onClick={() => setConfirmInvoice(true)}
                 >
                   <FilePlus2 size={15} />
-                  Issue {ISSUE_LABEL.invoice}
+                  Issue {issueLabel("invoice", registered)}
                 </Button>
               </>
             )}
@@ -758,8 +797,8 @@ function DealEditor({
           </div>
           {hasInvoice && (
             <p className="small subtle">
-              This deal has an active tax invoice. Cancel it (owner) to reopen
-              the deal or issue another.
+              This deal has an active {issueLabel("invoice", registered)}.
+              Cancel it (owner) to reopen the deal or issue another.
             </p>
           )}
         </div>
@@ -776,8 +815,8 @@ function DealEditor({
       )}
       {confirmInvoice && (
         <ConfirmModal
-          title="Issue the tax invoice?"
-          action="Issue tax invoice"
+          title={`Issue the ${issueLabel("invoice", registered)}?`}
+          action={`Issue ${issueLabel("invoice", registered)}`}
           onClose={() => setConfirmInvoice(false)}
           onConfirm={async () => {
             setConfirmInvoice(false);
@@ -787,7 +826,10 @@ function DealEditor({
           <p>
             It takes the next invoice number of this financial year and can
             never be edited. To correct it later the owner has to cancel it
-            (only before it is reported in your GST return).
+            {registered
+              ? " (only before it is reported in your GST return)"
+              : ""}
+            .
           </p>
         </ConfirmModal>
       )}
@@ -795,7 +837,14 @@ function DealEditor({
   );
 }
 
-function Totals({ totals, problem, discount, roundOff, placeOfSupply }) {
+function Totals({
+  totals,
+  problem,
+  discount,
+  roundOff,
+  registered,
+  placeOfSupply,
+}) {
   if (!totals)
     return (
       <div className="sales-totals" role="status">
@@ -805,8 +854,10 @@ function Totals({ totals, problem, discount, roundOff, placeOfSupply }) {
       </div>
     );
   const rows = [
-    ["Subtotal", money(totals.gross)],
-    ...(totals.lineDiscount
+    // Without GST the totals read like the PDF: subtotal of the line amounts
+    // (after each line's own discount), overall discount, round off, total.
+    ["Subtotal", money(registered ? totals.gross : totals.net)],
+    ...(registered && totals.lineDiscount
       ? [["Line discounts", `- ${money(totals.lineDiscount)}`]]
       : []),
     ...(totals.overallDiscount
@@ -819,27 +870,53 @@ function Totals({ totals, problem, discount, roundOff, placeOfSupply }) {
           ],
         ]
       : []),
-    ["Taxable value", money(totals.taxable)],
-    ...(totals.intra
+    ...(registered
       ? [
-          ["CGST", money(totals.cgst)],
-          [localTaxLabel(placeOfSupply), money(totals.sgst)],
+          ["Taxable value", money(totals.taxable)],
+          // No split until the place of supply is chosen.
+          ...(!placeOfSupply
+            ? []
+            : totals.intra
+              ? [
+                  ["CGST", money(totals.cgst)],
+                  [localTaxLabel(placeOfSupply), money(totals.sgst)],
+                ]
+              : [["IGST", money(totals.igst)]]),
         ]
-      : [["IGST", money(totals.igst)]]),
-    ...(roundOff ? [["Round off", money(totals.roundOff)]] : []),
+      : []),
+    ...(roundOff
+      ? [
+          [
+            "Round off",
+            `${!registered && totals.roundOff > 0 ? "+" : ""}${money(totals.roundOff)}`,
+          ],
+        ]
+      : []),
   ];
   return (
-    <dl className="sales-totals" aria-label="Totals">
-      {rows.map(([label, value]) => (
-        <div key={label}>
-          <dt>{label}</dt>
-          <dd>{value}</dd>
+    <div>
+      <dl className="sales-totals" aria-label="Totals">
+        {rows.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+        <div className="sales-total">
+          <dt>Total</dt>
+          <dd>{money(totals.payable)}</dd>
         </div>
-      ))}
-      <div className="sales-total">
-        <dt>Total</dt>
-        <dd>{money(totals.payable)}</dd>
-      </div>
-    </dl>
+      </dl>
+      {!registered && (
+        <p className="small subtle sales-totals-note">
+          GST not charged - not registered under GST.
+        </p>
+      )}
+      {registered && !placeOfSupply && (
+        <p className="small subtle sales-totals-note">
+          Choose the place of supply to see GST.
+        </p>
+      )}
+    </div>
   );
 }
