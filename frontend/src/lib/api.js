@@ -55,10 +55,11 @@ export async function api(path, { boot, ...options } = {}) {
     .catch(() => ({ error: "The server returned an unreadable response." }));
 }
 // Raw upload: the browser sets Content-Length from the Blob. The file name and
-// category travel in headers (the route takes no query string).
-export async function upload(path, file, headers = {}) {
+// category travel in headers (the route takes no query string). Sales images
+// use PUT.
+export async function upload(path, file, headers = {}, method = "POST") {
   const res = await fetch(`/api${path}`, {
-    method: "POST",
+    method,
     credentials: "same-origin",
     headers: {
       "Content-Type": "application/octet-stream",

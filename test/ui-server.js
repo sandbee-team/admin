@@ -217,6 +217,51 @@ for (const name of [
     createdAt: new Date(),
   });
 }
+// ---- Sales documents (sales.spec.js) ----------------------------------------
+// Owners with the deploy key (settings need a step-up), an admin, a customer.
+for (const name of ["a", "b"]) {
+  const _id = randomUUID();
+  await db.collection("staff").insertOne({
+    _id,
+    email: `sales-owner-${name}@example.test`,
+    name: `sales owner ${name}`,
+    role: "owner",
+    status: "active",
+    revision: 1,
+    authVersion: 1,
+    passwordHash: await hashPassword("Browser test passphrase 2026!"),
+    totp: {
+      key: encrypt(DEPLOY_KEY, c.VAULT_KEY, `staff:${_id}:totp`),
+      enabledAt: new Date(),
+      lastStep: null,
+    },
+    createdAt: new Date(),
+  });
+}
+await db.collection("staff").insertOne({
+  _id: randomUUID(),
+  email: "sales-admin@example.test",
+  name: "sales admin",
+  role: "admin",
+  status: "active",
+  revision: 1,
+  authVersion: 1,
+  passwordHash: await hashPassword("Browser test passphrase 2026!"),
+  createdAt: new Date(),
+});
+await db.collection("customers").insertOne({
+  _id: "00000000-0000-4000-8000-0000000000c5",
+  name: "Sales Customer",
+  company: "Cafe Blue",
+  email: "cafe-blue@example.test",
+  phone: "",
+  status: "active",
+  notes: "",
+  storeWorkspaceId: "",
+  revision: 1,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+});
 await db.collection("staff").insertOne({
   _id: randomUUID(),
   email: "deploy-admin@example.test",
@@ -1001,6 +1046,17 @@ const app = createApp({
     writeFileSync(
       `test-results/otp-${email.split("@")[0]}.json`,
       JSON.stringify({ code }),
+    ),
+  // sales.spec.js reads what would have been e-mailed (never sent anywhere).
+  sendDocument: async (to, message) =>
+    writeFileSync(
+      "test-results/sales-mail.json",
+      JSON.stringify({
+        to,
+        subject: message.subject,
+        filename: message.filename,
+        pdf: message.content.subarray(0, 5).toString("latin1"),
+      }),
     ),
 });
 // `failing` makes matching API reads answer 503 (stale-banner specs).

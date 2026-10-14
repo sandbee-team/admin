@@ -12,6 +12,7 @@ import {
   LifeBuoy,
   FileUp,
   LockKeyhole,
+  Receipt,
   Store,
   PanelLeftClose,
   PanelLeftOpen,
@@ -41,6 +42,7 @@ const groups = [
       ["/connections", "Connections", KeyRound],
       ["/store", "Store bridge", Store],
       ["/ecom", "Ecom subscriptions", Layers3],
+      ["/sales-settings", "Sales settings", Receipt],
     ],
   ],
   [
@@ -140,7 +142,9 @@ export function Shell({ user, onLogout, children }) {
                   ([href]) =>
                     (href !== "/recovery" || can(user.role, "recovery")) &&
                     (href !== "/pos-import" || can(user.role, "secrets")) &&
-                    (href !== "/pos-clients" || can(user.role, "credentials")),
+                    (href !== "/pos-clients" ||
+                      can(user.role, "credentials")) &&
+                    (href !== "/sales-settings" || can(user.role, "sales")),
                 )
                 .map(([href, text, Icon]) => (
                   <Link

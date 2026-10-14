@@ -1,0 +1,223 @@
+/* Sales documents: customer Sales tab, deal editor, Sales settings. */
+.badge-issued,
+.badge-final {
+  background: var(--success-bg);
+  color: var(--success);
+}
+.badge-draft,
+.badge-superseded {
+  background: var(--surface);
+  color: var(--muted);
+}
+.badge-lost {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.badge-cancelled {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+.sales-stack {
+  display: grid;
+  gap: 24px;
+  min-width: 0;
+}
+/* Grid items default to min-width: auto, which would let a wide table widen
+   the page instead of scrolling inside its panel. */
+.sales-stack > * {
+  min-width: 0;
+}
+.sales-heading {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.sales-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.sales-row-actions .button {
+  min-height: 32px;
+  padding: 6px 10px;
+  font-size: 11px;
+}
+.sales-fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.sales-text-choice {
+  border: 0;
+  margin: 0 0 18px;
+  padding: 0;
+  min-width: 0;
+}
+.sales-text-choice legend {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.sales-text-choice .check-row {
+  margin-bottom: 10px;
+}
+.sales-lines {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+.sales-line fieldset {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  margin: 0;
+  padding: 14px 16px 2px;
+  min-width: 0;
+  background: var(--surface);
+}
+.sales-line legend {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 0 6px;
+}
+.sales-line-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0 14px;
+  align-items: start;
+}
+.sales-line-grid .sales-line-desc {
+  grid-column: 1 / -1;
+}
+.sales-line-amount {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 18px;
+  font-size: 13px;
+}
+.sales-line-remove {
+  justify-self: end;
+  align-self: center;
+  margin-bottom: 18px;
+  color: var(--danger);
+}
+.sales-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
+}
+.sales-add .field {
+  min-width: min(100%, 260px);
+  margin-bottom: 0;
+}
+.sales-totals-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 320px);
+  gap: 24px;
+  align-items: start;
+}
+.sales-totals {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 16px;
+  background: var(--surface);
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+}
+.sales-totals > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.sales-totals dt {
+  color: var(--muted);
+}
+.sales-totals dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.sales-totals .sales-total {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+  margin-top: 2px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.sales-totals .sales-total dt {
+  color: var(--ink);
+}
+.sales-actions {
+  flex-wrap: wrap;
+}
+.sales-issue {
+  margin: 24px 0;
+}
+.sales-issue-body {
+  padding: 0 23px 23px;
+  display: grid;
+  gap: 16px;
+}
+.sales-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+.sales-preview .field {
+  min-width: min(100%, 220px);
+  margin-bottom: 0;
+}
+.sales-images {
+  margin-bottom: 24px;
+}
+.sales-image-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  padding: 0 23px 23px;
+}
+.sales-image {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  min-width: 0;
+}
+.sales-image label.button {
+  cursor: pointer;
+}
+.sales-image label.button:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.sales-readonly {
+  margin-bottom: 14px;
+}
+@media (max-width: 1000px) {
+  .sales-totals-layout {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 760px) {
+  .sales-line-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .sales-image-grid {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 400px) {
+  .sales-line-grid {
+    grid-template-columns: 1fr;
+  }
+  .sales-line-remove {
+    justify-self: start;
+  }
+}

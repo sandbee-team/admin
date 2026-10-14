@@ -199,6 +199,7 @@ export const accountSchemas = {
 };
 
 export const FILE_CATEGORIES = [
+  "quotation",
   "agreement",
   "kyc",
   "invoice",

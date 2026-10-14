@@ -20,6 +20,7 @@ import { Link } from "../lib/router";
 // Mirror shared/schemas.js (FILE_CATEGORIES, FILE_EXTENSIONS, MAX_FILE_BYTES);
 // the API enforces them again.
 const CATEGORIES = [
+  { value: "quotation", label: "Quotation" },
   { value: "agreement", label: "Agreement" },
   { value: "kyc", label: "KYC" },
   { value: "invoice", label: "Invoice" },

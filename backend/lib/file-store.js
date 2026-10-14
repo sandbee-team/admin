@@ -3,13 +3,61 @@
 // S3 is: SBF1 | iv(12) | AES-256-GCM ciphertext | tag(16), a random data key per
 // file, GCM AAD `file:<customerId>:<fileId>`, the data key sealed with
 // VAULT_KEY in the customer record. Behaviour is exactly what files.js had.
-import { createCipheriv, createHash, randomBytes } from "node:crypto";
-import { encrypt } from "./crypto.js";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  randomBytes,
+} from "node:crypto";
+import { encrypt, decrypt, equal } from "./crypto.js";
 import { ensure } from "./errors.js";
 import { MAX_FILES } from "../../shared/schemas.js";
 
 export const MAGIC = Buffer.from("SBF1");
 export const OVERHEAD = MAGIC.length + 12 + 16; // magic + iv + GCM tag
+export class SealedIntegrityError extends Error {}
+// Reads a stored file (pinned to its versionId) and returns the plaintext only
+// when the object's size and magic, the GCM tag and the plaintext SHA-256
+// recorded at upload all verify; otherwise SealedIntegrityError. Storage
+// errors are rethrown unchanged. Used by file downloads and sales documents.
+export async function openSealed(s3, file, aad, vaultKey) {
+  let body;
+  try {
+    body = await s3.get(file.s3Key, file.versionId, file.size + OVERHEAD);
+  } catch (error) {
+    // An object longer than it can legitimately be is a tampered object.
+    if (error.s3Code !== "TooLarge") throw error;
+    throw new SealedIntegrityError();
+  }
+  try {
+    if (
+      body.length !== file.size + OVERHEAD ||
+      !body.subarray(0, MAGIC.length).equals(MAGIC)
+    )
+      throw new Error();
+    const dataKey = Buffer.from(decrypt(file.dataKey, vaultKey, aad), "hex");
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      dataKey,
+      body.subarray(MAGIC.length, MAGIC.length + 12),
+      { authTagLength: 16 },
+    );
+    decipher.setAAD(Buffer.from(aad));
+    decipher.setAuthTag(body.subarray(body.length - 16));
+    const plain = Buffer.concat([
+      decipher.update(body.subarray(MAGIC.length + 12, body.length - 16)),
+      decipher.final(),
+    ]);
+    if (
+      plain.length !== file.size ||
+      !equal(createHash("sha256").update(plain).digest("hex"), file.sha256)
+    )
+      throw new Error();
+    return plain;
+  } catch {
+    throw new SealedIntegrityError();
+  }
+}
 export const DAY = 86400000;
 export const PURGE_DAYS = 31;
 export const FILE_TYPES = {

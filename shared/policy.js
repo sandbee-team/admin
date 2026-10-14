@@ -10,8 +10,12 @@ const grants = {
     "secrets",
     // Deploys, rollbacks, builds and purges: owner only.
     "deploy",
+    // Sales documents: deals, quotations, agreements, invoices.
+    "sales",
+    // Company profile, bank details, numbering, templates; cancelling.
+    "billing",
   ],
-  admin: ["read", "operate", "catalog", "credentials"],
+  admin: ["read", "operate", "catalog", "credentials", "sales"],
   operations: ["read", "operate"],
   viewer: ["read"],
 };
