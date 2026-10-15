@@ -182,6 +182,8 @@ Staff with an authenticator sign in with password → authenticator code; staff 
 4. **Check:** sign out, sign in as the owner: email + password → "Confirm with your authenticator" directly (no email), then the dashboard. The eye button shows and hides the password.
 5. **Release rollback:** `git checkout <previous commit> && docker compose -f compose.production.yaml up -d --build` (no data to undo; the previous release asks for the email code again).
 
+The sign-in change went live on 2026-10-15 (commit `0e9fad1`, previous live commit `94dab5f`): Linux suite on the server 825 tests, 823 pass, 0 fail, 2 skipped; app and worker healthy, `/ready` ok; the owner checked the new sign-in.
+
 ## Reverse proxy (Caddy)
 
 Production terminates TLS in Caddy (`/opt/edge/Caddyfile`) and proxies to Admin on a separate local port, which keeps the other live applications untouched:
