@@ -11,6 +11,7 @@ import { transaction } from "../db.js";
 import { buildInputs, buildKeyOf, inputsOkOf } from "../lib/build-inputs.js";
 import {
   freeSlot,
+  goliveFree,
   newBuildRow,
   newJob,
   releasePrebuilds,
@@ -21,6 +22,7 @@ import {
   jobBlocks,
   sha7,
 } from "../../shared/deploy.js";
+import { goliveBlocks } from "../../shared/golive.js";
 import { can } from "../../shared/policy.js";
 import {
   ROLLOUT_ACTIVE,
@@ -395,7 +397,15 @@ async function advance(ctx, row, i) {
     return stopAt(ctx, row, i, { status: "skipped", code: "not-authorized" });
   const inst = await ctx.coll.installations.findOne(
     { _id: t.installationId },
-    { projection: TARGET_PROJECTION },
+    {
+      projection: {
+        ...TARGET_PROJECTION,
+        // P5 D41: a go-live run holds the installation (busy both ways).
+        "pos.golive.status": 1,
+        "pos.golive.requestedAt": 1,
+        "pos.golive.lease": 1,
+      },
+    },
   );
   const customer = inst
     ? await ctx.db
@@ -423,7 +433,10 @@ async function advance(ctx, row, i) {
         { projection: { at: 1 } },
       )
     )?.at ?? null;
-  if (jobBlocks(facts.pos.deploy?.current, now, workerAt))
+  if (
+    jobBlocks(facts.pos.deploy?.current, now, workerAt) ||
+    goliveBlocks(facts.pos.golive, now, workerAt)
+  )
     return stopAt(ctx, row, i, { status: "failed", code: "target-busy" });
   const job = newJob({
     kind: "deploy",
@@ -455,7 +468,11 @@ async function advance(ctx, row, i) {
           _id: t.installationId,
           "pos.rev": facts.pos.rev,
           "pos.deployLock": false,
-          ...freeSlot("pos.deploy.current", ACTIVE_STATES, now, workerAt),
+          // No deploy job and no go-live run may still hold the client.
+          $and: [
+            freeSlot("pos.deploy.current", ACTIVE_STATES, now, workerAt),
+            goliveFree(now, workerAt),
+          ],
         },
         { $set: { "pos.deploy.current": job } },
         { session },

@@ -1120,6 +1120,24 @@ for (const [code, step, title, msg, action] of [
     "POS settings changed while the go-live ran, so it stopped.",
     "Start again.",
   ],
+  // Verify's health flag for a project without a production deployment
+  // (verifyStateOf "bootstrap", D47): not a failure before the first deploy.
+  [
+    "not-deployed",
+    "ready",
+    "Not deployed yet",
+    "The Vercel project has no production deployment yet, so the site was not checked.",
+    "Finish the go-live with Unlock and deploy.",
+  ],
+  // Warning of the finish step (D47): the client is live, only the old
+  // *.vercel.app names still serve the site directly.
+  [
+    "redirect-failed",
+    "finish",
+    "Old address not redirected",
+    "Admin could not point the project's .vercel.app names at the web address.",
+    "Add the redirect in Vercel, Domains, if you need it.",
+  ],
 ])
   add(code, step, title, msg, action);
 

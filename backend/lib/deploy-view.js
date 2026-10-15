@@ -215,6 +215,14 @@ export const verifyView = (verify) =>
         health: flag(verify.health),
         problems: settingIssues(verify.problems),
         warnings: settingIssues(verify.warnings),
+        // P5 D43: names-only env parity of a client whose env admin did not
+        // write (warning env-keys-missing). Key names only, never values.
+        envKeysMissing: (Array.isArray(verify.envKeysMissing)
+          ? verify.envKeysMissing
+          : []
+        )
+          .filter((name) => /^[A-Z][A-Z0-9_]{0,63}$/.test(name ?? ""))
+          .slice(0, 30),
       }
     : null;
 // One digest of the exact candidate ids: preview and execute are bound by it.

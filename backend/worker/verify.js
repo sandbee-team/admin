@@ -13,6 +13,7 @@ import {
   providerFlag,
 } from "../../shared/deploy-errors.js";
 import { BUILD_SETTINGS } from "../lib/build-inputs.js";
+import { missingEnvKeys } from "../lib/golive-env.js";
 import { audit } from "../lib/audit.js";
 import { transaction } from "../db.js";
 import { JobFail, LeaseLost, withLease } from "./lease.js";
@@ -110,6 +111,9 @@ export async function inspectProject(
     env: null,
     names: [],
     projectData: null,
+    // KEY NAMES of the production env (never values), for the names-only
+    // parity of clients whose env admin did not write (D43); null = unread.
+    envNames: null,
   };
   try {
     await vercel.user({ signal });
@@ -149,6 +153,7 @@ export async function inspectProject(
       (e) => e.target.includes("production") || e.target.length === 0,
     );
     const names = new Set(production.map((e) => e.key));
+    out.envNames = [...names];
     const missing = REQUIRED_ENV.filter((key) => !names.has(key));
     const derived = nextPublicOf(target.pos);
     const drift = [];
@@ -215,7 +220,86 @@ export async function healthFlag(ctx, target, signal) {
   });
   return login.ok ? "ok" : "login-failed";
 }
-const STEPS = ["vercel", "project", "env", "mongo", "cloudflare", "health"];
+export const VERIFY_STEPS = [
+  "vercel",
+  "project",
+  "env",
+  "mongo",
+  "cloudflare",
+  "health",
+];
+const STEPS = VERIFY_STEPS;
+// Every check of one installation, shared by the verify task and the go-live's
+// inline Verify (P5). `target` = loadTarget (with the Vercel token); `onStep`
+// is awaited before each group (the task records its step). Returns
+// {flags, inspected, envKeysMissing}: flags are "ok" | a fixed code | null.
+// health = "not-deployed" when the project has no production deployment yet
+// (nothing to probe; verifyStateOf "bootstrap", D47). envKeysMissing = the
+// go-live env KEY NAMES missing on Vercel, only for a client whose env admin
+// did not write (imported or hand-entered; D43 names-only parity).
+export async function verifyChecks(
+  ctx,
+  target,
+  { signal, onStep = async () => {} } = {},
+) {
+  const vercel = ctx.vercelFor({ token: target.token, teamId: target.teamId });
+  const flags = {
+    vercel: null,
+    project: null,
+    env: null,
+    mongo: null,
+    cloudflare: null,
+    health: null,
+  };
+  await onStep("vercel");
+  const inspected = await inspectProject(vercel, target, {
+    signal,
+    expectedNode: await expectedNodeOf(ctx),
+  });
+  flags.vercel = inspected.vercel;
+  flags.project = inspected.project;
+  flags.env = inspected.env;
+  await onStep("mongo");
+  const uri = openSecret(ctx, target.id, target.pos, "mongo.uri");
+  flags.mongo = uri ? await ctx.pingMongo(uri) : "not-set";
+  await onStep("cloudflare");
+  const cfToken = openSecret(ctx, target.id, target.pos, "cloudflare.token");
+  if (cfToken) {
+    try {
+      const verified = await ctx.cloudflareVerify(
+        cfToken,
+        target.pos.cloudflare?.accountId ?? "",
+        { signal },
+      );
+      flags.cloudflare = verified.ok ? "ok" : "invalid";
+    } catch (error) {
+      flags.cloudflare = providerCode(error);
+    }
+  }
+  await onStep("health");
+  flags.health =
+    inspected.project === "ok" && !productionOf(inspected.projectData)
+      ? "not-deployed"
+      : await healthFlag(ctx, target, signal);
+  const envKeysMissing =
+    !target.pos.golive?.env && Array.isArray(inspected.envNames)
+      ? missingEnvKeys(inspected.envNames, {
+          realtime: Boolean(target.pos.cloudflare?.workerUrl),
+        })
+      : [];
+  return { flags, inspected, envKeysMissing };
+}
+// The stored pos.verify of one run of the checks. `envKeysMissing` (names
+// only) is present only when keys are missing (warning env-keys-missing).
+export const verifyRecord = ({ flags, inspected, envKeysMissing }, at, by) => ({
+  at,
+  by: by ?? null,
+  ...flags,
+  // Non-secret project settings: name, actual, expected.
+  problems: inspected.problems,
+  warnings: inspected.warnings,
+  ...(envKeysMissing.length ? { envKeysMissing } : {}),
+});
 export async function runVerify(ctx, claim) {
   const { slot } = claim;
   await withLease(
@@ -224,55 +308,12 @@ export async function runVerify(ctx, claim) {
     async (signal) => {
       const task = claim.doc;
       const target = await loadTarget(ctx, claim.installationId);
-      const vercel = ctx.vercelFor({
-        token: target.token,
-        teamId: target.teamId,
-      });
-      const flags = {
-        vercel: null,
-        project: null,
-        env: null,
-        mongo: null,
-        cloudflare: null,
-        health: null,
-      };
-      await slot.mustSet({ step: "vercel" });
-      const inspected = await inspectProject(vercel, target, {
+      const checked = await verifyChecks(ctx, target, {
         signal,
-        expectedNode: await expectedNodeOf(ctx),
+        // The task shows the vercel step for vercel, project and env.
+        onStep: (step) => slot.mustSet({ step }),
       });
-      flags.vercel = inspected.vercel;
-      flags.project = inspected.project;
-      flags.env = inspected.env;
-      await slot.mustSet({ step: "mongo" });
-      const uri = openSecret(
-        ctx,
-        claim.installationId,
-        target.pos,
-        "mongo.uri",
-      );
-      flags.mongo = uri ? await ctx.pingMongo(uri) : "not-set";
-      await slot.mustSet({ step: "cloudflare" });
-      const cfToken = openSecret(
-        ctx,
-        claim.installationId,
-        target.pos,
-        "cloudflare.token",
-      );
-      if (cfToken) {
-        try {
-          const verified = await ctx.cloudflareVerify(
-            cfToken,
-            target.pos.cloudflare?.accountId ?? "",
-            { signal },
-          );
-          flags.cloudflare = verified.ok ? "ok" : "invalid";
-        } catch (error) {
-          flags.cloudflare = providerCode(error);
-        }
-      }
-      await slot.mustSet({ step: "health" });
-      flags.health = await healthFlag(ctx, target, signal);
+      const { flags } = checked;
       const failed = STEPS.filter(
         (k) => flags[k] !== null && flags[k] !== "ok",
       ).length;
@@ -295,14 +336,7 @@ export async function runVerify(ctx, claim) {
                 error: null,
                 result: { checks: STEPS.length, failed },
               }),
-              "pos.verify": {
-                at: now,
-                by: task.by ?? null,
-                ...flags,
-                // Non-secret project settings: name, actual, expected.
-                problems: inspected.problems,
-                warnings: inspected.warnings,
-              },
+              "pos.verify": verifyRecord(checked, now, task.by),
             },
           },
           { session },

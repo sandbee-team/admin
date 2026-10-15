@@ -9,6 +9,7 @@ import {
   MAX_ATTEMPTS,
   QUEUED_EXPIRY_MS,
 } from "../../shared/deploy.js";
+import { GOLIVE_ACTIVE } from "../../shared/golive.js";
 import { knownCode } from "../../shared/deploy-errors.js";
 
 export class LeaseLost extends Error {
@@ -200,8 +201,24 @@ export async function expireStaleQueued(ctx) {
       },
     },
   );
-  return jobs.modifiedCount + tasks.modifiedCount;
+  const golive = await installations.updateMany(
+    { "pos.golive.status": "queued" },
+    { $set: goliveExpiry(now) },
+  );
+  return jobs.modifiedCount + tasks.modifiedCount + golive.modifiedCount;
 }
+// A queued go-live run (P5) that waited through a long outage: it ends as
+// failed (GOLIVE_STATES has no "expired"); learned parts stay.
+const goliveExpiry = (now) => ({
+  "pos.golive.status": "failed",
+  "pos.golive.endedAt": now,
+  "pos.golive.waitingFor": null,
+  "pos.golive.error": {
+    step: null,
+    code: "not-picked-up",
+    message: "The worker was offline too long to pick this go-live up.",
+  },
+});
 // ---- deploy jobs: installations.pos.deploy.current --------------------------
 // -> {slot, doc (the claimed job), installationId, takeover} | null.
 export async function claimDeploy(ctx, { frozen = false } = {}) {
@@ -304,6 +321,79 @@ export async function claimDeploy(ctx, { frozen = false } = {}) {
       ),
       installationId: row._id,
       tooManyAttempts: claimedJob.attempt > MAX_ATTEMPTS,
+    };
+  }
+  return null;
+}
+
+// ---- go-live runs: installations.pos.golive (P5 Stage 3, D41) ------------------
+// Same rules as claimDeploy: a queued run is claimed (status running), a
+// running one whose lease expired is taken over; every claim bumps the fence
+// and the attempt. A waiting/deploying/finished go-live holds no lease and is
+// never claimed here (deploying is observed by the loop, golive.js).
+export async function claimGolive(ctx) {
+  const { installations } = ctx.coll;
+  const now = new Date(ctx.now());
+  const stale = await queueStale(ctx);
+  const rows = await installations
+    .find(
+      { "pos.golive.status": { $in: GOLIVE_ACTIVE } },
+      { projection: { "pos.golive": 1 } },
+    )
+    .sort({ "pos.golive.requestedAt": 1 })
+    .limit(50)
+    .toArray();
+  for (const row of rows) {
+    const run = row.pos?.golive;
+    if (!run?.requestId) continue;
+    const base = { _id: row._id, "pos.golive.requestId": run.requestId };
+    if (run.status === "queued" && stale) {
+      await installations.updateOne(
+        { ...base, "pos.golive.status": "queued" },
+        { $set: goliveExpiry(now) },
+      );
+      continue;
+    }
+    const filter =
+      run.status === "queued"
+        ? { ...base, "pos.golive.status": "queued" }
+        : {
+            ...base,
+            "pos.golive.status": "running",
+            "pos.golive.lease.until": { $lt: now },
+          };
+    const result = await installations.findOneAndUpdate(
+      filter,
+      {
+        $set: {
+          "pos.golive.status": "running",
+          "pos.golive.lease.owner": ctx.workerId,
+          "pos.golive.lease.until": new Date(ctx.now() + ctx.t.leaseMs),
+          "pos.golive.heartbeatAt": now,
+        },
+        $inc: { "pos.golive.lease.fence": 1, "pos.golive.attempt": 1 },
+      },
+      { returnDocument: "after", projection: { "pos.golive": 1 } },
+    );
+    const got = result?.pos?.golive;
+    if (!got) continue;
+    return {
+      ...claimed(
+        ctx,
+        {
+          coll: installations,
+          match: { _id: row._id },
+          path: "pos.golive",
+          idField: "requestId",
+          idValue: run.requestId,
+          owner: ctx.workerId,
+          fence: got.lease.fence,
+        },
+        got,
+        run.status !== "queued",
+      ),
+      installationId: row._id,
+      tooManyAttempts: got.attempt > MAX_ATTEMPTS,
     };
   }
   return null;

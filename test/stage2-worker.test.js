@@ -1615,7 +1615,7 @@ describe("verify task", () => {
     assert.equal(task.status, "succeeded");
     assert.deepEqual(task.result, { checks: 6, failed: 0 });
     assert.deepEqual(
-      { ...verify, at: undefined, by: undefined },
+      { ...verify, at: undefined, by: undefined, envKeysMissing: undefined },
       {
         at: undefined,
         by: undefined,
@@ -1627,8 +1627,13 @@ describe("verify task", () => {
         health: "ok",
         problems: [],
         warnings: [],
+        envKeysMissing: undefined,
       },
     );
+    // P5 D43: this hand-entered client's env (4 keys, not written by admin)
+    // lacks most go-live keys: a names-only warning, never a failed flag.
+    assert.ok(verify.envKeysMissing.includes("AUTH_SECRET"));
+    assert.ok(!verify.envKeysMissing.includes("TENANT_ID"));
     assert.equal(verify.by.id, "staff-1");
     assert.ok((await auditActions(env)).includes("pos.verify.completed"));
     await assertClean(env, id);

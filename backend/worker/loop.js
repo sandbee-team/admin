@@ -1,7 +1,8 @@
-// The worker loop: four lanes (deploy 1 = deploys and rollbacks, which also
+// The worker loop: five lanes (deploy 1 = deploys and rollbacks, which also
 // serialises per Vercel account; build 2; task 1; usage 1 = the owner-triggered
-// usage checks, one client at a time), a poll every few seconds, the daily
-// retention sweep, boot clean-up and a graceful stop.
+// usage checks, one client at a time; golive 1 = new clients' go-live runs,
+// P5), a poll every few seconds, the daily retention sweep, boot clean-up and
+// a graceful stop.
 import { readdir, rm } from "node:fs/promises";
 import { removeJobDir } from "./cli-runner.js";
 import path from "node:path";
@@ -10,6 +11,7 @@ import {
   createSlot,
   claimBuild,
   claimDeploy,
+  claimGolive,
   claimTask,
   expireStaleQueued,
   failMessage,
@@ -17,6 +19,7 @@ import {
 } from "./lease.js";
 import { runBuildLane } from "./build.js";
 import { runDeploy } from "./deploy.js";
+import { observeGolive, runGolive } from "./golive.js";
 import { runRollback } from "./rollback.js";
 import { failTask, runVerify } from "./verify.js";
 import { runPurge, runPurgePreview } from "./purge.js";
@@ -30,7 +33,7 @@ import {
 } from "./usage.js";
 import { dirs, ensureLayout, pruneBuilds } from "./fetch-build.js";
 
-export const LANES = { deploy: 1, build: 2, task: 1, usage: 1 };
+export const LANES = { deploy: 1, build: 2, task: 1, usage: 1, golive: 1 };
 export function createLoop(ctx) {
   const lanes = Object.fromEntries(
     Object.entries(LANES).map(([name, cap]) => [
@@ -55,8 +58,8 @@ export function createLoop(ctx) {
       .finally(() => lanes[lane].running.delete(tracked));
     lanes[lane].running.add(tracked);
     // activeJobs sizes the free-disk check of deploys/builds; a usage check
-    // uses no disk, so it does not count.
-    if (lane === "usage") return;
+    // and a go-live run (a < 2 MB realtime bundle at most) do not count.
+    if (lane === "usage" || lane === "golive") return;
     ctx.activeJobs = (ctx.activeJobs ?? 0) + 1;
     tracked.finally(() => {
       ctx.activeJobs -= 1;
@@ -137,6 +140,20 @@ export function createLoop(ctx) {
           claim,
         ).finally(() => pruneBuilds(ctx).catch(() => undefined)),
       );
+    }
+    // Go-live (P5): a first deploy that ended queues the go-live's finish
+    // step (or fails it) before the go-live lane claims in the same pass.
+    started += await observeGolive(ctx).catch((error) => {
+      ctx.log("golive-observe-failed", {
+        code: String(error?.code ?? error?.name ?? "error").slice(0, 40),
+      });
+      return 0;
+    });
+    while (free("golive")) {
+      const claim = await claimGolive(ctx);
+      if (!claim) break;
+      started++;
+      start("golive", runGolive(ctx, claim));
     }
     while (free("build")) {
       const claim = await claimBuild(ctx);

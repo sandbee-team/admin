@@ -13,9 +13,28 @@ import {
 import path from "node:path";
 import { createGitHub } from "../lib/github.js";
 import { createVercel } from "../lib/vercel.js";
-import { tokenStatus, verifyToken } from "../lib/cloudflare.js";
-import { clientDbStats, pingClientMongo } from "../lib/client-mongo.js";
+import {
+  accounts,
+  enableWorkersDev,
+  registerWorkersSubdomain,
+  scriptSettings,
+  tokenAccess,
+  tokenStatus,
+  uploadWorker,
+  verifyToken,
+  workerMigrationTag,
+  workersSubdomain,
+} from "../lib/cloudflare.js";
+import {
+  clientDbStats,
+  openClientDb,
+  pingClientMongo,
+} from "../lib/client-mongo.js";
+import { createDnsCheck } from "../lib/dns-check.js";
+import { checkPosAdmin, seedPosAdmin } from "../lib/pos-admin-seed.js";
+import { getText, postText, probeTls } from "../lib/safe-https.js";
 import { HEARTBEAT_MS, LEASE_MS } from "../../shared/deploy.js";
+import { realtimeGitHubOf } from "./realtime-bundle.js";
 import { runDbBackup } from "./db-backup.js";
 import { createHeartbeat } from "./heartbeat.js";
 import {
@@ -72,6 +91,26 @@ export function makeLog(sink = (line) => console.info(line)) {
         ...safe,
       }),
     );
+  };
+}
+// The Cloudflare calls of the go-live's realtime step (P5 D46) bound to one
+// client token. `fetch`/`sleep` are the test seams of provider-http.
+export function cloudflareClient(token, { fetch, sleep } = {}) {
+  const o = (opts = {}) => ({ fetch, sleep, ...opts });
+  return {
+    tokenAccess: (accountId, opts) => tokenAccess(token, accountId, o(opts)),
+    accounts: (opts) => accounts(token, o(opts)),
+    workersSubdomain: (accountId, opts) =>
+      workersSubdomain(token, accountId, o(opts)),
+    registerWorkersSubdomain: (accountId, subdomain, opts) =>
+      registerWorkersSubdomain(token, accountId, subdomain, o(opts)),
+    workerMigrationTag: (accountId, name, opts) =>
+      workerMigrationTag(token, accountId, name, o(opts)),
+    uploadWorker: (spec, opts) => uploadWorker(token, spec, o(opts)),
+    enableWorkersDev: (accountId, name, opts) =>
+      enableWorkersDev(token, accountId, name, o(opts)),
+    scriptSettings: (accountId, name, opts) =>
+      scriptSettings(token, accountId, name, o(opts)),
   };
 }
 export async function readVersion() {
@@ -136,6 +175,21 @@ export async function buildContext({
     cloudflareFetch: undefined,
     cloudflareStatus: tokenStatus,
     mongoStats: (uri) => clientDbStats(uri),
+    // Go-live (P5 Stage 3): the client's Cloudflare account, the apex's own
+    // nameservers, the POS admin seed (client DB opened through
+    // `openClientDb`, Atlas only), the realtime bundle workflow, the
+    // workers.dev probes and the TLS probe of the web address.
+    cloudflareFor: (token) => cloudflareClient(token),
+    dnsCheck: createDnsCheck(),
+    openClientDb: (uri, options) => openClientDb(uri, options),
+    posAdminSeed: (args) => seedPosAdmin({ ...args, open: ctx.openClientDb }),
+    posAdminCheck: (args) => checkPosAdmin({ ...args, open: ctx.openClientDb }),
+    realtimeGitHub: overrides.realtimeGitHub ?? realtimeGitHubOf(c),
+    realtimeProbe: {
+      get: (host, path, options) => getText(host, path, options),
+      post: (host, path, body, options) => postText(host, path, body, options),
+    },
+    tlsProbe: (host, options) => probeTls(host, options),
     sleep: sleepReal,
     now: () => Date.now(),
     uuid: randomUUID,

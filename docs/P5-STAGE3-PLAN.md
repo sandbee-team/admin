@@ -572,3 +572,88 @@ S2 upload (Cloudflare, `tools/spikes/p5-realtime.mjs`, bundle sha256 `d2a7c079�
 - Probes: `GET /join` → 426 only on the **4th** try (a new workers.dev name takes seconds to
   propagate; the probe must retry, as `PUBLISH_PROBE_*` already do); signed publish → 200 (`ok`);
   publish for another tenant → 404 (`realtime-probe-failed`), so tenants stay isolated.
+
+**W2 — adapters (two parallel units, disjoint files; committed d75e88f).**
+
+- W2a: `backend/lib/vercel.js` gains `projectByName`, `createProject` (S1's verified payload: name,
+  framework, rootDirectory, region `bom1`; 409 → `project-name-taken`; not retried), `patchProject`
+  (node `22.x`, `sourceFilesOutsideRootDirectory`), `upsertEnv` (`{created, failed[{key, code}]}`,
+  never throws on failed rows), `envMeta(id, {fingerprint})` (rows `{key, type, target[],
+  updatedAt, fp16?}`; plain values only reach the caller's fingerprint callback in memory, which
+  must answer 16 hex or the call fails), `projectDomains`, `projectDomain`, `addDomain` (409 →
+  `domain-taken`; already on this project → returned), `verifyDomain`, `domainConfig`,
+  `setDomainRedirect`; one project whitelist (gains `serverlessFunctionRegion`).
+  `backend/lib/pos-admin-seed.js`: `seedPosAdmin` (exact seed-admin.ts port; atomic upsert on
+  `{role: "admin"}` so concurrent seeds leave one admin; read-back `compare`; seed-admin.ts's
+  password rule 8-72 characters with a digit and a special character), `checkPosAdmin`
+  (read-only), `AdminSeedError` (`admin-seed-failed` + a reason token); it creates no index on the
+  client's DB. `bcryptjs` exactly 2.4.3 (D45). Stateful fetch-level Vercel fake.
+- W2b: `provider-http` `form` bodies (multipart, ≤ 2 MiB, built in memory, no retry unless
+  idempotent; `ProviderError.providerCodes` = numeric provider codes only); `cloudflare.js`
+  `accounts`, `workersSubdomain`, `registerWorkersSubdomain` (taken → `conflict`),
+  `workerMigrationTag`, `uploadWorker` (412/10079 etc. → `realtime-upload-failed`, one attempt),
+  `enableWorkersDev`, `scriptSettings` (binding names/types + date only), `tokenAccess` (proves
+  access with an account call); `safe-https` `postText` (3 allowed headers, ≤ 4 KB) and `probeTls`
+  (`cert-pending` for connect/TLS failures). Stateful Cloudflare fake (probes included) and a
+  reusable `test/fakes/dns.js`.
+- Deviation from §11: the adapter tests are `test/stage3-adapters-vercel.test.js` (27) and
+  `test/stage3-adapters-cf.test.js` (33). Evidence: `npm test` with W2 → tests 975, pass 969, fail
+  0, skipped 6.
+
+**W5 — the go-live worker.**
+
+- `backend/worker/golive.js` (new): `runGolive` inside `withLease` runs `GOLIVE_RUN_STEPS[action]`
+  (steps done in the current run are skipped on takeover); between steps: lease, `cancelRequested`
+  (→ `cancelled`, `golive-cancelled`), `pos.rev` (→ `golive-stale`). Writes are fenced; POS-block
+  writes run in one transaction with their audit and the run's `pos.rev` guard, bump the rev and
+  clear `pos.verify` like the API. `failGolive`, `observeGolive` (DB-only, for `deploying` rows).
+- `lease.js` `claimGolive`; a queued go-live that expires becomes `failed` / `not-picked-up`.
+  `loop.js` lane `golive: 1` (not counted in `activeJobs`): `observeGolive`, then claim + run.
+  `context.js` seams `cloudflareFor`, `dnsCheck`, `openClientDb`, `posAdminSeed`, `posAdminCheck`,
+  `realtimeGitHub`, `realtimeProbe`, `tlsProbe`. `verify.js` exports `verifyChecks`,
+  `verifyRecord`, `VERIFY_STEPS`; health `not-deployed` for a project without production;
+  `pos.verify.envKeysMissing` (names only, a warning) for clients without `pos.golive.env`.
+  `rollout.js` `advance()` claims with `freeSlot(deploy)` AND `goliveFree` (`target-busy`).
+  `deploy-view.js` `verifyView.envKeysMissing`; `shared/deploy-errors.js` + `not-deployed`,
+  `redirect-failed`. W3's fake builder moved to `test/fakes/realtime-builder.js`.
+- Re-runs/takeover per step: check re-checks everything (a label that already answers is accepted
+  only when it equals the stored CNAME); project = recorded id → name → create, ids saved right
+  after create, patched only when different and not live, a live project → `project-live` unless
+  it is this go-live's own first deploy; secrets never re-minted (`secret-unreadable` if a box
+  cannot be opened); realtime reuses a stored bundle run, never uploads a NEW Worker twice (a
+  pending upload whose script now has a migration tag counts as landed), uploads only when digest,
+  name, tenant or URL changed, one self-heal upload on a bad publish verdict; domain read before
+  add; env writes only when the intended fingerprints or Vercel's metadata differ, and an
+  interrupted upsert counts as landed when every key's `updatedAt` is newer than the stored
+  `pending.base` (Vercel's clock); admin skips a recorded `seeded`, and an `exists` whose password
+  matches the vault counts as ours; dns read-only; ready re-verifies; finish sets only missing
+  redirects.
+- Stored additions to §4: `env.pending {digest, base}`, `realtime {…, tenantId, run, pending}`,
+  the DNS waiting reason in `warnings` (`dns-pending`, `dns-wrong-target`, `txt-pending`,
+  `dns-unreachable`), `address.tls` = the probe result (`cert-pending` is normal before the first
+  deploy, S1).
+- Deviations (recorded as D55): the dns step ends `waiting` with the reason in `warnings`, not in
+  `error`; TLS is not a DNS condition (S1); a queued go-live expires as `failed`/`not-picked-up`;
+  `observeGolive` re-queues the run at step `finish` when the deploy job is healthy, so finish runs
+  under a lease (the installation is briefly busy); a re-Start after a failed finish converges to
+  `live` without a second deploy; the inline Verify writes `pos.verify` and audits
+  `pos.verify.completed`; the realtime self-heal triggers on any verdict but `realtime-envelope`
+  (real Cloudflare answers 404 for another tenant); codes where the plan had none —
+  `cloudflare-denied` (no accessible account), `cloudflare-conflict` (subdomain candidates used
+  up), the bare Mongo verify flags in check, the first failing verify flag in ready/finish,
+  `project-not-found`, `job-lost`; a takeover between create and save adopts by name (audited as
+  `project-adopted`). Busy both ways: the API refuses deploy/task while a go-live blocks
+  (`stage3-api`), and the rollout stops at `target-busy` (`stage3-worker`).
+- Open for session 5 (W6 + reviews): (1) a client without a Cloudflare token but with a
+  hand-entered `pos.cloudflare.workerUrl` gets the realtime env blanked and then fails Verify with
+  `env-drift` — recommended: the readiness item flags it (no silent config change); (2) W6 shows
+  `envKeysMissing` and the DNS waiting reasons; (3) an UPDATE of an existing Worker interrupted by a
+  takeover is re-PUT (idempotent; a landed update cannot be told apart).
+
+Evidence (Windows dev PC, 2026-10-16, branch `p5-stage3`): `node --test
+test/stage3-worker.test.js` → `# tests 48 # pass 48 # fail 0` (a mutation check — the env
+"upsert landed", Worker "upload landed" and "own deploy" guards disabled in turn — turns its test
+red each time); `npm test` → tests 1023, suites 197, pass 1017, fail 0, cancelled 0, skipped 6 (the
+Linux-only ones), todo 0; `npm run build` → `✓ built in 3.40s` (the existing > 500 kB chunk warning
+only; no frontend file changed, so no Playwright run). Changed files formatted with prettier (only
+those files).
