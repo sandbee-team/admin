@@ -1,7 +1,7 @@
 # Sales documents — quotation, agreement, invoice (plan)
 
-**LIVE since 2026-10-15** (main @ 99809c8). **Revision 2 (D53, 2026-10-15, §15):** seller without
-GST registration, new document design and standard texts — branch `sales-docs-2`.
+**LIVE since 2026-10-15** (main @ 99809c8). **Revision 2 (D53, §15) LIVE since 2026-10-15** (main @
+94dab5f): seller without GST registration, new document design and standard texts.
 
 Status: **APPROVED by the owner 2026-10-14** — every recommended default in §13 (no-dependency PDF
 writer, `sales` = owner + admin and `billing` = owner + step-up, `QT/26-27/0001` numbering with the
@@ -405,3 +405,6 @@ only); `npx playwright test --reporter=line` → `52 passed (7.2m)`. Samples che
 `bash scripts/test-linux.sh` on the server, merge `sales-docs-2` into main, push, rebuild, reload
 open panel tabs, then the owner fills the jurisdiction city and checks one quotation. Owner: have a
 lawyer review the agreement text and the stamp duty; switch GST on once registered.
+
+**Released 2026-10-15** (main @ 94dab5f): Linux suite on the server 814 tests, 812 pass, 0 fail,
+2 skipped; app and worker healthy, `/ready` ok.

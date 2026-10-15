@@ -170,6 +170,8 @@ Revision 2 (D53: seller without GST registration, new design and texts):
 4. **In the panel:** Sales settings → "Registered under GST" stays off; fill legal name, email, phone and the jurisdiction city; the three texts show the new defaults (a text still equal to D52's default is replaced automatically; an edited one is kept: use "Restore default text"). Issue one quotation to check the PDF.
 5. **Release rollback:** only before the first document of this release is issued: `git checkout 99809c8 && docker compose -f compose.production.yaml up -d --build`. Once a format-2 document exists, the previous release re-renders it wrongly (a "TAX INVOICE" with zero GST rows) for downloads without an archive copy and for cancelled copies, and refuses "Store copy" for it, so fix forward instead.
 
+Revision 2 went live on 2026-10-15 (commit `94dab5f`, previous live commit `99809c8`): Linux suite on the server 814 tests, 812 pass, 0 fail, 2 skipped; app and worker healthy, `/ready` ok.
+
 ## Reverse proxy (Caddy)
 
 Production terminates TLS in Caddy (`/opt/edge/Caddyfile`) and proxies to Admin on a separate local port, which keeps the other live applications untouched:
