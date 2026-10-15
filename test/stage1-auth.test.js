@@ -374,6 +374,114 @@ describe("TOTP enrolment, login, step-up and recovery", () => {
     assert.equal(challenge.attempts, 0);
     assert.ok(challenge.expiresAt > new Date());
   });
+  it("asks TOTP staff for the authenticator straight after the password, with no email", async () => {
+    const who = await enrol();
+    ctx.mail.delete(who.email);
+    const start = await post("/auth/login", {
+      email: who.email,
+      password: PASSWORD,
+    });
+    assert.equal(start.status, 200);
+    assert.equal(start.data.totpRequired, true);
+    assert.equal(start.headers.get("set-cookie"), null);
+    assert.equal(ctx.mail.has(who.email), false);
+    const challenge = await ctx.db
+      .collection("challenges")
+      .findOne({ _id: start.data.challengeId });
+    assert.equal(challenge.purpose, "totp");
+    assert.equal(challenge.via, "password");
+    assert.equal(challenge.codeHash, undefined);
+    // A wrong password still gets the same refusal and no challenge.
+    const bad = await post("/auth/login", {
+      email: who.email,
+      password: "not the password",
+    });
+    assert.equal(bad.status, 401);
+    assert.equal(bad.data.totpRequired, undefined);
+    const done = await post("/auth/verify-totp", {
+      challengeId: start.data.challengeId,
+      code: await fresh(who, 1),
+    });
+    assert.equal(done.status, 200, JSON.stringify(done.data));
+    assert.ok(done.headers.get("set-cookie"));
+    const created = await ctx.db
+      .collection("audit_events")
+      .findOne(
+        { resourceId: (await row(who.email))._id, action: "session.created" },
+        { sort: { createdAt: -1 } },
+      );
+    assert.equal(created.detail, "Password and authenticator");
+    assert.equal(ctx.mail.has(who.email), false);
+  });
+  it("signs TOTP staff in with a backup code straight after the password", async () => {
+    const who = await enrol();
+    const done = await totpLogin(who.email, { backupCode: who.codes[3] });
+    assert.equal(done.status, 200, JSON.stringify(done.data));
+    assert.equal((await row(who.email)).totpBackupCodes.length, 9);
+    const created = await ctx.db
+      .collection("audit_events")
+      .findOne(
+        { resourceId: (await row(who.email))._id, action: "session.created" },
+        { sort: { createdAt: -1 } },
+      );
+    assert.equal(created.detail, "Password and backup code");
+  });
+  it("counts wrong authenticator codes from a password-only challenge", async () => {
+    const who = await enrol();
+    const start = await ctx.loginStart(who.email);
+    const res = await post("/auth/verify-totp", {
+      challengeId: start.data.challengeId,
+      code: codeAt(who.key, now() + 7),
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await row(who.email)).totpFailures.length, 1);
+    assert.equal(
+      (
+        await post("/auth/verify-totp", {
+          challengeId: start.data.challengeId,
+          code: await fresh(who, 1),
+        })
+      ).status,
+      200,
+    );
+  });
+  it("still sends staff without an authenticator the email code", async () => {
+    const email = await addStaff();
+    ctx.mail.delete(email);
+    const start = await post("/auth/login", { email, password: PASSWORD });
+    assert.equal(start.status, 200);
+    assert.equal(start.data.totpRequired, undefined);
+    assert.match(ctx.mail.get(email), /^\d{6}$/);
+    const challenge = await ctx.db
+      .collection("challenges")
+      .findOne({ _id: start.data.challengeId });
+    assert.equal(challenge.purpose, "login");
+    // An email-code challenge cannot be finished at the authenticator step.
+    const cross = await post("/auth/verify-totp", {
+      challengeId: start.data.challengeId,
+      code: "123456",
+    });
+    assert.equal(cross.status, 400);
+    const done = await post("/auth/verify", {
+      challengeId: start.data.challengeId,
+      code: ctx.mail.get(email),
+    });
+    assert.equal(done.status, 200);
+    const created = await ctx.db
+      .collection("audit_events")
+      .findOne(
+        { resourceId: (await row(email))._id, action: "session.created" },
+        { sort: { createdAt: -1 } },
+      );
+    assert.equal(created.detail, "Password and email code");
+  });
+  it("keeps the email code in recovery for TOTP staff", async () => {
+    const who = await enrol();
+    ctx.mail.delete(who.email);
+    const start = await post("/auth/recover", { email: who.email });
+    assert.equal(start.status, 200);
+    assert.match(ctx.mail.get(who.email), /^\d{6}$/);
+  });
   it("validates verify-totp input, attempts, expiry and access changes", async () => {
     const who = await enrol();
     const verifyTotp = (body) => post("/auth/verify-totp", body);
@@ -610,6 +718,236 @@ describe("TOTP enrolment, login, step-up and recovery", () => {
     assert.equal(
       statuses.slice(10).every((s) => s === 429),
       true,
+    );
+  });
+  it("keeps password-only guessing from using up the member's step-up budget", async () => {
+    await clearOfWindow(900000);
+    const who = await enrol();
+    const wrong = { backupCode: "ABCDE-FGHJK" };
+    // Two fresh sign-in challenges cannot reset the budget: five tries each.
+    for (let c = 0; c < 2; c++) {
+      const start = await ctx.loginStart(who.email);
+      for (let i = 0; i < 5; i++)
+        assert.equal(
+          (
+            await post("/auth/verify-totp", {
+              challengeId: start.data.challengeId,
+              ...wrong,
+            })
+          ).status,
+          400,
+        );
+    }
+    const third = await ctx.loginStart(who.email);
+    assert.equal(
+      (
+        await post("/auth/verify-totp", {
+          challengeId: third.data.challengeId,
+          ...wrong,
+        })
+      ).status,
+      429,
+    );
+    // The member's own session is not affected.
+    assert.equal(
+      (await stepUp(who, { code: await fresh(who, 1) })).status,
+      200,
+    );
+    assert.equal((await stepUp(who, { backupCode: who.codes[0] })).status, 200);
+  });
+  it("tells the member once per six hours when the password alone reached the authenticator step", async () => {
+    const who = await enrol();
+    const own = () =>
+      ctx.notices.filter(
+        (n) => n.email === who.email && /password was used/i.test(n.subject),
+      );
+    const before = own().length;
+    const first = await ctx.loginStart(who.email);
+    assert.equal(
+      (
+        await post("/auth/verify-totp", {
+          challengeId: first.data.challengeId,
+          code: codeAt(who.key, now() + 7),
+        })
+      ).status,
+      400,
+    );
+    await settle();
+    assert.equal(own().length, before + 1);
+    assert.match(own().at(-1).text, /reset your password/);
+    assert.equal(JSON.stringify(own().at(-1)).includes("ABCDE"), false);
+    // A wrong backup code on another challenge is throttled, not announced.
+    const second = await ctx.loginStart(who.email);
+    assert.equal(
+      (
+        await post("/auth/verify-totp", {
+          challengeId: second.data.challengeId,
+          backupCode: "ABCDE-FGHJK",
+        })
+      ).status,
+      400,
+    );
+    await settle();
+    assert.equal(own().length, before + 1);
+    const id = (await row(who.email))._id;
+    const failed = await ctx.db
+      .collection("audit_events")
+      .find({ action: "totp.failed", resourceId: id })
+      .toArray();
+    assert.equal(
+      failed.filter((e) => e.detail === "login (password)").length,
+      2,
+    );
+    // A step-up failure keeps its own context and sends no such notice.
+    await stepUp(who, { code: codeAt(who.key, now() + 9) });
+    await settle();
+    assert.equal(own().length, before + 1);
+    assert.equal(
+      (await ctx.db
+        .collection("audit_events")
+        .countDocuments({ action: "totp.failed", detail: "step-up" })) > 0,
+      true,
+    );
+  });
+  it("locks authenticator codes from password-only guessing and keeps backup codes working", async () => {
+    const who = await enrol();
+    const id = (await row(who.email))._id;
+    await ctx.db.collection("staff").updateOne(
+      { _id: id },
+      {
+        $set: {
+          totpFailures: Array.from(
+            { length: 19 },
+            (_, i) => new Date(Date.now() - (i + 1) * 60000),
+          ),
+        },
+      },
+    );
+    const start = await ctx.loginStart(who.email);
+    assert.equal(
+      (
+        await post("/auth/verify-totp", {
+          challengeId: start.data.challengeId,
+          code: codeAt(who.key, now() + 9),
+        })
+      ).status,
+      400,
+    );
+    await settle();
+    assert.equal(
+      await ctx.db
+        .collection("audit_events")
+        .countDocuments({ action: "totp.locked", resourceId: id }),
+      1,
+    );
+    const notice = ctx.notices.find(
+      (n) => n.email === who.email && /locked/i.test(n.subject),
+    );
+    assert.match(notice.text, /backup code/);
+    assert.match(notice.text, /change your password/);
+    const next = await ctx.loginStart(who.email);
+    const refused = await post("/auth/verify-totp", {
+      challengeId: next.data.challengeId,
+      code: await fresh(who),
+    });
+    assert.equal(refused.status, 429);
+    assert.match(refused.data.error, /Use a backup code/);
+    // The refusal is not a guess: it leaves the challenge and budget usable.
+    const done = await post("/auth/verify-totp", {
+      challengeId: next.data.challengeId,
+      backupCode: who.codes[0],
+    });
+    assert.equal(done.status, 200, JSON.stringify(done.data));
+    const session = ctx.sessionOf(done);
+    assert.equal(
+      (await post("/auth/step-up", { backupCode: who.codes[1] }, session))
+        .status,
+      200,
+    );
+  });
+  // Known residual (accepted for this release): a burst sent right at the 20th
+  // failure can still evaluate up to the auth gate's concurrent requests, so a
+  // correct code inside that burst may win (about 20-27 guesses per lock
+  // cycle). This pins only what is guaranteed: the lock is set exactly once,
+  // and once it has committed a later correct code is refused.
+  it("sets the lock once under a burst at the 20th failure and refuses codes after it", async () => {
+    const who = await enrol();
+    const id = (await row(who.email))._id;
+    await ctx.db.collection("staff").updateOne(
+      { _id: id },
+      {
+        $set: {
+          totpFailures: Array.from(
+            { length: 19 },
+            (_, i) => new Date(Date.now() - (i + 1) * 60000),
+          ),
+        },
+      },
+    );
+    const good = await fresh(who, 1);
+    const results = await Promise.all([
+      ...Array.from({ length: 7 }, (_, i) =>
+        stepUp(who, { code: codeAt(who.key, now() + 8 + (i % 2)) }),
+      ),
+      stepUp(who, { code: good }),
+    ]);
+    await settle();
+    assert.equal(
+      await ctx.db
+        .collection("audit_events")
+        .countDocuments({ action: "totp.locked", resourceId: id }),
+      1,
+    );
+    assert.ok((await row(who.email)).totpLockedUntil > new Date());
+    assert.ok(results.filter((r) => r.status === 200).length <= 1);
+    assert.equal(
+      (await stepUp(who, { code: await fresh(who, 1) })).status,
+      429,
+    );
+  });
+  it("treats a replayed correct code as a replay, not a failed guess", async () => {
+    const who = await enrol();
+    const id = (await row(who.email))._id;
+    const own = () =>
+      ctx.notices.filter(
+        (n) => n.email === who.email && /password was used/i.test(n.subject),
+      ).length;
+    const before = own();
+    const code = await fresh(who, 1);
+    const first = await ctx.loginStart(who.email);
+    assert.equal(
+      (
+        await post("/auth/verify-totp", {
+          challengeId: first.data.challengeId,
+          code,
+        })
+      ).status,
+      200,
+    );
+    // The same code on a second password-only challenge in the same step.
+    const second = await ctx.loginStart(who.email);
+    const again = await post("/auth/verify-totp", {
+      challengeId: second.data.challengeId,
+      code,
+    });
+    assert.equal(again.status, 400);
+    assert.match(again.data.error, /already used/);
+    await settle();
+    const stored = await row(who.email);
+    assert.equal(stored.totpFailures, undefined);
+    assert.equal(stored.totpLockedUntil, undefined);
+    assert.equal(own(), before);
+    assert.equal(
+      await ctx.db
+        .collection("audit_events")
+        .countDocuments({ action: "totp.failed", resourceId: id }),
+      0,
+    );
+    assert.equal(
+      await ctx.db
+        .collection("audit_events")
+        .countDocuments({ action: "totp.replayed", resourceId: id }),
+      1,
     );
   });
   it("regenerates backup codes behind step-up and invalidates the old set", async () => {
@@ -916,12 +1254,10 @@ describe("TOTP enrolment, login, step-up and recovery", () => {
         `success ${i}`,
       );
     const id = (await row(who.email))._id;
-    assert.equal(
-      await ctx.db
-        .collection("rate_limits")
-        .findOne({ _id: bucket(`totp:${id}`, 900000) }),
-      null,
-    );
+    const slot = await ctx.db
+      .collection("rate_limits")
+      .findOne({ _id: bucket(`totp:${id}`, 900000) });
+    assert.equal(slot?.count ?? 0, 0);
   });
   it("audits every failed second-factor attempt without the code", async () => {
     const who = await enrol();
@@ -959,7 +1295,7 @@ describe("TOTP enrolment, login, step-up and recovery", () => {
       .toArray();
     assert.deepEqual(events.map((e) => e.detail).sort(), [
       "enrol",
-      "login",
+      "login (password)",
       "step-up",
       "step-up",
     ]);

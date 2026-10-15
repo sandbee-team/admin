@@ -7,7 +7,13 @@ import {
   Waypoints,
 } from "lucide-react";
 import { api, setCsrf } from "../lib/api";
-import { Brand, Button, ErrorBox, Field } from "../components/ui";
+import {
+  Brand,
+  Button,
+  ErrorBox,
+  Field,
+  PasswordInput,
+} from "../components/ui";
 export function Login({ onLogin }) {
   const [mode, setMode] = useState("login"),
     [challenge, setChallenge] = useState(""),
@@ -60,11 +66,29 @@ export function Login({ onLogin }) {
             body: { email, ...(mode === "login" ? { password } : {}) },
           },
         );
-        setChallenge(result.challengeId);
+        if (result.totpRequired) {
+          // Password accepted and an authenticator is enrolled: that is the
+          // second factor, so no email code is sent.
+          setTotp(result.challengeId);
+        } else setChallenge(result.challengeId);
+        setCode("");
         setPassword("");
       }
     } catch (e) {
-      setError(e.message);
+      if (
+        totp &&
+        (e.status === 401 ||
+          /invalid, expired or has too many/i.test(e.message))
+      ) {
+        // The sign-in step cannot be finished any more: go back to the start
+        // instead of leaving the person on a dead end.
+        const again =
+          mode === "login"
+            ? "That sign-in step expired or was used up. Enter your password again."
+            : "That step expired or was used up. Request a new code.";
+        switchMode(mode);
+        setError(again);
+      } else setError(e.message);
     } finally {
       setBusy(false);
     }
@@ -144,12 +168,14 @@ export function Login({ onLogin }) {
             {totp
               ? backup
                 ? "Enter one of your unused backup codes. Each works once."
-                : "Enter the 6-digit code from your authenticator app."
+                : mode === "login"
+                  ? "Your password was accepted. Enter the 6-digit code from your authenticator app."
+                  : "Enter the 6-digit code from your authenticator app."
               : challenge
                 ? `If ${email} has access, a verification code has been sent. It expires in 10 minutes.`
                 : mode === "recovery"
                   ? "Use the email your owner added to the team. Public signup is not available."
-                  : "Sign in with your staff account. An email code verifies each new session."}
+                  : "Sign in with your staff account. Your authenticator app, or an email code if you have not set one up, verifies each new session."}
           </p>
           <form onSubmit={submit}>
             {error && <ErrorBox>{error}</ErrorBox>}
@@ -199,8 +225,7 @@ export function Login({ onLogin }) {
                 </Field>
                 {mode === "login" && (
                   <Field label="Password">
-                    <input
-                      type="password"
+                    <PasswordInput
                       autoComplete="current-password"
                       required
                       maxLength={128}
@@ -232,8 +257,7 @@ export function Login({ onLogin }) {
                     label="New password"
                     hint="Use at least 14 characters. A long passphrase works well."
                   >
-                    <input
-                      type="password"
+                    <PasswordInput
                       autoComplete="new-password"
                       required
                       minLength={14}
@@ -272,7 +296,9 @@ export function Login({ onLogin }) {
           )}
           {(challenge || totp) && (
             <button className="plain-link" onClick={() => switchMode(mode)}>
-              Use a different email or request a new code
+              {totp && mode === "login"
+                ? "Start over"
+                : "Use a different email or request a new code"}
             </button>
           )}
         </div>

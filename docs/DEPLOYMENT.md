@@ -172,6 +172,16 @@ Revision 2 (D53: seller without GST registration, new design and texts):
 
 Revision 2 went live on 2026-10-15 (commit `94dab5f`, previous live commit `99809c8`): Linux suite on the server 814 tests, 812 pass, 0 fail, 2 skipped; app and worker healthy, `/ready` ok.
 
+## Sign-in release checklist (D54)
+
+Staff with an authenticator sign in with password → authenticator code; staff without one keep the email code; recovery is unchanged. Show/hide toggles on password and secret fields. No data change, no new container, volume, `.env` variable or npm dependency, so no dump is needed.
+
+1. **Linux suite on the server** (before merging): `bash scripts/test-linux.sh` in a checkout of the release branch must end with 0 failures.
+2. **Build and start:** `cd ~/admin && git checkout main && git pull && unset RELEASE_TAG && docker compose -f compose.production.yaml up -d --build`, `docker image prune -f`, then `docker compose -f compose.production.yaml ps` (both healthy) and `curl -fsS http://127.0.0.1:8098/ready`.
+3. **Reload** open admin tabs (a login page loaded before the release would wait for an email code that is no longer sent).
+4. **Check:** sign out, sign in as the owner: email + password → "Confirm with your authenticator" directly (no email), then the dashboard. The eye button shows and hides the password.
+5. **Release rollback:** `git checkout <previous commit> && docker compose -f compose.production.yaml up -d --build` (no data to undo; the previous release asks for the email code again).
+
 ## Reverse proxy (Caddy)
 
 Production terminates TLS in Caddy (`/opt/edge/Caddyfile`) and proxies to Admin on a separate local port, which keeps the other live applications untouched:
@@ -240,7 +250,7 @@ docker compose -f compose.production.yaml run --rm app node scripts/recovery.js 
 docker compose -f compose.production.yaml start app
 ```
 
-It clears that member's authenticator, signs them out everywhere and audits `totp.reset`; they sign in with password and email code and enrol again. It does not need `BACKUP_KEY`.
+It clears that member's authenticator, signs them out everywhere and audits `totp.reset`; they sign in with password and email code (no authenticator yet) and enrol again. It does not need `BACKUP_KEY`.
 
 ## Legacy encrypted snapshot (optional)
 

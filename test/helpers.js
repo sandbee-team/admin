@@ -129,6 +129,8 @@ export async function startApp({
       headers,
     });
     assert.equal(start.status, 200);
+    // Staff with an authenticator go straight to it: no email code is sent.
+    if (start.data.totpRequired) return start;
     return request("/auth/verify", {
       method: "POST",
       body: { challengeId: start.data.challengeId, code: mail.get(email) },

@@ -12,7 +12,7 @@ import {
   decrypt,
 } from "../lib/crypto.js";
 import { ensure, HttpError } from "../lib/errors.js";
-import { consume, exceeded } from "../lib/limiter.js";
+import { consume, exceeded, refund } from "../lib/limiter.js";
 import { audit } from "../lib/audit.js";
 import { transaction } from "../db.js";
 import {
@@ -174,6 +174,21 @@ export function authModule({ db, client, c, sendCode, notify }) {
       401,
       "Email or password is incorrect.",
     );
+    if (user.totp?.enabledAt) {
+      // The authenticator is the second factor: no email code is sent. The
+      // challenge is marked so the audit trail says how the person signed in.
+      const challengeId = token();
+      await challenges.insertOne({
+        _id: challengeId,
+        staffId: user._id,
+        purpose: "totp",
+        via: "password",
+        authVersion: user.authVersion,
+        attempts: 0,
+        expiresAt: new Date(Date.now() + TOTP_CHALLENGE_MS),
+      });
+      return res.json({ totpRequired: true, challengeId });
+    }
     res.json({ challengeId: await sendChallenge(user, "login") });
   });
   router.post("/recover", async (req, res) => {
@@ -264,7 +279,11 @@ export function authModule({ db, client, c, sendCode, notify }) {
     ],
     locked: [
       "Authenticator codes are locked on your Sandbee Admin account",
-      "There were 20 wrong authenticator codes in 24 hours, so authenticator codes are locked for 24 hours. Backup codes still work. If this was not you, change your password and ask your owner to reset your authenticator.",
+      "There were 20 wrong authenticator codes in 24 hours, so authenticator codes are locked for 24 hours. Use a backup code to sign in, or ask your owner to reset your authenticator. If this was not you, change your password.",
+    ],
+    passwordOnly: [
+      "Your password was used to sign in to Sandbee Admin",
+      "Your password was used to sign in, but the authenticator step failed. If this was not you, reset your password.",
     ],
     recovered: [
       "Your Sandbee Admin password was reset",
@@ -272,6 +291,7 @@ export function authModule({ db, client, c, sendCode, notify }) {
     ],
   };
   const tellOf = (user, name) => tell(user, ...NOTICES[name]);
+  const PASSWORD_ONLY = "login (password)";
   const LOCK_MS = 86400000,
     FAILURE_LIMIT = 20;
   const LOCK_MESSAGE =
@@ -279,6 +299,14 @@ export function authModule({ db, client, c, sendCode, notify }) {
   const TOO_MANY = "Too many requests. Please wait before trying again.";
   // Failures are recorded outside any transaction so they survive an aborted
   // sign-in. Wrong CODES (not backup codes) also feed a 24 hour lockout.
+  // Failures before a session exists (sign-in, recovery) are counted per
+  // person AND address, so someone holding only the password cannot use up the
+  // budget the member needs for step-up inside a session.
+  const preSession = (context) => context.startsWith("login");
+  const factorBucket = (user, req, context) =>
+    preSession(context)
+      ? `totp-login:${user._id}:${req.ip}`
+      : `totp:${user._id}`;
   async function recordFailure(user, input, req, context) {
     try {
       await audit(
@@ -294,10 +322,14 @@ export function authModule({ db, client, c, sendCode, notify }) {
     } catch {
       // Accounting must not turn a refusal into a server error.
     }
-    try {
-      await consume(db, `totp:${user._id}`, 10, 900000);
-    } catch {
-      // Already over the limit; the next attempt is refused up front.
+    if (context === PASSWORD_ONLY) {
+      try {
+        // At most one notice per 6 hours per person; never carries a code.
+        await consume(db, `totp-notice:${user._id}`, 1, 6 * 3600000);
+        tellOf(user, "passwordOnly");
+      } catch {
+        // Already told recently.
+      }
     }
     if (input.backupCode !== undefined) return;
     try {
@@ -408,11 +440,15 @@ export function authModule({ db, client, c, sendCode, notify }) {
   // except failure accounting. Returns the atomic claim to run inside the
   // caller's transaction, so an aborted sign-in rolls the claim back.
   async function prepareFactor(user, input, req, context) {
-    ensure(
-      !(await exceeded(db, `totp:${user._id}`, 10, 900000)),
-      429,
-      TOO_MANY,
+    // Reserve one attempt BEFORE verifying so concurrent guesses cannot all
+    // run past the limit; a success gives it back (only failures count).
+    const slot = await consume(
+      db,
+      factorBucket(user, req, context),
+      10,
+      900000,
     );
+    const give = () => refund(db, slot).catch(() => undefined);
     const reject = async (message = BAD_CODE) => {
       await recordFailure(user, input, req, context);
       throw new HttpError(400, message);
@@ -427,6 +463,7 @@ export function authModule({ db, client, c, sendCode, notify }) {
       if (!known) return reject("Code is incorrect or already used.");
       return {
         label: "backup code",
+        give,
         async claim(session) {
           const used = await staff.updateOne(
             {
@@ -452,29 +489,64 @@ export function authModule({ db, client, c, sendCode, notify }) {
         },
       };
     }
-    ensure(!(await lockedOut(user)), 429, LOCK_MESSAGE);
+    if (await lockedOut(user)) {
+      // A refused attempt is not a guess: keep the reserved slot free.
+      await give();
+      throw new HttpError(429, LOCK_MESSAGE);
+    }
     if (!user.totp?.key) return reject();
     const step = verifyTotp(keyOf(user, "totp"), input.code, Date.now());
     if (step === null) return reject();
     return {
       label: "authenticator",
+      give,
       async claim(session) {
+        // The lock may have been set after this request read the account, so
+        // the claim itself refuses while a lock is in force.
         const claimed = await staff.updateOne(
           {
             _id: user._id,
             "totp.enabledAt": { $exists: true },
-            $or: [
-              { "totp.lastStep": { $lt: step } },
-              { "totp.lastStep": null },
+            $and: [
+              {
+                $or: [
+                  { "totp.lastStep": { $lt: step } },
+                  { "totp.lastStep": null },
+                ],
+              },
+              {
+                $or: [
+                  { totpLockedUntil: { $exists: false } },
+                  { totpLockedUntil: null },
+                  { totpLockedUntil: { $lte: new Date() } },
+                ],
+              },
             ],
           },
           { $set: { "totp.lastStep": step } },
           { session },
         );
-        if (claimed.matchedCount !== 1)
+        if (claimed.matchedCount !== 1) {
+          const now = await staff.findOne(
+            { _id: user._id },
+            { projection: { totpLockedUntil: 1, "totp.lastStep": 1 }, session },
+          );
+          if (now?.totpLockedUntil && now.totpLockedUntil > new Date())
+            throw new HttpError(429, LOCK_MESSAGE);
+          if (now?.totp?.lastStep >= step) {
+            // A correct code seen again (double submit, two devices in one
+            // 30 s step): not a guess, so it is not a failure.
+            const replay = new HttpError(
+              400,
+              "This code was already used — wait for the next one.",
+            );
+            replay.replayed = true;
+            throw replay;
+          }
           throw factorFailure(
             "This code was already used — wait for the next one.",
           );
+        }
       },
     };
   }
@@ -483,13 +555,35 @@ export function authModule({ db, client, c, sendCode, notify }) {
   async function withSecondFactor(user, input, req, context, work) {
     const gate = await prepareFactor(user, input, req, context);
     try {
-      return await transaction(client, async (session) => {
+      const done = await transaction(client, async (session) => {
         await gate.claim(session);
         return work(session, gate.label);
       });
+      await gate.give();
+      return done;
     } catch (error) {
       if (error.factorFailure) await recordFailure(user, input, req, context);
+      else if (error.replayed) await noteReplay(gate, user, req, context);
       throw error;
+    }
+  }
+  // A replayed correct code is audited but is not a failed guess: it feeds
+  // neither the lock nor the notice, and its slot is given back.
+  async function noteReplay(gate, user, req, context) {
+    await gate.give();
+    try {
+      await audit(
+        db,
+        undefined,
+        user,
+        "totp.replayed",
+        "staff",
+        user._id,
+        context,
+        req,
+      );
+    } catch {
+      // Accounting must not turn a refusal into a server error.
     }
   }
   // Runs inside the caller's transaction. Serializes concurrent sign-ins
@@ -670,7 +764,7 @@ export function authModule({ db, client, c, sendCode, notify }) {
       user,
       data,
       req,
-      "login",
+      challenge.via === "password" ? PASSWORD_ONLY : "login",
       async (session, factor) => {
         const used = await challenges.deleteOne(
           { _id: challenge._id },
@@ -694,7 +788,9 @@ export function authModule({ db, client, c, sendCode, notify }) {
           newHash: challenge.pendingPasswordHash,
           detail: challenge.pendingPasswordHash
             ? `Password reset with email code and ${factor}`
-            : `Password, email code and ${factor}`,
+            : challenge.via === "password"
+              ? `Password and ${factor}`
+              : `Password, email code and ${factor}`,
           req,
         });
       },
@@ -820,6 +916,7 @@ export function authModule({ db, client, c, sendCode, notify }) {
     const key = keyOf(user, "totpPending"),
       step = verifyTotp(key, data.code, Date.now());
     if (step === null) {
+      await consume(db, `totp:${user._id}`, 10, 900000).catch(() => undefined);
       await recordFailure(user, { code: data.code }, req, "enrol");
       throw new HttpError(400, BAD_CODE);
     }
@@ -876,8 +973,11 @@ export function authModule({ db, client, c, sendCode, notify }) {
       });
     } catch (error) {
       if (error.factorFailure) await recordFailure(user, current, req, "enrol");
+      else if (error.replayed && gate)
+        await noteReplay(gate, user, req, "enrol");
       throw error;
     }
+    await gate?.give();
     tellOf(user, replacing ? "replaced" : "enabled");
     res.json({ backupCodes: backup.display, stepUpUntil });
   });

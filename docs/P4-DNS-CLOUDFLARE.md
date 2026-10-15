@@ -92,7 +92,7 @@ also lowers R8 (3600 s).
 1. **Zone export.** GoDaddy → My Products → sandbee.in → DNS → DNS Records → the "…"/Actions menu →
    **Export Zone File** (if the menu is missing, a screenshot listing every row is enough). Paste
    the text. Also tell whether the DNS page shows any **Forwarding** (domain or subdomain).
-2. **Mail baseline.** Sign in to admin to get an email code. In the receiving Gmail: open that mail →
+2. **Mail baseline.** Request an email code (an owner with an authenticator gets none at sign-in: use the first-time/forgot-password screen, or a staff member without an authenticator). In the receiving Gmail: open that mail →
    ⋮ → **Show original** → paste ONLY the header lines `Return-Path:`, `From:`,
    `X-Google-Original-From:` and, if shown, `SPF:`/`DKIM:`/`DMARC:` (never the body: it holds the
    code). 2026-10-12: `Return-Path` and `From` = the Gmail address, original From `admin@sandbee.in` (F6).
@@ -165,8 +165,8 @@ Cloudflare: Overview → **Check nameservers now**. Note the time.
 2. Public resolvers: for `R in 1.1.1.1 8.8.8.8 9.9.9.9`, the step 3 names via `dig +short @$R`
    give the §2 values (a resolver may answer from the old copy until its cache expires: same values).
 3. HTTPS: the step 0.3 loop → same HTTP codes, certificate issuer unchanged, no error.
-4. Admin: sign in with password + email code + authenticator; open the dashboard; sign out.
-5. Mail: the new code email arrives and its **Show original** shows the same `Return-Path`/`From` as 0.2.
+4. Admin: sign in with password + authenticator; open the dashboard; sign out.
+5. Mail: request a recovery code (see 0.2); the new code email arrives and its **Show original** shows the same `Return-Path`/`From` as 0.2.
 6. Caddy: `docker logs --since 2h sandbee-edge-caddy-1 2>&1 | grep -iE 'error|challenge|obtain' | tail -20`
    shows no new certificate errors.
 
