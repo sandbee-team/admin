@@ -19,7 +19,13 @@ export class ProviderError extends Error {
   constructor(
     provider,
     code,
-    { status = 0, retryable = false, providerCode = "", retryAfterMs = 0 } = {},
+    {
+      status = 0,
+      retryable = false,
+      providerCode = "",
+      providerCodes = [],
+      retryAfterMs = 0,
+    } = {},
   ) {
     super(`${NAMES[provider] ?? "Provider"} request failed (${code})`);
     this.name = "ProviderError";
@@ -29,6 +35,9 @@ export class ProviderError extends Error {
     this.retryable = retryable;
     // A provider's own error code, kept only when it is a short snake_case token.
     this.providerCode = providerCode;
+    // Cloudflare's numeric error codes (`errors[].code`), at most 5 small
+    // integers; never their messages.
+    this.providerCodes = providerCodes;
     this.retryAfterMs = retryAfterMs;
   }
 }
@@ -72,6 +81,27 @@ async function readCapped(response, maxBytes) {
   }
   return { buffer: Buffer.concat(parts) };
 }
+const numericCodesOf = (json) =>
+  Array.isArray(json?.errors)
+    ? json.errors
+        .map((e) => e?.code)
+        .filter((c) => Number.isInteger(c) && c >= 0 && c <= 999999)
+        .slice(0, 5)
+    : [];
+// A multipart request is built in memory so its size is known before anything
+// is sent and a retry sends the same bytes.
+export const MAX_FORM_BYTES = 2 * 1024 * 1024;
+async function encodeForm(provider, form) {
+  if (!(form instanceof FormData)) throw new ProviderError(provider, "invalid");
+  const encoded = new Response(form);
+  const type = encoded.headers.get("content-type") ?? "";
+  if (!type.startsWith("multipart/form-data"))
+    throw new ProviderError(provider, "invalid");
+  const body = Buffer.from(await encoded.arrayBuffer());
+  if (body.length > MAX_FORM_BYTES)
+    throw new ProviderError(provider, "invalid");
+  return { body, type };
+}
 const CONTROL = /[\u0000-\u001f\u007f]/;
 // Builds the request URL from a fixed base: the path may only be a plain
 // absolute path, so no input can change the host.
@@ -98,6 +128,8 @@ export function urlFor(provider, path, query = {}) {
 }
 // request({provider, path, ...}) -> {status, json, headers, location}
 //  - idempotent: retry 429/5xx/network (default: GET and HEAD)
+//  - form: a FormData sent as multipart/form-data (≤ MAX_FORM_BYTES, else
+//    "invalid" before anything is sent); mutually exclusive with `body`
 //  - followRedirect: return a 3xx (with `location`) instead of failing; used
 //    only for the GitHub artifact download, which validates the target itself
 export async function request({
@@ -107,6 +139,7 @@ export async function request({
   method = "GET",
   token,
   body,
+  form,
   timeoutMs = 30000,
   signal,
   fetch: fetchImpl = globalThis.fetch,
@@ -120,6 +153,10 @@ export async function request({
   const url = urlFor(provider, path, query);
   if (typeof token !== "string" || token.length < 8 || CONTROL.test(token))
     throw new ProviderError(provider, "invalid");
+  if (form !== undefined && body !== undefined)
+    throw new ProviderError(provider, "invalid");
+  const encodedForm =
+    form === undefined ? null : await encodeForm(provider, form);
   const limit = Math.min(maxBytes, HARD_MAX_BYTES);
   const headers = {
     authorization: `Bearer ${token}`,
@@ -133,8 +170,13 @@ export async function request({
       Object.entries(extra).map(([k, v]) => [k.toLowerCase(), v]),
     ),
     ...(body === undefined ? {} : { "content-type": "application/json" }),
+    ...(encodedForm ? { "content-type": encodedForm.type } : {}),
   };
-  const payload = body === undefined ? undefined : JSON.stringify(body);
+  const payload = encodedForm
+    ? encodedForm.body
+    : body === undefined
+      ? undefined
+      : JSON.stringify(body);
   for (let attempt = 0; ; attempt++) {
     const outcome = await once();
     if (outcome.error) {
@@ -221,6 +263,7 @@ export async function request({
           retryAfterMs: retryAfterOf(response.headers),
           providerCode:
             typeof kept === "string" && CODE_RE.test(kept) ? kept : "",
+          providerCodes: numericCodesOf(json),
         }),
       };
     }

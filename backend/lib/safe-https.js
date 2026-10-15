@@ -153,6 +153,7 @@ export async function getText(
   {
     timeoutMs = 10000,
     maxBytes = 65536,
+    truncate = false,
     headers = {},
     query,
     signal,
@@ -160,14 +161,7 @@ export async function getText(
     send = realSend,
   } = {},
 ) {
-  if (!validPublicHost(host)) throw new SafeHttpsError("bad-host");
-  if (
-    typeof path !== "string" ||
-    !/^\/[A-Za-z0-9._~\/-]{0,200}$/.test(path) ||
-    path.includes("//") ||
-    path.split("/").includes("..")
-  )
-    throw new SafeHttpsError("bad-path");
+  checkTarget(host, path);
   return send({
     hostname: host,
     port: 443,
@@ -177,8 +171,96 @@ export async function getText(
     lookup,
     timeoutMs,
     maxBytes,
+    truncate,
     signal,
   });
+}
+function checkTarget(host, path) {
+  if (!validPublicHost(host)) throw new SafeHttpsError("bad-host");
+  if (
+    typeof path !== "string" ||
+    !/^\/[A-Za-z0-9._~\/-]{0,200}$/.test(path) ||
+    path.includes("//") ||
+    path.split("/").includes("..")
+  )
+    throw new SafeHttpsError("bad-path");
+}
+// The only request headers a POST may carry (the signed realtime publish
+// probe); anything else is refused, never forwarded.
+export const POST_HEADERS = Object.freeze([
+  "content-type",
+  "x-realtime-ts",
+  "x-realtime-signature",
+]);
+export const MAX_POST_BYTES = 4096;
+const HEADER_VALUE = /^[\x20-\x7e]{1,256}$/;
+// POST https://<host><path> with a small text body -> {status, headers, text}.
+// Same host/address/size/time guards as getText; no redirects.
+export async function postText(
+  host,
+  path,
+  body,
+  {
+    timeoutMs = 10000,
+    maxBytes = 65536,
+    headers = {},
+    signal,
+    lookup = guardedLookup,
+    send = realSend,
+  } = {},
+) {
+  checkTarget(host, path);
+  if (typeof body !== "string" || Buffer.byteLength(body) > MAX_POST_BYTES)
+    throw new SafeHttpsError("bad-body");
+  const clean = {};
+  for (const [key, value] of Object.entries(headers ?? {})) {
+    const name = key.toLowerCase();
+    if (
+      !POST_HEADERS.includes(name) ||
+      typeof value !== "string" ||
+      !HEADER_VALUE.test(value)
+    )
+      throw new SafeHttpsError("bad-header");
+    clean[name] = value;
+  }
+  return send({
+    hostname: host,
+    port: 443,
+    path,
+    method: "POST",
+    headers: {
+      "user-agent": "sandbee-admin-health",
+      ...clean,
+      "content-length": String(Buffer.byteLength(body)),
+    },
+    body,
+    lookup,
+    timeoutMs,
+    maxBytes,
+    signal,
+  });
+}
+// Does HTTPS answer at all? -> {ok, status, code}. Any HTTP status is ok (the
+// page itself is not judged and a large page is cut off, not refused). A
+// connect/TLS/timeout failure -> {ok: false, status: 0, code: "cert-pending"}:
+// before the first deployment a Vercel host resets the connection (spike S1).
+// Host/address refusals keep their SafeHttpsError code ("bad-host", "blocked").
+export async function probeTls(host, options = {}) {
+  try {
+    const { status } = await getText(host, "/", {
+      ...options,
+      maxBytes: 1024,
+      truncate: true,
+    });
+    return { ok: true, status, code: null };
+  } catch (error) {
+    if (!(error instanceof SafeHttpsError)) throw error;
+    const code =
+      error.code === "network" || error.code === "timeout"
+        ? "cert-pending"
+        : error.code;
+    return { ok: false, status: 0, code };
+  }
 }
 export async function getJson(host, path, options = {}) {
   const result = await getText(host, path, {
@@ -193,7 +275,7 @@ export async function getJson(host, path, options = {}) {
   }
   return { status: result.status, headers: result.headers, json };
 }
-function realSend({ timeoutMs, maxBytes, signal, ...options }) {
+function realSend({ timeoutMs, maxBytes, truncate, body, signal, ...options }) {
   // An abort listener added to an already-aborted signal never fires.
   if (signal?.aborted) return Promise.reject(new SafeHttpsError("aborted"));
   return new Promise((resolve, reject) => {
@@ -211,6 +293,12 @@ function realSend({ timeoutMs, maxBytes, signal, ...options }) {
         size += chunk.length;
         if (size > maxBytes) {
           res.destroy();
+          if (truncate)
+            return finish(resolve, {
+              status: res.statusCode,
+              headers: res.headers,
+              text: "",
+            });
           return finish(reject, new SafeHttpsError("too-large"));
         }
         parts.push(chunk);
@@ -238,6 +326,6 @@ function realSend({ timeoutMs, maxBytes, signal, ...options }) {
         new SafeHttpsError(error?.code === "EBLOCKED" ? "blocked" : "network"),
       ),
     );
-    req.end();
+    req.end(body);
   });
 }

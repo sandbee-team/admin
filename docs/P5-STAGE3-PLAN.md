@@ -392,10 +392,7 @@ fail 0, cancelled 0, skipped 6 (the Linux-only ones), todo 0 (727 of P3 + 50 new
   `S3 ns=2 ns-ips=2 authoritative-udp=ok(1) tcp53=ok` — the worker reaches GoDaddy's nameservers
   directly over UDP and TCP 53, so the authoritative DNS check (D44) works from production; no
   egress change needed. (Same result on the dev PC.)
-- Owner-pending (the tokens were not available to the agent): set
-  `SPIKE_VERCEL_TOKEN`/`SPIKE_CF_TOKEN`, run S1 (`node tools/spikes/p5-vercel.mjs create`, enter the
-  printed records at GoDaddy, `… check`) and S2 upload (`node tools/spikes/p5-realtime.mjs <dir>`).
-  W2/W3 wait for S1/S2.
+- S1 and the S2 upload: done 2026-10-16 by the owner (results in "Session 4" below).
 
 ### Session 3 (2026-10-14): W4 contract + API + data model, W3 realtime bundle
 
@@ -510,3 +507,68 @@ Evidence (Windows dev PC, 2026-10-14, branch `p5-stage3`): `node --test test/sta
 Linux-only ones), todo 0 (777 before + 37 new); `npm run build` → `✓ built in 4.98s` (the existing
 > 500 kB chunk warning only; no frontend file imports the go-live yet, so no Playwright run).
 Changed files were formatted with prettier (only those files).
+
+### Session 4 (2026-10-16): spikes S1 + S2 upload, merge of main, W2 adapters, W5 worker
+
+**Merge.** main @ 5ca7937 (sales documents D52/D53, sign-in D54) merged into `p5-stage3` @ c1548da
+(conflicts in `backend/db.js`, `docs/POS-INTEGRATION.md`, `docs/ROADMAP.md`, both sides kept);
+`npm test` after the merge → tests 912, pass 906, fail 0, skipped 6.
+
+**Spikes (owner, dev PC, 2026-10-16).** Run against the DEMO client's own Vercel and Cloudflare
+accounts with new 7-day tokens (owner's choice instead of throwaway accounts, Q4 amended: the
+scripts only create `p5spike` resources and never touch demo's project or Worker). The resources
+(Vercel project `p5spike` with domain `p5spike.sandbee.in`, Worker `pos-realtime-p5spike`, GoDaddy
+CNAME `p5spike`) stay until the S4 dress rehearsal, then the owner deletes them by hand.
+
+S1 (Vercel, `tools/spikes/p5-vercel.mjs`):
+
+- `POST /v11/projects` with `serverlessFunctionRegion: "bom1"` → 200; the response carries
+  `serverlessFunctionRegion=bom1`, `functionDefaultRegions=[bom1]`,
+  `defaultFunctionDefaultRegions=[bom1]`. `PATCH /v9/projects/{id}` (node `22.x`,
+  `sourceFilesOutsideRootDirectory: true`) → 200. Admin's `inspectProject` on the result: vercel,
+  project and env all ok, no problems or warnings.
+- Env upsert (21 keys, 12 of them `""`) → 201 `{created, failed}`, 21 created, 0 failed: **blank
+  values are accepted** (risk 6 closed; no fallback needed). Env list rows have the fields
+  `configurationId, createdAt, createdBy, decrypted, id, key, lastEditedByDisplayName,
+  lastEditedByPrincipal, securityIssues, target, type, updatedAt, updatedBy, value`; `target` is an
+  array (2 per row), `updatedAt` a number; `value` is returned for encrypted (12) and plain (9)
+  rows alike, so the adapter must whitelist `key, type, target, updatedAt` and fingerprint plain
+  values in memory only (D43), never keep `value`.
+- **An upsert with the same values bumps `updatedAt` on every row**; changing one key bumps only
+  that row. So the env step must read the env metadata after its own upsert and record those
+  `updatedAt` values as admin's write (D43 drift "edited by hand" compares against them).
+- Domain: `GET` 404 → add → 200 with `apexName, createdAt, customEnvironmentId, gitBranch, name,
+  projectId, redirect, redirectStatusCode, updatedAt, verified`; **`verified=true` at once and no
+  `verification[]`** for a sandbee.in label (no `_vercel` TXT record needed). `GET
+  /v6/domains/{d}/config` → `aValues, acceptedChallenges, cnames, configuredBy, conflicts,
+  ipStatus, misconfigured, nameservers, recommendedCNAME, recommendedIPv4, serviceType`;
+  `recommendedCNAME` has 2 ranked entries, rank 1 a project-specific
+  `<16 hex>.vercel-dns-017.com` (matches `VERCEL_CNAME_RE`); `misconfigured=true` before the
+  record, then `false` with `configuredBy=CNAME`.
+- DNS (GoDaddy's own nameservers, `dns-check.js`): `lookupLabel` → `posdemo` and `p5spike` in use
+  (CNAME to Vercel), a random label free; `checkRecords` → `cnameOk=true`.
+- **TLS before the first deployment never comes up** (`ECONNRESET` right after the record and again
+  15+ minutes later). So the `dns` step must not wait for TLS: DNS is ready when the authoritative
+  CNAME matches, Vercel says `verified` and the config is not `misconfigured`; `tls` is recorded
+  as `cert-pending` (a note, not a blocker) and HTTPS is proven after the first deploy (deploy
+  health check + the `finish` step's inline Verify).
+
+S2 upload (Cloudflare, `tools/spikes/p5-realtime.mjs`, bundle sha256 `d2a7c079…0dbe31`):
+
+- `GET /accounts` needs **Account Settings: Read** (403, code 9109 without a usable grant); with
+  it, `count=1`, so "the token's only account" works when no account id is stored.
+- **A token whose validity starts in the future verifies as `active`** at `/user/tokens/verify` but
+  every account call fails (403/9109, 401/10000). The check step must therefore prove access with
+  an account call (`/accounts` or the stored account's `/workers/subdomain`), not with the verify
+  call alone.
+- workers.dev subdomain: existing one returned (`present=true`), nothing registered.
+- Migration tag: new script → `GET /workers/services/{name}` 404 and no row in `GET
+  /workers/scripts` → all migrations sent → upload 200; afterwards both report `migration_tag=v1`.
+  Second upload without migrations → 200. **Re-sending the migrations at the current tag → 412,
+  code 10079**: the adapter reads the tag first (as `uploadMetadataOf` assumes) and maps 10079 to
+  `realtime-upload-failed`.
+- Script settings: bindings `CAFE_ROOM` durable_object_namespace, `REALTIME_PUBLISH_SECRET`
+  secret_text, `TENANT_ID` plain_text, compatibility date 2026-01-01. workers.dev enable → 200.
+- Probes: `GET /join` → 426 only on the **4th** try (a new workers.dev name takes seconds to
+  propagate; the probe must retry, as `PUBLISH_PROBE_*` already do); signed publish → 200 (`ok`);
+  publish for another tenant → 404 (`realtime-probe-failed`), so tenants stay isolated.

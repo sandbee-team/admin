@@ -7,6 +7,8 @@ import { writeFile } from "node:fs/promises";
 import zlib from "node:zlib";
 import { ProviderError } from "../../backend/lib/provider-http.js";
 import { buildEnvHash } from "../../backend/worker/artifact.js";
+import { createVercel } from "../../backend/lib/vercel.js";
+import { createFakeVercel as createFakeVercelHttp } from "./vercel.js";
 
 export const sha256 = (buffer) =>
   createHash("sha256").update(buffer).digest("hex");
@@ -307,7 +309,22 @@ export function createFakeGitHub({
   return api;
 }
 // ---- Vercel -----------------------------------------------------------------------------
+// Adapter-level fake (replaces createVercel's result). The deploy methods run on
+// `state` below. The go-live methods (projectByName, createProject, patchProject,
+// upsertEnv, envMeta, projectDomains, projectDomain, addDomain, verifyDomain,
+// domainConfig, setDomainRedirect) are the REAL adapter over the stateful HTTP
+// fake in ./vercel.js, exposed as `fake.http` (its state: projects, envs with
+// updatedAt, domains, configured set; see that file's header). The two states
+// are independent: the HTTP fake's default project is named "demo" with a
+// production deployment, a project made by createProject has none. Calls to the
+// go-live methods are recorded in `fake.http.calls` (with request bodies).
 export function createFakeVercel({ projectId = "prj_1" } = {}) {
+  const http = createFakeVercelHttp({ projectId });
+  const real = createVercel({
+    token: "vcp_FAKETOKENFORTESTS0123456789",
+    fetch: http.fetch,
+    sleep: async () => {},
+  });
   const state = {
     projectId,
     deployments: new Map(),
@@ -361,7 +378,19 @@ export function createFakeVercel({ projectId = "prj_1" } = {}) {
   });
   const api = {
     state,
+    http,
     add,
+    projectByName: real.projectByName,
+    createProject: real.createProject,
+    patchProject: real.patchProject,
+    upsertEnv: real.upsertEnv,
+    envMeta: real.envMeta,
+    projectDomains: real.projectDomains,
+    projectDomain: real.projectDomain,
+    addDomain: real.addDomain,
+    verifyDomain: real.verifyDomain,
+    domainConfig: real.domainConfig,
+    setDomainRedirect: real.setDomainRedirect,
     // Called by the fake CLI: a new, still building deployment.
     createFromCli(meta) {
       const id = `dpl_${++state.seq}`;
