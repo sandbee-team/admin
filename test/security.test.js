@@ -8,7 +8,7 @@ import { createApp } from "../backend/app.js";
 import { hashPassword, encrypt, decrypt } from "../backend/lib/crypto.js";
 import { seedCatalog } from "../backend/modules/catalog-seed.js";
 import { makeSnapshot, parseSnapshot } from "../backend/lib/snapshot.js";
-import { consume } from "../backend/lib/limiter.js";
+import { consume, refund } from "../backend/lib/limiter.js";
 import { CHECKS } from "../shared/policy.js";
 let repl, client, db, server, origin, owner, admin, ops, viewer;
 const mail = new Map(),
@@ -601,6 +601,23 @@ describe("recovery and resilience", () => {
       Array.from({ length: 12 }, () => consume(db, "parallel-test", 5, 60000)),
     );
     assert.equal(results.filter((r) => r.status === "fulfilled").length, 5);
+  });
+  it("refunds a reserved slot in the window it was taken from", async () => {
+    const win = 900000,
+      start = Math.floor(Date.now() / win) * win - win * 5;
+    const id = await consume(db, "refund-test", 3, win, start + win - 1000);
+    await consume(db, "refund-test", 3, win, start + win - 500);
+    // The clock has moved on (real time is a later window); the refund must
+    // still hit the original row, never the current one.
+    await refund(db, id);
+    const rows = db.collection("rate_limits");
+    assert.equal((await rows.findOne({ _id: id })).count, 1);
+    await refund(db, id);
+    await refund(db, id);
+    assert.equal((await rows.findOne({ _id: id })).count, 0);
+    // Never below zero, and never creates a row.
+    await refund(db, "no-such-window");
+    assert.equal(await rows.findOne({ _id: "no-such-window" }), null);
   });
   it("binds encrypted credentials to their record and rejects tampering", () => {
     const box = encrypt("token-value", vaultKey, "one");

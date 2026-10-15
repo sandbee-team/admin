@@ -24,6 +24,20 @@ export function notifier(c) {
     await smtp.sendMail({ from: c.MAIL_FROM, to: email, subject, text });
   };
 }
+// Sales documents: one PDF attachment, plain text, Reply-To the company.
+export function documentMailer(c) {
+  const smtp = transport(c);
+  return async (to, { subject, text, replyTo, filename, content }) => {
+    await smtp.sendMail({
+      from: c.MAIL_FROM,
+      to,
+      ...(replyTo ? { replyTo } : {}),
+      subject,
+      text,
+      attachments: [{ filename, content, contentType: "application/pdf" }],
+    });
+  };
+}
 export function mailer(c) {
   const smtp = transport(c);
   return async (email, code) => {

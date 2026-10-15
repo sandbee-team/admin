@@ -11,11 +11,16 @@ const axe = (page) =>
   new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
     .analyze();
-async function emailStep(page, who) {
+// Staff with an authenticator go from the password straight to it.
+async function passwordStep(page, who) {
   await page.goto("/");
   await page.getByLabel("Work email").fill(who);
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Continue", exact: true }).click();
+}
+// Staff without an authenticator get an email code.
+async function emailStep(page, who) {
+  await passwordStep(page, who);
   await expect(
     page.getByRole("heading", { name: "Check your inbox" }),
   ).toBeVisible();
@@ -95,7 +100,7 @@ test("owner keeps accounts, files and POS setup; secrets show only briefly", asy
   await expect(
     page.getByRole("heading", { name: "Welcome back." }),
   ).toBeVisible();
-  await emailStep(page, who);
+  await passwordStep(page, who);
   await page.getByRole("button", { name: "Use a backup code" }).click();
   await page.getByLabel("Backup code").fill(backup[0]);
   await page.getByRole("button", { name: "Verify and continue" }).click();
@@ -457,7 +462,9 @@ test("secret fields block copy but accept paste", async ({ page }) => {
       exact: true,
     })
     .click();
-  const field = page.getByRole("dialog").getByLabel("New password");
+  const field = page
+    .getByRole("dialog")
+    .getByLabel("New password", { exact: true });
   await expect(field).toHaveAttribute("writingsuggestions", "false");
   await expect(field).toHaveAccessibleDescription(/Secret value/);
   await page.evaluate(() => navigator.clipboard.writeText("sentinel-clip"));
@@ -473,6 +480,36 @@ test("secret fields block copy but accept paste", async ({ page }) => {
   await page.evaluate(() => navigator.clipboard.writeText("pasted-secret-2"));
   await field.press("Control+V");
   await expect(field).toHaveValue("pasted-secret-2");
+  // The eye shows the value on request; copy stays blocked while it is shown.
+  const dialog = page.getByRole("dialog");
+  const show = dialog.getByRole("button", { name: "Show new password" });
+  await expect(show).toHaveAttribute("aria-pressed", "false");
+  await expect(show).toHaveAttribute("type", "button");
+  await expect(field).toHaveCSS("-webkit-text-security", "disc");
+  await show.click();
+  // The name stays the same; only aria-pressed changes.
+  const hide = show;
+  await expect(hide).toHaveAttribute("aria-pressed", "true");
+  await expect(hide).toHaveAttribute(
+    "aria-controls",
+    await field.getAttribute("id"),
+  );
+  await expect(field).toHaveAttribute("spellcheck", "false");
+  await expect(field).toHaveCSS("-webkit-text-security", "none");
+  await expect(field).toHaveValue("pasted-secret-2");
+  await page.evaluate(() => navigator.clipboard.writeText("sentinel-clip"));
+  await field.press("Control+A");
+  await field.press("Control+C");
+  await field.press("Control+X");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+    "sentinel-clip",
+  );
+  await expect(field).toHaveValue("pasted-secret-2");
+  expect((await axe(page)).violations, "secret field accessibility").toEqual(
+    [],
+  );
+  await hide.click();
+  await expect(field).toHaveCSS("-webkit-text-security", "disc");
 });
 test("a concurrent edit is never silently overwritten after a credential save", async ({
   page,

@@ -1,10 +1,5 @@
 import { Router } from "express";
-import {
-  randomBytes,
-  randomUUID,
-  createDecipheriv,
-  createHash,
-} from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   FILE_CATEGORIES,
@@ -13,16 +8,19 @@ import {
   MAX_FILES,
 } from "../../shared/schemas.js";
 import { ensure, HttpError, staleError } from "../lib/errors.js";
-import { decrypt, equal } from "../lib/crypto.js";
 import { audit } from "../lib/audit.js";
 import { consume } from "../lib/limiter.js";
 import { encodeRfc3986 } from "../lib/s3.js";
-import { createSealer, fileEntry, pushEntry } from "../lib/file-store.js";
+import {
+  createSealer,
+  fileEntry,
+  pushEntry,
+  openSealed,
+  SealedIntegrityError,
+} from "../lib/file-store.js";
 import { transaction } from "../db.js";
 import { authorizeWrite } from "./records.js";
 
-const MAGIC = Buffer.from("SBF1");
-const OVERHEAD = MAGIC.length + 12 + 16; // magic + iv + GCM tag
 const DAY = 86400000;
 const RESTORE_DAYS = 29,
   PURGE_DAYS = 31;
@@ -305,45 +303,13 @@ export function fileRoutes({ db, client, c, auth, s3 }) {
         ).catch(() => {});
         throw integrity();
       };
-      let body;
-      try {
-        body = await s3.get(file.s3Key, file.versionId, file.size + OVERHEAD);
-      } catch (error) {
-        // An object longer than it can legitimately be is a tampered object.
-        if (error.s3Code !== "TooLarge") throw error;
-        await failIntegrity();
-      }
       let plain;
       try {
         // Nothing is sent until the whole object is authenticated and matches
         // the digest recorded at upload.
-        if (
-          body.length !== file.size + OVERHEAD ||
-          !body.subarray(0, MAGIC.length).equals(MAGIC)
-        )
-          throw integrity();
-        const dataKey = Buffer.from(
-          decrypt(file.dataKey, c.VAULT_KEY, aad),
-          "hex",
-        );
-        const decipher = createDecipheriv(
-          "aes-256-gcm",
-          dataKey,
-          body.subarray(MAGIC.length, MAGIC.length + 12),
-          { authTagLength: 16 },
-        );
-        decipher.setAAD(Buffer.from(aad));
-        decipher.setAuthTag(body.subarray(body.length - 16));
-        plain = Buffer.concat([
-          decipher.update(body.subarray(MAGIC.length + 12, body.length - 16)),
-          decipher.final(),
-        ]);
-        if (
-          plain.length !== file.size ||
-          !equal(createHash("sha256").update(plain).digest("hex"), file.sha256)
-        )
-          throw integrity();
-      } catch {
+        plain = await openSealed(s3, file, aad, c.VAULT_KEY);
+      } catch (error) {
+        if (!(error instanceof SealedIntegrityError)) throw error;
         await failIntegrity();
       }
       await transaction(client, async (session) => {

@@ -1,6 +1,10 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { readFileSync } from "node:fs";
+const axe = (page) =>
+  new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+    .analyze();
 async function choose(page, name, option) {
   await page.getByRole("combobox", { name, exact: true }).click();
   await page.getByRole("option", { name: option, exact: true }).click();
@@ -22,6 +26,127 @@ async function login(page, role = "owner") {
   await page.getByRole("button", { name: "Verify and continue" }).click();
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
 }
+test("the sign-in password can be shown and hidden", async ({ page }) => {
+  await page.goto("/");
+  const field = page.getByLabel("Password", { exact: true });
+  await field.fill("typed-passphrase-1");
+  await expect(field).toHaveAttribute("type", "password");
+  const show = page.getByRole("button", { name: "Show password" });
+  await expect(show).toHaveAttribute("aria-pressed", "false");
+  await expect(show).toHaveAttribute("type", "button");
+  await show.click();
+  await expect(field).toHaveAttribute("type", "text");
+  await expect(field).toHaveValue("typed-passphrase-1");
+  // The name stays fixed; only aria-pressed changes. It controls the input.
+  await expect(show).toHaveAttribute("aria-pressed", "true");
+  await expect(show).toHaveAttribute(
+    "aria-controls",
+    await field.getAttribute("id"),
+  );
+  // Shown text is kept away from spellcheck and assistants too.
+  await expect(field).toHaveAttribute("spellcheck", "false");
+  await expect(field).toHaveAttribute("autocapitalize", "off");
+  await expect(field).toHaveAttribute("data-gramm", "false");
+  // Reachable by keyboard, and it never submits the form.
+  await field.focus();
+  await page.keyboard.press("Tab");
+  await expect(show).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(field).toHaveAttribute("type", "password");
+  await expect(show).toHaveAttribute("aria-pressed", "false");
+  await expect(
+    page.getByRole("heading", { name: "Welcome back." }),
+  ).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  // Visible state does not survive the field being removed.
+  await show.click();
+  await page.getByRole("button", { name: /forgot your password/ }).click();
+  await page.getByRole("button", { name: "Back to sign in" }).click();
+  await expect(page.getByLabel("Password", { exact: true })).toHaveAttribute(
+    "type",
+    "password",
+  );
+  // The recovery step's new-password field has the same control (the API
+  // answers are stubbed so no real account is touched).
+  await page.route("**/api/auth/recover", (route) =>
+    route.fulfill({ json: { challengeId: "r".repeat(24) } }),
+  );
+  await page.getByRole("button", { name: /forgot your password/ }).click();
+  await page.getByLabel("Work email").fill("someone@example.test");
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Check your inbox" }),
+  ).toBeVisible();
+  const fresh = page.getByLabel("New password", { exact: true });
+  await expect(fresh).toHaveAttribute("type", "password");
+  const showNew = page.getByRole("button", { name: "Show password" });
+  await showNew.click();
+  await expect(fresh).toHaveAttribute("type", "text");
+  await expect(showNew).toHaveAttribute("aria-pressed", "true");
+  expect((await axe(page)).violations, "recovery accessibility").toEqual([]);
+  await page.getByRole("button", { name: /Use a different email/ }).click();
+  await page.getByRole("button", { name: "Back to sign in" }).click();
+  expect((await axe(page)).violations, "sign-in accessibility").toEqual([]);
+  for (const width of [320, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+      `sign-in overflows at ${width}`,
+    ).toBe(true);
+  }
+});
+test("an expired or used-up authenticator step sends the person back to the password", async ({
+  page,
+}) => {
+  // Stubbed answers: nothing here touches a real challenge.
+  await page.route("**/api/auth/login", (route) =>
+    route.fulfill({
+      json: { totpRequired: true, challengeId: "t".repeat(24) },
+    }),
+  );
+  let answers = 0;
+  await page.route("**/api/auth/verify-totp", (route) =>
+    route.fulfill({
+      status: 400,
+      json: {
+        error:
+          answers++ === 0
+            ? "Code is incorrect."
+            : "Code is invalid, expired or has too many attempts.",
+      },
+    }),
+  );
+  await page.goto("/");
+  await page.getByLabel("Work email").fill("someone@example.test");
+  await page.getByLabel("Password", { exact: true }).fill("typed-passphrase-1");
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Confirm with your authenticator" }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start over" })).toBeVisible();
+  // A wrong code stays on the step.
+  await page.getByLabel("Authenticator code").fill("123456");
+  await page.getByRole("button", { name: "Verify and continue" }).click();
+  await expect(page.getByRole("alert")).toContainText("Code is incorrect.");
+  await expect(
+    page.getByRole("heading", { name: "Confirm with your authenticator" }),
+  ).toBeVisible();
+  // A dead challenge returns to the password step with a short message.
+  await page.getByLabel("Authenticator code").fill("123456");
+  await page.getByRole("button", { name: "Verify and continue" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Welcome back." }),
+  ).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText(
+    "Enter your password again",
+  );
+  await expect(page.getByLabel("Work email")).toHaveValue(
+    "someone@example.test",
+  );
+  await expect(page.getByLabel("Password", { exact: true })).toHaveValue("");
+});
 test("dashboard scopes, brief views and customer search work with populated records", async ({
   page,
 }) => {

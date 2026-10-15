@@ -21,6 +21,7 @@ import { CustomerWorkspace } from "./pages/customer-workspace";
 import { InstallationWorkspace } from "./pages/installation-workspace";
 import { PosImport } from "./pages/pos-import";
 import { PosFleet } from "./pages/pos-fleet";
+import { SalesSettings } from "./pages/sales-settings";
 import { RecordList } from "./pages/record-list";
 import { RecordEditor } from "./pages/record-editor";
 import { definitions } from "./pages/records-config";
@@ -113,7 +114,7 @@ function App() {
       </div>
     );
   if (!user) return <Login onLogin={setUser} />;
-  const [kind, id, section] = path.split("/").filter(Boolean);
+  const [kind, id, section, sub] = path.split("/").filter(Boolean);
   let page;
   if (!kind) page = <Overview user={user} />;
   else if (kind === "ecom") page = <EcomPage user={user} />;
@@ -121,12 +122,22 @@ function App() {
     page = <PosImport />;
   else if (kind === "pos-clients" && can(user.role, "credentials"))
     page = <PosFleet user={user} />;
+  else if (kind === "sales-settings" && can(user.role, "sales"))
+    page = <SalesSettings user={user} />;
   else if (definitions[kind] && !id)
     page = <RecordList key={kind} kind={kind} user={user} />;
   else if (kind === "products" && id && id !== "new")
     page = <ProductWorkspace key={id} id={id} section={section} user={user} />;
   else if (kind === "customers" && id && id !== "new")
-    page = <CustomerWorkspace key={id} id={id} section={section} user={user} />;
+    page = (
+      <CustomerWorkspace
+        key={id}
+        id={id}
+        section={section}
+        sub={sub}
+        user={user}
+      />
+    );
   else if (kind === "installations" && id && id !== "new")
     page = (
       <InstallationWorkspace key={id} id={id} section={section} user={user} />

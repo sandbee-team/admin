@@ -3,6 +3,7 @@ import {
   FileText,
   KeyRound,
   LayoutDashboard,
+  Receipt,
   Rocket,
   ScrollText,
   Users,
@@ -24,14 +25,16 @@ import { can } from "../../../shared/policy";
 import { RecordEditor } from "./record-editor";
 import { AccountsSection } from "./customer-accounts";
 import { FilesSection } from "./customer-files";
+import { SalesSection } from "./customer-sales";
 const TABS = [
   ["", "Summary", LayoutDashboard],
   ["installations", "Installations", Rocket],
   ["accounts", "Accounts", KeyRound],
   ["files", "Files", FileText],
+  ["sales", "Sales", Receipt],
   ["activity", "Activity", ScrollText],
 ];
-export function CustomerWorkspace({ id, section = "", user }) {
+export function CustomerWorkspace({ id, section = "", sub, user }) {
   const resource = useResource(`/customers/${id}`);
   return (
     <Resource resource={resource}>
@@ -60,6 +63,8 @@ export function CustomerWorkspace({ id, section = "", user }) {
             <AccountsSection customerId={id} user={user} />
           ) : section === "files" ? (
             <FilesSection customerId={id} user={user} />
+          ) : section === "sales" ? (
+            <SalesSection customerId={id} sub={sub} user={user} />
           ) : section === "activity" ? (
             <Activity customerId={id} />
           ) : (

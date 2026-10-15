@@ -2,7 +2,7 @@ import { MongoClient } from "mongodb";
 import { config } from "./config.js";
 import { connect } from "./db.js";
 import { createApp } from "./app.js";
-import { mailer, notifier } from "./modules/mail.js";
+import { mailer, notifier, documentMailer } from "./modules/mail.js";
 import { seedCatalog } from "./modules/catalog-seed.js";
 import { verifyVaultKey } from "./lib/vault.js";
 import { createS3 } from "./lib/s3.js";
@@ -28,6 +28,7 @@ const app = createApp({
   storeDb,
   sendCode: mailer(c),
   notify: notifier(c),
+  sendDocument: documentMailer(c),
   s3: c.FILES_S3_BUCKET
     ? createS3({
         region: c.FILES_S3_REGION,

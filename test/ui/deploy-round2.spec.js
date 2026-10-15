@@ -1,5 +1,4 @@
 import { test, expect } from "@playwright/test";
-import { readFileSync } from "node:fs";
 import { base32Decode, codeAt, stepAt } from "../../backend/lib/totp.js";
 // Pre-admin rollback, redeploy of the previous version, cancel of a claimed
 // rollback, unhealthy vs rolled-back, the fleet freeze banner, the light fleet
@@ -17,14 +16,6 @@ async function ownerIn(page, letter) {
   await page.getByLabel("Work email").fill(who);
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await expect(
-    page.getByRole("heading", { name: "Check your inbox" }),
-  ).toBeVisible();
-  const { code } = JSON.parse(
-    readFileSync(`test-results/otp-${who.split("@")[0]}.json`, "utf8"),
-  );
-  await page.getByLabel("Verification code").fill(code);
-  await page.getByRole("button", { name: "Verify and continue" }).click();
   await expect(
     page.getByRole("heading", { name: "Confirm with your authenticator" }),
   ).toBeVisible();

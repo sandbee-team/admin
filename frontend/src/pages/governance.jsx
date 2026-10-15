@@ -181,9 +181,9 @@ export function TeamPage({ user, onLogout }) {
           <KeyRound size={22} />
           <h2>Your account security</h2>
           <p>
-            Every new session requires your password and an email code, plus
-            your authenticator code once it is set up. Password recovery revokes
-            existing sessions.
+            Every new session requires your password and a second step: your
+            authenticator code once it is set up, otherwise an email code.
+            Password recovery revokes existing sessions.
           </p>
           <TextLink href="/account">Authenticator and backup codes</TextLink>
           <Button variant="secondary" onClick={revoke}>

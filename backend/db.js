@@ -1,5 +1,6 @@
 import { MongoClient } from "mongodb";
 import { audit } from "./lib/audit.js";
+import { SALES_COLLECTIONS } from "./lib/snapshot.js";
 export async function connect(c) {
   const client = new MongoClient(c.MONGODB_URI, {
     maxPoolSize: 20,
@@ -85,6 +86,7 @@ export async function indexes(db) {
     "audit_events",
     "recovery_checks",
     "system_state",
+    ...SALES_COLLECTIONS,
   ]) {
     if (!(await db.listCollections({ name }).hasNext())) {
       try {
@@ -176,6 +178,15 @@ export async function indexes(db) {
         },
       },
     ),
+    // Sales documents (docs/SALES-DOCS-PLAN.md §3).
+    db.collection("sales_deals").createIndex({ customerId: 1, updatedAt: -1 }),
+    db
+      .collection("sales_documents")
+      .createIndex({ customerId: 1, issuedAt: -1 }),
+    db.collection("sales_documents").createIndex({ dealId: 1, issuedAt: -1 }),
+    db
+      .collection("sales_documents")
+      .createIndex({ type: 1, fy: 1, seq: 1, version: 1 }, { unique: true }),
   ]);
 }
 export async function transaction(client, operation) {

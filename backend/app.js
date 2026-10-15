@@ -19,6 +19,7 @@ import { dbBackupRoutes } from "./modules/db-backup.js";
 import { posImportRoutes } from "./modules/pos-import.js";
 import { ecomRoutes } from "./modules/ecom.js";
 import { usageRoutes } from "./modules/usage.js";
+import { salesRoutes } from "./modules/sales.js";
 import { consume } from "./lib/limiter.js";
 import { ensure } from "./lib/errors.js";
 // The one route that takes a raw (streamed) body instead of JSON.
@@ -26,7 +27,18 @@ const UPLOAD_PATH =
   /^\/customers\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/files\/?$/i;
 // The go-live import posts a whole client file, so it gets a larger JSON limit.
 const IMPORT_PATH = /^\/pos\/import\/(preview|confirm)\/?$/i;
-const isUpload = (req) => req.method === "POST" && UPLOAD_PATH.test(req.path);
+// Sales logo/signature images are the other raw body (PUT, at most 512 KB).
+const IMAGE_PATH = /^\/sales\/settings\/images\/(logo|signature)\/?$/;
+// Sales texts (agreement up to 20,000 characters) and 50-line deals also get
+// the larger JSON limit.
+const SALES_TEXT_PATH =
+  /^\/(sales\/settings|sales\/deals\/[0-9a-f-]{36}|customers\/[0-9a-f-]{36}\/sales\/profile)\/?$/i;
+const isLarge = (req) =>
+  IMPORT_PATH.test(req.path) ||
+  (req.method === "PUT" && SALES_TEXT_PATH.test(req.path));
+const isUpload = (req) =>
+  (req.method === "POST" && UPLOAD_PATH.test(req.path)) ||
+  (req.method === "PUT" && IMAGE_PATH.test(req.path));
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export function createApp(deps) {
   const { db, c } = deps,
@@ -88,8 +100,7 @@ export function createApp(deps) {
     (() => {
       const small = express.json({ limit: "32kb" }),
         large = express.json({ limit: "128kb" });
-      return (req, res, next) =>
-        (IMPORT_PATH.test(req.path) ? large : small)(req, res, next);
+      return (req, res, next) => (isLarge(req) ? large : small)(req, res, next);
     })(),
     cookieParser(),
     async (req, _res, next) => {
@@ -112,6 +123,7 @@ export function createApp(deps) {
   app.use("/api", dbBackupRoutes(context));
   app.use("/api", posImportRoutes(context));
   app.use("/api", usageRoutes(context));
+  app.use("/api", salesRoutes(context));
   app.use("/api", recordRoutes(context));
   app.use("/api", (_req, res) =>
     res.status(404).json({ error: "API route not found." }),

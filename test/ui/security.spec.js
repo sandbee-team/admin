@@ -9,11 +9,16 @@ const axe = (page) =>
   new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
     .analyze();
-async function emailStep(page, who = email) {
+// Staff with an authenticator go from the password straight to it.
+async function passwordStep(page, who = email) {
   await page.goto("/");
   await page.getByLabel("Work email").fill(who);
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Continue", exact: true }).click();
+}
+// Staff without an authenticator get an email code.
+async function emailStep(page, who = email) {
+  await passwordStep(page, who);
   await expect(
     page.getByRole("heading", { name: "Check your inbox" }),
   ).toBeVisible();
@@ -106,7 +111,7 @@ test("owner enrols an authenticator, saves backup codes and signs in with TOTP a
   await page.setViewportSize({ width: 1440, height: 960 });
   await signOut(page);
   // Sign in with the authenticator app.
-  await emailStep(page);
+  await passwordStep(page);
   await expect(
     page.getByRole("heading", { name: "Confirm with your authenticator" }),
   ).toBeVisible();
@@ -120,7 +125,7 @@ test("owner enrols an authenticator, saves backup codes and signs in with TOTP a
   await expect(page.locator(".notice-warning")).toHaveCount(0);
   await signOut(page);
   // Sign in with a backup code.
-  await emailStep(page);
+  await passwordStep(page);
   await page.getByRole("button", { name: "Use a backup code" }).click();
   await page.getByLabel("Backup code").fill(codes[0]);
   await page.getByRole("button", { name: "Verify and continue" }).click();
@@ -180,7 +185,7 @@ test("owner enrols an authenticator, saves backup codes and signs in with TOTP a
   await expect(page.getByText("of 10 backup codes left")).toBeVisible();
   await signOut(page);
   // The same backup code cannot be used again.
-  await emailStep(page);
+  await passwordStep(page);
   await page.getByRole("button", { name: "Use a backup code" }).click();
   await page.getByLabel("Backup code").fill(codes[0]);
   await page.getByRole("button", { name: "Verify and continue" }).click();
@@ -217,7 +222,7 @@ test("concurrent step-up prompts share one dialog: success completes both action
     .check();
   await page.getByRole("button", { name: "Done", exact: true }).click();
   await signOut(page);
-  await emailStep(page, who);
+  await passwordStep(page, who);
   await page.getByRole("button", { name: "Use a backup code" }).click();
   await page.getByLabel("Backup code").fill(codes[0]);
   await page.getByRole("button", { name: "Verify and continue" }).click();

@@ -21,11 +21,16 @@ const control = async (path) => {
   });
   expect(res.status, `control ${path}`).toBe(200);
 };
-async function emailStep(page, who) {
+// Staff with an authenticator go from the password straight to it.
+async function passwordStep(page, who) {
   await page.goto("/");
   await page.getByLabel("Work email").fill(who);
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Continue", exact: true }).click();
+}
+// Staff without an authenticator get an email code.
+async function emailStep(page, who) {
+  await passwordStep(page, who);
   await expect(
     page.getByRole("heading", { name: "Check your inbox" }),
   ).toBeVisible();
@@ -36,7 +41,7 @@ async function emailStep(page, who) {
   await page.getByRole("button", { name: "Verify and continue" }).click();
 }
 async function ownerIn(page, letter) {
-  await emailStep(page, `deploy-owner-${letter}@example.test`);
+  await passwordStep(page, `deploy-owner-${letter}@example.test`);
   await expect(
     page.getByRole("heading", { name: "Confirm with your authenticator" }),
   ).toBeVisible();

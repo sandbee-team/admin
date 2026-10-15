@@ -1,8 +1,9 @@
 import { digest } from "./crypto.js";
 import { HttpError } from "./errors.js";
-export async function consume(db, key, limit, windowMs) {
-  const now = Date.now(),
-    bucket = Math.floor(now / windowMs);
+// Returns the id of the window row it reserved a slot in (see `refund`).
+// `now` is injectable for tests.
+export async function consume(db, key, limit, windowMs, now = Date.now()) {
+  const bucket = Math.floor(now / windowMs);
   const id = digest(`${key}:${bucket}`);
   let row;
   try {
@@ -29,7 +30,15 @@ export async function consume(db, key, limit, windowMs) {
       429,
       "Too many requests. Please wait before trying again.",
     );
-  return row.count;
+  return id;
+}
+// Give back one slot in exactly the window row `consume` reserved it in (a
+// success that should not count), even if the window has since rolled over.
+// Never goes below zero and never creates a row.
+export async function refund(db, id) {
+  await db
+    .collection("rate_limits")
+    .updateOne({ _id: id, count: { $gt: 0 } }, { $inc: { count: -1 } });
 }
 const bucketId = (key, windowMs) =>
   digest(`${key}:${Math.floor(Date.now() / windowMs)}`);

@@ -17,6 +17,8 @@ import {
   ChevronRight,
   Check,
   LoaderCircle,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { Link } from "../lib/router";
 import { useResource } from "../hooks/use-resource";
@@ -34,35 +36,99 @@ export { Select };
 // it is a secret), and mobile keyboards are not put in password mode.
 const MASKS =
   typeof CSS !== "undefined" && CSS.supports?.("-webkit-text-security", "disc");
-export function SecretInput(props) {
+// The eye button inside a password or secret field. Showing the value is a
+// deliberate, per-field action: it starts hidden and the state lives in the
+// field, so it resets whenever the field unmounts (step changes, closed modals).
+// The accessible name is fixed and names the field; only aria-pressed changes.
+function RevealButton({ shown, onToggle, label, controls }) {
+  const Icon = shown ? EyeOff : Eye;
+  return (
+    <button
+      type="button"
+      className="reveal-toggle"
+      aria-label={label}
+      aria-controls={controls}
+      aria-pressed={shown}
+      onClick={onToggle}
+    >
+      <Icon size={16} aria-hidden="true" />
+    </button>
+  );
+}
+const joined = (...parts) => parts.filter(Boolean).join(" ");
+// Keeps spellcheck, grammar assistants and auto-capitalisation away from the
+// text, whether it is hidden or shown.
+const NO_ASSIST = {
+  autoCorrect: "off",
+  autoCapitalize: "off",
+  spellCheck: false,
+  writingsuggestions: "false",
+  "data-gramm": "false",
+  "data-gramm_editor": "false",
+  "data-enable-grammarly": "false",
+};
+export function PasswordInput({ className, ...props }) {
+  const [shown, setShown] = useState(false),
+    own = useId(),
+    id = props.id ?? own;
+  return (
+    <span className="reveal-wrap">
+      <input
+        {...NO_ASSIST}
+        {...props}
+        id={id}
+        type={shown ? "text" : "password"}
+        className={joined(className, "has-reveal")}
+      />
+      <RevealButton
+        shown={shown}
+        onToggle={() => setShown(!shown)}
+        label="Show password"
+        controls={id}
+      />
+    </span>
+  );
+}
+export function SecretInput({ revealLabel = "value", ...props }) {
   const hint = useId(),
+    own = useId(),
+    id = props.id ?? own,
+    [shown, setShown] = useState(false),
     block = (event) => event.preventDefault();
   return (
     <>
-      <input
-        type={MASKS ? "text" : "password"}
-        className="secret-input"
-        autoComplete="off"
-        autoCorrect="off"
-        autoCapitalize="off"
-        spellCheck={false}
-        writingsuggestions="false"
-        data-1p-ignore="true"
-        data-lpignore="true"
-        data-bwignore="true"
-        data-form-type="other"
-        data-gramm="false"
-        data-gramm_editor="false"
-        data-enable-grammarly="false"
-        onCopy={block}
-        onCut={block}
-        {...props}
-        aria-describedby={[props["aria-describedby"], hint]
-          .filter(Boolean)
-          .join(" ")}
-      />
+      <span className="reveal-wrap">
+        <input
+          type={MASKS || shown ? "text" : "password"}
+          className={joined(
+            "secret-input",
+            "has-reveal",
+            shown && "secret-shown",
+          )}
+          autoComplete="off"
+          {...NO_ASSIST}
+          data-1p-ignore="true"
+          data-lpignore="true"
+          data-bwignore="true"
+          data-form-type="other"
+          onCopy={block}
+          onCut={block}
+          {...props}
+          id={id}
+          aria-describedby={[props["aria-describedby"], hint]
+            .filter(Boolean)
+            .join(" ")}
+        />
+        <RevealButton
+          shown={shown}
+          onToggle={() => setShown(!shown)}
+          label={`Show ${revealLabel}`}
+          controls={id}
+        />
+      </span>
       <span id={hint} className="sr-only">
-        Secret value: it is hidden on screen and cannot be copied.
+        Secret value: it is hidden on screen unless you press the show button,
+        and it cannot be copied.
       </span>
     </>
   );
@@ -168,9 +234,13 @@ export function Field({ label: title, hint, children, ...props }) {
         isValidElement(child) &&
         (["input", "select", "textarea"].includes(child.type) ||
           child.type === Select ||
-          child.type === SecretInput)
+          child.type === SecretInput ||
+          child.type === PasswordInput)
           ? cloneElement(child, {
               id,
+              ...(child.type === SecretInput && typeof title === "string"
+                ? { revealLabel: title.toLowerCase() }
+                : {}),
               ...(hint ? { "aria-describedby": `${id}-hint` } : {}),
             })
           : child,

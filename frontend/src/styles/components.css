@@ -371,6 +371,43 @@
 .secret-input {
   -webkit-text-security: disc;
 }
+.secret-input.secret-shown {
+  -webkit-text-security: none;
+}
+/* Show/hide eye inside password and secret fields. */
+.reveal-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+.reveal-wrap > input.has-reveal {
+  padding-right: 42px;
+  font-size: 12px;
+}
+.reveal-toggle {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  bottom: 1px;
+  width: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.reveal-toggle:hover {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+.reveal-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 .kept-list {
   margin: var(--space-2) 0;
   padding-left: var(--space-4);

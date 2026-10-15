@@ -216,7 +216,8 @@ function Security({ me, onChange, onUser }) {
             <h2 id="status-title">Authenticator app</h2>
             <p>
               A 6-digit code from an app such as Google Authenticator, 1Password
-              or Authy is checked after your email code on every sign-in.
+              or Authy is checked after your password on every sign-in, in place
+              of an email code.
             </p>
           </div>
           {me.totpEnabled ? (
