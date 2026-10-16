@@ -38,6 +38,13 @@ export const ITEM_TITLES = {
   "image-realtime": "Image and realtime settings",
   unlocked: "Deploy lock",
   "customer-active": "Customer active",
+  // Go live tab (shared/golive.js GOLIVE_ITEMS).
+  "new-client": "New client",
+  "mongo-uri": "Database URI",
+  "web-address": "Web address label",
+  image: "Image store",
+  "pos-admin": "POS admin login",
+  realtime: "Realtime",
 };
 export const titlesOf = (ids = []) =>
   ids.map((id) => ITEM_TITLES[id] || id).join(", ");

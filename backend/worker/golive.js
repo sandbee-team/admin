@@ -52,6 +52,7 @@ import {
 import { transaction } from "../db.js";
 import {
   ACTIVE_STATES,
+  BOOTSTRAP_HEALTH,
   MAX_ATTEMPTS,
   verifyStateOf,
 } from "../../shared/deploy.js";
@@ -64,6 +65,7 @@ import {
   GOLIVE_LIMITS,
   GOLIVE_RUN_STEPS,
   GOLIVE_STEPS,
+  goliveOwnsProduction,
 } from "../../shared/golive.js";
 import {
   PLATFORM_APEX,
@@ -86,6 +88,7 @@ import {
   WORKER_ACTOR,
   loadTarget,
   openSecret,
+  isProduction,
   productionOf,
   verifyChecks,
   verifyRecord,
@@ -129,6 +132,8 @@ export class GoliveRun {
     this.vercel = null;
     // {url, secret} once this run proved the Worker; false = realtime off.
     this.realtime = null;
+    // This run wrote Vercel's env (ready then never skips a second deploy).
+    this.envWritten = false;
   }
   get id8() {
     return String(this.g.requestId ?? "").slice(0, 8);
@@ -159,6 +164,19 @@ export class GoliveRun {
   async patch(fields) {
     await this.slot.mustSet(fields);
     this.mirror(fields);
+  }
+  // A write that ends the run (waiting / live): it never lands over a Cancel
+  // asked meanwhile; a miss is explained by checkpoint (cancelled, lease lost
+  // or settings changed).
+  async settle(fields) {
+    if (
+      await this.slot.set(fields, { when: { cancelRequested: { $ne: true } } })
+    ) {
+      this.mirror(fields);
+      return;
+    }
+    await this.checkpoint();
+    throw new LeaseLost();
   }
   stepFields(name, fields) {
     const i = this.idx(name);
@@ -203,14 +221,18 @@ export class GoliveRun {
     bump = false,
     clearVerify = false,
     audits = [],
+    when = {},
   }) {
     const { ctx } = this;
+    // The run's own bump moves golive.rev along, so a takeover can tell it
+    // from a change made by someone else.
+    if (bump) golive = { ...golive, rev: this.rev + 1 };
     const set = { ...this.slot.prefixed(golive), ...pos };
     if (clearVerify) set["pos.verify"] = null;
     const update = { $set: set, ...(bump ? { $inc: { "pos.rev": 1 } } : {}) };
     const ok = await transaction(ctx.client, async (session) => {
       const done = await ctx.coll.installations.updateOne(
-        { ...this.slot.filterOf(), "pos.rev": this.rev },
+        { ...this.slot.filterOf(when), "pos.rev": this.rev },
         update,
         { session },
       );
@@ -227,7 +249,10 @@ export class GoliveRun {
         );
       return true;
     });
-    if (!ok) await this.missed();
+    if (!ok) {
+      if ("cancelRequested" in when) await this.checkpoint();
+      await this.missed();
+    }
     if (bump) this.rev += 1;
     this.mirror(golive);
   }
@@ -252,8 +277,11 @@ export class GoliveRun {
     this.g = current;
     if (current.cancelRequested)
       throw stop("golive-cancelled", null, "cancelled");
-    if (this.rev === null) this.rev = row.pos.rev;
-    else if (row.pos.rev !== this.rev) throw stop("golive-stale", null);
+    // The rev the run was queued with (moved by its own bumps): a takeover
+    // after setup changed under a dead lease ends stale instead of adopting it.
+    if (this.rev === null)
+      this.rev = Number.isInteger(current.rev) ? current.rev : row.pos.rev;
+    if (row.pos.rev !== this.rev) throw stop("golive-stale", null);
   }
   // A fresh POS block and the Vercel adapter (the token is decrypted in this
   // process only).
@@ -275,17 +303,14 @@ export class GoliveRun {
   // The go-live's own first deploy is what production serves (a re-run
   // after it went live must not refuse its own project).
   ownDeployLive() {
-    const last = this.pos?.deploy?.last;
-    return Boolean(
-      this.g.deployRequestId && last?.requestId === this.g.deployRequestId,
-    );
+    return goliveOwnsProduction(this.pos);
   }
   // The run ends here and gives its lease up (the fence value stays).
   leaseOff() {
     return { "lease.owner": null, "lease.until": null, heartbeatAt: null };
   }
   async waitFor(waitingFor, stepName, note) {
-    await this.patch({
+    await this.settle({
       status: "waiting",
       waitingFor,
       step: stepName,
@@ -316,9 +341,12 @@ async function checkStep(run) {
     pos.rootDomain !== PLATFORM_APEX
   )
     throw stop("inputs-missing", "check");
-  // The POS admin password is optional here: the secrets step mints it.
+  // The POS admin password is optional here before any admin login exists
+  // (the secrets step mints it); afterwards the admin step needs it.
   const uri = run.secret("mongo.uri");
   if (!uri || !pos.posAdmin?.username) throw stop("inputs-missing", "check");
+  if (run.g.admin?.state === "seeded" && !run.secret("posAdmin.password"))
+    throw stop("inputs-missing", "check");
   try {
     envClientOf(pos, { mongoUri: uri, imageKeys: run.secret("image.keys") });
   } catch {
@@ -364,10 +392,17 @@ async function checkStep(run) {
     throw stop("dns-unreachable", "check");
   }
   if (seen.inUse) {
+    // This go-live's own record: the one it showed, or the one its dns step
+    // accepted (any Vercel target, e.g. the generic cname.vercel-dns.com).
     const ours = (run.g.address?.records ?? []).find(
       (r) => r?.type === "CNAME",
     )?.value;
-    if (!seen.cname || !ours || bare(seen.cname) !== bare(ours))
+    const accepted =
+      run.g.address?.cname?.ok === true ? run.g.address.cname.found : null;
+    if (
+      !seen.cname ||
+      ![ours, accepted].some((v) => v && bare(seen.cname) === bare(v))
+    )
       throw stop("label-in-use-dns", "check");
   }
   await run.end(
@@ -409,8 +444,16 @@ async function projectStep(run) {
     how = "created";
     await saveProject(run, project, "created");
   }
-  if (productionOf(project) && !run.ownDeployLive())
-    throw stop("project-live", "project");
+  // A project that serves production is refused unless it is the go-live's
+  // own project serving the deploy admin recorded (D42).
+  // Vercel's lastAliasRequest can name an older deployment after a plain
+  // promote: the deploy worker's own isProduction rule decides.
+  const lastId = run.pos.deploy?.last?.vercelDeploymentId;
+  const own =
+    run.ownDeployLive() &&
+    project.id === run.g.projectId &&
+    (isProduction(project, lastId) || productionOf(project) === lastId);
+  if (productionOf(project) && !own) throw stop("project-live", "project");
   if (how === "adopted") await saveProject(run, project, "adopted");
   else await saveProject(run, project, null);
   if (
@@ -437,14 +480,20 @@ async function saveProject(run, project, how) {
     "pos.vercel.orgId": project.accountId,
     "pos.vercel.projectName": project.name,
   };
-  if (
+  const same =
     now.projectId === project.id &&
     now.orgId === project.accountId &&
-    now.projectName === project.name
-  )
+    now.projectName === project.name;
+  // The project this go-live owns: Sync env never follows a hand edit of
+  // pos.vercel.projectId to another project (goliveDriftOf).
+  if (same) {
+    if (run.g.projectId !== project.id)
+      await run.commit({ golive: { projectId: project.id } });
     return;
+  }
   await run.commit({
     pos: set,
+    golive: { projectId: project.id },
     bump: true,
     clearVerify: true,
     audits: how
@@ -484,7 +533,13 @@ async function secretsStep(run) {
     set[`pos.${field}`] = run.box(field, minted[key]);
     changed.push(field);
   }
-  if (!run.secret("posAdmin.password")) {
+  // Only before the admin step made a login: a password removed after the
+  // hand-over is not replaced by one that matches no login (Sync env).
+  if (
+    !run.secret("posAdmin.password") &&
+    run.g.action === "start" &&
+    run.g.admin?.state !== "seeded"
+  ) {
     set["pos.posAdmin.password"] = run.box(
       "posAdmin.password",
       mintPosAdminPassword(),
@@ -522,6 +577,7 @@ async function realtimeStep(run) {
   } catch {
     throw stop("realtime-name", "realtime");
   }
+  addressOf(run, pos, "realtime");
   const tenantId = pos.tenantId;
   const secret = await publishSecret(run);
   const cf = ctx.cloudflareFor(token);
@@ -715,6 +771,7 @@ async function recordDeployed(w, bundleSha256) {
         bundleSha256,
         sha: run.g.sha,
         tenantId: w.tenantId,
+        url: w.url,
         deployedAt: run.now(),
         verifiedAt: null,
         run: null,
@@ -852,6 +909,7 @@ async function envStep(run) {
   const { ctx, signal } = run;
   await run.begin("env");
   const { pos } = await run.load();
+  addressOf(run, pos, "env");
   const projectId = pos.vercel?.projectId;
   if (!projectId) throw stop("inputs-missing", "env");
   let client;
@@ -930,6 +988,9 @@ async function envStep(run) {
     golive: {
       env: {
         at: wrote ? run.now() : (prior?.at ?? run.now()),
+        // Written (or proven) at this pos.rev: a later setup change makes
+        // ready / Unlock and deploy refuse (golive-settings).
+        rev: run.rev,
         keys,
         pending: null,
       },
@@ -938,6 +999,7 @@ async function envStep(run) {
       ? [["pos.golive.env-synced", `${keys.length} keys #${run.id8}`]]
       : [],
   });
+  if (wrote) run.envWritten = true;
   await run.end(
     "env",
     "done",
@@ -962,12 +1024,27 @@ function realtimeEnvFor(run, pos) {
   if (run.realtime) return realtimeEnvOf(run.realtime);
   const token = pos.cloudflare ? run.secret("cloudflare.token") : null;
   const secret = run.secret("generated.realtimePublishSecret");
-  return token &&
-    secret &&
-    pos.cloudflare?.workerUrl &&
-    run.g.realtime?.verifiedAt
+  const rt = run.g.realtime;
+  // A Worker that failed its last check is never switched off quietly (the
+  // API refuses Sync env then: golive-realtime).
+  if (token && pos.cloudflare?.workerUrl && rt?.deployedAt && !rt.verifiedAt)
+    throw stop("realtime-probe-failed", "env");
+  return token && secret && pos.cloudflare?.workerUrl && rt?.verifiedAt
     ? realtimeEnvOf({ url: pos.cloudflare.workerUrl, secret })
     : realtimeOffEnv();
+}
+// The web address, tenant and project the go-live set up must still be what
+// POS setup names before a step writes them to a provider.
+function addressOf(run, pos, step) {
+  const a = run.g.address ?? {};
+  if (
+    pos.subdomain !== a.label ||
+    pos.host !== a.host ||
+    pos.tenantId !== a.label ||
+    pos.rootDomain !== PLATFORM_APEX ||
+    (run.g.projectId && pos.vercel?.projectId !== run.g.projectId)
+  )
+    throw stop("golive-stale", step);
 }
 
 // admin (D45): seed the POS admin login only when the client DB has none; an
@@ -976,7 +1053,9 @@ async function adminStep(run) {
   const { ctx } = run;
   await run.begin("admin");
   const { pos } = await run.load();
-  if (run.g.admin?.state === "seeded") {
+  // Seeded by an earlier run with the same settings (pos.rev unchanged:
+  // database URI, username and password are the same); else checked again.
+  if (run.g.admin?.state === "seeded" && run.g.admin.rev === run.rev) {
     await run.end("admin", "done", "Admin login created earlier");
     return;
   }
@@ -985,11 +1064,12 @@ async function adminStep(run) {
   const username = pos.posAdmin?.username;
   if (!uri || !password || !username) throw stop("inputs-missing", "admin");
   let state;
+  let mine = null;
   try {
     ({ state } = await ctx.posAdminSeed({ uri, username, password }));
     if (state === "exists") {
       // An earlier attempt of this go-live may have seeded it.
-      const mine = await ctx.posAdminCheck({ uri, username, password });
+      mine = await ctx.posAdminCheck({ uri, username, password });
       if (mine.userFound && mine.passwordMatches) state = "seeded";
     }
   } catch (error) {
@@ -1003,18 +1083,59 @@ async function adminStep(run) {
       );
     throw error;
   }
+  // Keyed fingerprints of what the login was made with (never the values;
+  // never leave the server): a re-save of the same value is no change.
+  const fp = (key, value) => envFp(ctx.c.VAULT_KEY, key, value);
+  const pwFp = fp("posAdmin.password", password);
+  const uriFp = fp("mongo.uri", uri);
+  // The login this go-live seeded earlier does not open with what is stored.
+  const prior = run.g.admin;
+  let kept = false;
+  if (state === "exists" && prior?.state === "seeded") {
+    // The stored username or password changed after the seed: the owner
+    // would hand over a password that opens nothing.
+    if (
+      (prior.username && prior.username !== username) ||
+      (prior.pwFp && prior.pwFp !== pwFp)
+    )
+      throw stop("admin-mismatch", "admin");
+    // Same database, our username still there: the client changed its
+    // password in the POS. Still ours (another database, or our login gone,
+    // falls through to admin-exists).
+    if (prior.uriFp === uriFp && mine?.userFound) {
+      state = "seeded";
+      kept = true;
+    }
+  }
   await run.commit({
-    golive: { admin: { state, at: run.now() } },
+    golive: {
+      admin: {
+        state,
+        at: kept ? prior.at : run.now(),
+        rev: run.rev,
+        username,
+        pwFp: kept ? prior.pwFp : pwFp,
+        uriFp,
+        // The client changed the password in the POS: nothing to hand over.
+        changedInPos: kept,
+      },
+    },
     audits:
-      state === "seeded" ? [["pos.golive.admin-seeded", `#${run.id8}`]] : [],
+      state === "seeded" && !kept
+        ? [["pos.golive.admin-seeded", `#${run.id8}`]]
+        : [],
   });
+  const note = kept
+    ? "Admin login created earlier (its password was changed in the POS)"
+    : null;
   if (state === "exists") await run.warn("admin-exists");
   await run.end(
     "admin",
     "done",
-    state === "seeded"
-      ? "Admin login created"
-      : "An admin login already exists",
+    note ??
+      (state === "seeded"
+        ? "Admin login created"
+        : "An admin login already exists"),
   );
 }
 
@@ -1056,7 +1177,9 @@ async function dnsStep(run) {
         : txtRow && found.txt?.ok !== true
           ? "txt-pending"
           : !verified
-            ? "txt-pending"
+            ? txtRow
+              ? "txt-pending"
+              : "domain-unverified"
             : !configured
               ? "dns-pending"
               : null;
@@ -1128,7 +1251,8 @@ function flagCodeOf(verify, { bootstrap }) {
   for (const key of VERIFY_STEPS) {
     const flag = verify[key];
     if (flag === null || flag === undefined || flag === "ok") continue;
-    if (bootstrap && key === "health" && flag === "not-deployed") continue;
+    if (bootstrap && key === "health" && BOOTSTRAP_HEALTH.includes(flag))
+      continue;
     return known(FLAG_CODES[key](flag));
   }
   return "internal";
@@ -1137,6 +1261,10 @@ function flagCodeOf(verify, { bootstrap }) {
 // ready: inline bootstrap Verify, then wait for Unlock and deploy.
 async function readyStep(run) {
   await run.begin("ready");
+  // The env on Vercel (and the admin login) must be what the settings are
+  // now: a change since the env step means Run all steps again.
+  if ((run.g.env?.rev ?? null) !== run.rev)
+    throw stop("golive-settings", "ready");
   const verify = await inlineVerify(run);
   const state = verifyStateOf(verify, run.ctx.now());
   if (state !== "bootstrap" && state !== "ok")
@@ -1144,9 +1272,13 @@ async function readyStep(run) {
   await run.end(
     "ready",
     "done",
-    state === "ok" ? "Verified" : "Verified (no production deployment yet)",
+    state === "ok"
+      ? "Verified"
+      : verify.health === "first-unhealthy"
+        ? "Verified (production needs another deploy)"
+        : "Verified (no production deployment yet)",
   );
-  if (state === "ok" && run.ownDeployLive()) {
+  if (state === "ok" && run.ownDeployLive() && !envAfterDeploy(run)) {
     // A re-run after this go-live's first deploy already went live.
     await run.patch(
       run.stepFields("deploy", {
@@ -1162,11 +1294,29 @@ async function readyStep(run) {
   return "wait";
 }
 
+// Did this go-live write Vercel's env after its first deploy went out? Then
+// production still runs the old env: deploy again before going live.
+function envAfterDeploy(run) {
+  if (run.envWritten) return true;
+  // A rollback brought back a version built with an older env (its `at` is
+  // the rollback time): deploy again to be sure.
+  if (run.pos?.deploy?.last?.status === "rolled-back-to") return true;
+  const deployed = new Date(run.pos?.deploy?.last?.at ?? NaN).getTime();
+  const written = new Date(run.g.env?.at ?? NaN).getTime();
+  return Number.isFinite(deployed) && Number.isFinite(written)
+    ? written > deployed
+    : false;
+}
+
 // finish (D47): inline Verify must be ok (HTTPS now works), then the 308
 // redirects of the project's *.vercel.app names (a failure is a warning).
+// Setup changed while the first deploy ran (POS setup writes are allowed
+// then): the deploy may carry the old env, so run the go-live again.
 async function finishStep(run) {
   const { signal } = run;
   await run.begin("finish");
+  if ((run.g.env?.rev ?? null) !== run.rev)
+    throw stop("golive-settings", "finish");
   const verify = await inlineVerify(run);
   if (verifyStateOf(verify, run.ctx.now()) !== "ok")
     throw stop(flagCodeOf(verify, { bootstrap: false }), "finish");
@@ -1218,6 +1368,7 @@ async function finishStep(run) {
       }),
     },
     audits: [["pos.golive.live", `#${run.id8}`]],
+    when: { cancelRequested: { $ne: true } },
   });
 }
 
@@ -1273,7 +1424,7 @@ export async function runGolive(ctx, claim) {
       if (plan.includes("finish")) return;
       // Sync env / Update realtime Worker on a live go-live: back to live.
       if (!run.g.liveAt) throw stop("internal", run.g.step);
-      await run.patch({
+      await run.settle({
         status: "live",
         endedAt: run.now(),
         waitingFor: null,
@@ -1387,6 +1538,7 @@ export async function observeGolive(ctx) {
       { "pos.golive.status": "deploying" },
       {
         projection: {
+          "pos.rev": 1,
           "pos.golive": 1,
           "pos.deploy.current": 1,
           "pos.deploy.last": 1,
@@ -1439,6 +1591,7 @@ async function observeOne(ctx, row) {
         );
   const filter = {
     _id: row._id,
+    "pos.rev": row.pos.rev,
     "pos.golive.requestId": g.requestId,
     "pos.golive.status": "deploying",
     "pos.golive.deployRequestId": rid ?? null,
@@ -1455,6 +1608,8 @@ async function observeOne(ctx, row) {
         "pos.golive.lease.until": null,
         "pos.golive.heartbeatAt": null,
         "pos.golive.cancelRequested": false,
+        // Queued like the API would: against the settings as they are now.
+        "pos.golive.rev": row.pos.rev,
         ...deployStep({ state: "done", endedAt: at, note: "Deployed healthy" }),
       },
     });

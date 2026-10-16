@@ -310,15 +310,21 @@ export const GATES = {
 };
 // "ok" | "failed" (a flag is not ok) | "stale" (all ok but older than 24 h)
 // | "missing" (never verified) | "bootstrap" (P5 D47: every flag ok except
-// health = "not-deployed", which Verify writes only for a project without a
-// production deployment; only Unlock and deploy of a go-live accepts it).
+// health = "not-deployed", which Verify writes only for a new client's project
+// without a production deployment, or "first-unhealthy", a go-live whose own
+// first deploy failed its health check; only Unlock and deploy accepts it).
+export const BOOTSTRAP_HEALTH = Object.freeze([
+  "not-deployed",
+  "first-unhealthy",
+]);
 export function verifyStateOf(verify, now = Date.now()) {
   if (!verify) return "missing";
   const base =
     ["vercel", "project", "env", "mongo"].every(
       (key) => verify[key] === "ok",
     ) && [undefined, null, "ok"].includes(verify.cloudflare);
-  if (!base || !["ok", "not-deployed"].includes(verify.health)) return "failed";
+  if (!base || !["ok", ...BOOTSTRAP_HEALTH].includes(verify.health))
+    return "failed";
   if (now - ms(verify.at) > VERIFY_MAX_AGE_MS) return "stale";
   return verify.health === "ok" ? "ok" : "bootstrap";
 }
@@ -405,7 +411,7 @@ export function readinessOf(ctx) {
             )
           : verified === "bootstrap" && ctx.bootstrap !== true
             ? no(
-                "The client has no production deployment yet.",
+                "There is no healthy production deployment yet: a new client finishes it on the Go live tab.",
                 note("Finish its go-live with Unlock and deploy."),
               )
             : OK,

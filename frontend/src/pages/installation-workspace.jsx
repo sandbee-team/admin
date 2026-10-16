@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   Activity,
+  Globe,
   LayoutDashboard,
   Lock,
   LockOpen,
@@ -31,8 +32,14 @@ import { can } from "../../../shared/policy";
 import { checksFor } from "../../../shared/product-models";
 import { RecordEditor } from "./record-editor";
 import { InstallationDeploy } from "./installation-deploy";
+import { InstallationGolive } from "./installation-golive";
 import { InstallationUsage } from "./installation-usage";
 import { Link } from "../lib/router";
+// Go live tab (P5 §8): a go-live exists, or a block admin neither imported
+// nor deployed. A hand-entered live client sees it too: its readiness item
+// `new-client` explains why Start is refused (D42).
+const goliveTab = (pos) =>
+  !pos || Boolean(pos.golive) || (!pos.importedAt && !pos.deploy?.last);
 export function InstallationWorkspace({ id, section = "", user }) {
   const resource = useResource(`/installations/${id}`),
     productResource = useResource(
@@ -42,11 +49,17 @@ export function InstallationWorkspace({ id, section = "", user }) {
     waiting =
       Boolean(resource.data) && !productResource.data && !productResource.error,
     isPos = productResource.data?.slug === "pos",
+    staff = isPos && can(user.role, "credentials"),
+    block = useResource(staff ? `/installations/${id}/pos` : null),
+    golive =
+      staff &&
+      (section === "golive" || (block.data && goliveTab(block.data.pos))),
     tabs = [
       ["", "Summary", LayoutDashboard],
-      ...(isPos && can(user.role, "credentials")
+      ...(staff
         ? [
             ["pos", "POS setup", Server],
+            ...(golive ? [["golive", "Go live", Globe]] : []),
             ["deploy", "Deploy", Rocket],
             ["usage", "Usage", Activity],
           ]
@@ -97,6 +110,16 @@ export function InstallationWorkspace({ id, section = "", user }) {
                 <div className="panel">
                   <Empty icon={Rocket} title="Deploy is restricted">
                     Your role cannot open deploy status. Ask an owner or admin.
+                  </Empty>
+                </div>
+              )
+            ) : section === "golive" && isPos ? (
+              can(user.role, "credentials") ? (
+                <InstallationGolive installation={installation} user={user} />
+              ) : (
+                <div className="panel">
+                  <Empty icon={Globe} title="Go live is restricted">
+                    Your role cannot open the go-live. Ask an owner or admin.
                   </Empty>
                 </div>
               )
@@ -183,7 +206,8 @@ const STALE = "POS settings changed. They were reloaded: review and try again.";
 function PosSetup({ installation, user }) {
   const resource = useResource(`/installations/${installation._id}/pos`),
     [notice, setNotice] = useState("");
-  // Fix links from the Deploy tab end in #vercel, #secrets, #host or #image.
+  // Fix links from the Deploy tab end in #vercel, #secrets, #host or #image;
+  // the Go live tab adds #cloudflare and #admin.
   const loaded = Boolean(resource.data);
   useEffect(() => {
     if (!loaded || !location.hash) return;
@@ -517,7 +541,7 @@ function PosForm({ base, installationId, pos, writable, onSaved, onStale }) {
             <Field label="Tenant ID">
               <input maxLength={64} {...top("tenantId")} />
             </Field>
-            <Field label="POS admin username">
+            <Field label="POS admin username" id="admin">
               <input maxLength={32} {...nested("posAdmin", "username")} />
             </Field>
           </div>
@@ -558,7 +582,7 @@ function PosForm({ base, installationId, pos, writable, onSaved, onStale }) {
             </Field>
           </div>
         </div>
-        <div className="form-section">
+        <div className="form-section" id="cloudflare">
           <h2>Cloudflare</h2>
           <label className="check-row">
             <input

@@ -354,6 +354,9 @@ export async function claimGolive(ctx) {
       );
       continue;
     }
+    // A takeover waits while a deploy or task holds the installation: after a
+    // lease has been dead long enough, the API lets those start (busy both
+    // ways, D41), so the go-live must not run beside them.
     const filter =
       run.status === "queued"
         ? { ...base, "pos.golive.status": "queued" }
@@ -361,6 +364,20 @@ export async function claimGolive(ctx) {
             ...base,
             "pos.golive.status": "running",
             "pos.golive.lease.until": { $lt: now },
+            $and: [
+              {
+                $or: [
+                  { "pos.deploy.current": null },
+                  { "pos.deploy.current.status": { $nin: ACTIVE_STATES } },
+                ],
+              },
+              {
+                $or: [
+                  { "pos.task": null },
+                  { "pos.task.status": { $nin: ACTIVE_TASK_STATES } },
+                ],
+              },
+            ],
           };
     const result = await installations.findOneAndUpdate(
       filter,

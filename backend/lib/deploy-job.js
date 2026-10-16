@@ -147,7 +147,10 @@ const addressFor = (prior, label, host) =>
       };
 // A queued go-live run. `prior` = the stored pos.golive (or null): its learned
 // parts are carried, its run fields are not. `branch`/`sha` default to the
-// prior go-live commit (sync-env, check).
+// prior go-live commit (sync-env, check). `rev` = the pos.rev the run writes
+// against (after the enqueue's own bump). An earlier run's realtime bundle run
+// is never reused (it may have failed, or be another commit's): only a
+// takeover of the same run reuses it.
 export const newGolive = ({
   action,
   branch,
@@ -157,6 +160,7 @@ export const newGolive = ({
   prior = null,
   label,
   host,
+  rev = null,
 }) => ({
   status: "queued",
   action,
@@ -178,8 +182,10 @@ export const newGolive = ({
   warnings: [],
   address: addressFor(prior?.address, label, host),
   env: prior?.env ?? null,
-  realtime: prior?.realtime ?? null,
+  realtime: prior?.realtime ? { ...prior.realtime, run: null } : null,
   admin: prior?.admin ?? null,
+  projectId: prior?.projectId ?? null,
+  rev,
   deployRequestId: prior?.deployRequestId ?? null,
   liveAt: prior?.liveAt ?? null,
 });

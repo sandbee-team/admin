@@ -182,6 +182,8 @@ const waiting = (waitingFor, over = {}) =>
       endedAt: null,
       note: "",
     })),
+    // The env step wrote the env at the block's rev (client() starts at 1).
+    env: { at: new Date(), rev: 1, keys: [] },
     ...over,
   });
 const running = (over = {}) =>
@@ -206,6 +208,9 @@ const atDeploy = (id, slug = "cafe1", over = {}) => ({
   verify: OK_VERIFY("not-deployed"),
   golive: waiting("deploy", {
     address: { ...golive().address, label: slug, host: `${slug}.sandbee.in` },
+    projectId: "prj_new1",
+    // The env step wrote the env at the block's rev (client() starts at 1).
+    env: { at: new Date(), rev: 1, keys: [] },
   }),
   ...over,
 });
@@ -279,7 +284,7 @@ describe("go-live contract", () => {
     const item = (extra) =>
       readinessOf({ ...base, ...extra }).items.find((i) => i.id === "verified");
     assert.equal(item({}).state, "blocked");
-    assert.match(item({}).reason, /no production deployment/);
+    assert.match(item({}).reason, /no healthy production deployment/);
     assert.equal(item({ bootstrap: true }).state, "ok");
     assert.equal(
       readinessOf({
@@ -521,6 +526,65 @@ describe("GET /installations/:id/pos/golive", () => {
     assert.equal(d.readiness.ready, false);
     assert.equal(d.allowed.start, false);
   });
+  // Session 4 open item 1: without a token the env step blanks REALTIME_*,
+  // so a hand-entered Worker URL would later fail Verify (env drift). The
+  // checklist says so and Start / Sync env refuse; nothing is changed quietly.
+  it("blocks a hand-entered realtime Worker without a Cloudflare token", async () => {
+    const cloudflare = {
+      accountId: "",
+      workerName: "pos-realtime-cafe3",
+      workerUrl: "https://pos-realtime-cafe3.demo.workers.dev",
+    };
+    const id = await client("cafe3", { over: { cloudflare } });
+    const d = (await call(`/installations/${id}/pos/golive`)).data;
+    const rt = d.readiness.items.find((i) => i.id === "realtime");
+    assert.equal(rt.state, "blocked");
+    assert.match(rt.reason, /Worker URL/);
+    assert.equal(rt.fix.to, `/installations/${id}/pos#cloudflare`);
+    assert.equal(d.readiness.ready, false);
+    assert.equal(d.allowed.start, false);
+    const res = await start(id);
+    assert.equal(res.status, 409);
+    assert.equal(res.data.code, "not-ready");
+    assert.deepEqual(res.data.items, ["realtime"]);
+    // A bad account id blocks Start too (it was shown but not enforced).
+    const bad = await client("cafe4", {
+      over: { cloudflare: { ...cloudflare, accountId: "nothex" } },
+    });
+    await installs().updateOne(
+      { _id: bad },
+      { $set: { "pos.cloudflare.token": box(bad, "cloudflare.token", "t") } },
+    );
+    assert.deepEqual((await start(bad)).data.items, ["realtime"]);
+    // Sync env of a live client refuses the same way.
+    const live = await client("cafe5", {
+      over: {
+        host: "cafe5.sandbee.in",
+        tenantId: "cafe5",
+        rootDomain: "sandbee.in",
+        cloudflare,
+        golive: golive({
+          status: "live",
+          liveAt: new Date(),
+          address: {
+            ...golive().address,
+            label: "cafe5",
+            host: "cafe5.sandbee.in",
+          },
+        }),
+      },
+    });
+    const sync = await post(`/installations/${live}/pos/golive`, {
+      action: "sync-env",
+      rev: (await posOf(live)).rev,
+      confirm: "cafe5",
+    });
+    assert.equal(sync.status, 409);
+    assert.deepEqual(sync.data.items, ["realtime"]);
+    // Realtime simply off (no block at all) still starts.
+    const off = await client("cafe6");
+    assert.equal((await start(off)).status, 201);
+  });
 });
 
 // ---- start ---------------------------------------------------------------------
@@ -577,7 +641,20 @@ describe("POST /installations/:id/pos/golive (start)", () => {
     assert.equal("lease" in view.golive, false);
     // POS settings carry only the badge.
     const posView = (await call(`/installations/${id}/pos`)).data.pos;
-    assert.deepEqual(posView.golive, { status: "queued", waitingFor: null });
+    assert.deepEqual(posView.golive, {
+      status: "queued",
+      waitingFor: null,
+      live: false,
+    });
+    // The fleet shows the same badge (no lease, steps or address).
+    const row = (await call("/pos/fleet?light=1")).data.rows.find(
+      (r) => r.installationId === id,
+    );
+    assert.deepEqual(row.golive, {
+      status: "queued",
+      waitingFor: null,
+      live: false,
+    });
   });
   it("refuses what is not ready, a busy block and a commit off the branch", async () => {
     const missing = await client("cafe2", { secrets: false });
@@ -728,9 +805,18 @@ describe("POST /installations/:id/pos/golive (start)", () => {
         }),
       },
     });
+    // The login admin seeded needs its stored password (readiness pos-admin).
+    await installs().updateOne(
+      { _id: id },
+      {
+        $set: {
+          "pos.posAdmin.password": box(id, "posAdmin.password", "Owner#Pass1"),
+        },
+      },
+    );
     const before = (await posOf(id)).golive.requestId;
     const res = await start(id);
-    assert.equal(res.status, 201);
+    assert.equal(res.status, 201, JSON.stringify(res.data));
     const g = (await posOf(id)).golive;
     assert.notEqual(g.requestId, before);
     assert.equal(g.error, null);
@@ -849,6 +935,8 @@ describe("POST /installations/:id/pos/golive/check", () => {
       over: {
         subdomain: "cafe1",
         host: "cafe1.sandbee.in",
+        tenantId: "cafe1",
+        rootDomain: "sandbee.in",
         golive: waiting("dns"),
       },
     });
@@ -1093,5 +1181,254 @@ describe("Sync env and Update realtime Worker", () => {
     assert.equal(g.sha, SHAS.a);
     // A live client's address is not re-derived.
     assert.equal((await posOf(id)).rev, rev);
+  });
+});
+
+// ---- session 5 review fixes -------------------------------------------------------
+describe("go-live follows only its own address, project, env and Worker", () => {
+  // A live go-live of `slug` on project prj_<slug>, env written at rev 1.
+  async function liveClient(slug, over = {}, goliveOver = {}) {
+    return client(slug, {
+      over: {
+        host: `${slug}.sandbee.in`,
+        tenantId: slug,
+        rootDomain: "sandbee.in",
+        vercel: {
+          projectId: `prj_${slug}`,
+          orgId: "team_x",
+          teamId: "",
+          projectName: slug,
+        },
+        golive: golive({
+          status: "live",
+          liveAt: new Date(),
+          projectId: `prj_${slug}`,
+          env: { at: new Date(), rev: 1, keys: [] },
+          address: {
+            ...golive().address,
+            label: slug,
+            host: `${slug}.sandbee.in`,
+          },
+          ...goliveOver,
+        }),
+        ...over,
+      },
+    });
+  }
+  const sync = async (id, session = owner) =>
+    post(
+      `/installations/${id}/pos/golive`,
+      {
+        action: "sync-env",
+        rev: (await posOf(id)).rev,
+        confirm: (await posOf(id)).slug,
+      },
+      session,
+    );
+  // The vercel token box lives in pos.vercel: keep it when overriding.
+  const withToken = async (id) =>
+    installs().updateOne(
+      { _id: id },
+      { $set: { "pos.vercel.token": box(id, "vercel.token", VERCEL_TOKEN) } },
+    );
+  it("Sync env refuses a hand-edited project id, tenant or root domain (golive-address)", async () => {
+    const ok = await liveClient("cafe1");
+    await withToken(ok);
+    assert.equal((await sync(ok)).status, 201);
+    for (const [slug, patch] of [
+      ["cafe2", { "pos.vercel.projectId": "prj_other" }],
+      ["cafe3", { "pos.tenantId": "someone-else" }],
+      ["cafe4", { "pos.rootDomain": "example.com" }],
+    ]) {
+      const id = await liveClient(slug);
+      await withToken(id);
+      await installs().updateOne({ _id: id }, { $set: patch });
+      const view = (await call(`/installations/${id}/pos/golive`)).data;
+      assert.equal(view.drift["sync-env"], "golive-address", slug);
+      assert.equal(view.allowed["sync-env"], false, slug);
+      const res = await sync(id);
+      assert.equal(res.status, 409, slug);
+      assert.equal(res.data.code, "golive-address", slug);
+    }
+  });
+  it("Sync env refuses while the realtime Worker failed its last check (golive-realtime)", async () => {
+    const id = await liveClient(
+      "cafe5",
+      {
+        cloudflare: {
+          accountId: "",
+          workerName: "pos-realtime-cafe5",
+          workerUrl: "https://pos-realtime-cafe5.x.workers.dev",
+        },
+      },
+      {
+        realtime: {
+          bundleSha256: "d".repeat(64),
+          sha: SHAS.a,
+          url: "https://pos-realtime-cafe5.x.workers.dev",
+          deployedAt: new Date(),
+          verifiedAt: null,
+        },
+      },
+    );
+    await withToken(id);
+    await installs().updateOne(
+      { _id: id },
+      { $set: { "pos.cloudflare.token": box(id, "cloudflare.token", "t") } },
+    );
+    const res = await sync(id);
+    assert.equal(res.status, 409);
+    assert.equal(res.data.code, "golive-realtime");
+    // Verified: Sync env runs.
+    await installs().updateOne(
+      { _id: id },
+      { $set: { "pos.golive.realtime.verifiedAt": new Date() } },
+    );
+    assert.equal((await sync(id)).status, 201);
+  });
+  it("Unlock and deploy refuses after a setup change since the env was written (golive-settings)", async () => {
+    const id = await client("cafe7");
+    const patch = atDeploy(id, "cafe7");
+    await installs().updateOne(
+      { _id: id },
+      {
+        $set: Object.fromEntries(
+          Object.entries(patch).map(([k, v]) => [`pos.${k}`, v]),
+        ),
+      },
+    );
+    let view = (await call(`/installations/${id}/pos/golive`)).data;
+    assert.equal(view.allowed.deploy, true, JSON.stringify(view.drift));
+    // The owner rotates the image keys while the go-live waits (rev 1 -> 2).
+    const put = await call(`/installations/${id}/pos/secret`, {
+      method: "PUT",
+      body: { rev: 1, field: "image.keys", value: IMAGE_KEYS },
+    });
+    assert.ok(put.status < 300, JSON.stringify(put.data));
+    view = (await call(`/installations/${id}/pos/golive`)).data;
+    assert.equal(view.drift.deploy, "golive-settings");
+    assert.equal(view.allowed.deploy, false);
+    const pos = await posOf(id);
+    const res = await post(`/installations/${id}/pos/golive/deploy`, {
+      rev: pos.rev,
+      confirm: "cafe7",
+    });
+    assert.equal(res.status, 409);
+    assert.equal(res.data.code, "golive-settings");
+    assert.equal((await posOf(id)).deployLock, true);
+  });
+  it("a Vercel project id entered by hand is an existing client: no Start, no address rewrite", async () => {
+    const id = await client("cafe8", {
+      over: {
+        host: "cafe8.example.com",
+        vercel: {
+          projectId: "prj_live",
+          orgId: "team_x",
+          teamId: "",
+          projectName: "cafe8",
+        },
+      },
+    });
+    await withToken(id);
+    const view = (await call(`/installations/${id}/pos/golive`)).data;
+    const item = view.readiness.items.find((i) => i.id === "new-client");
+    assert.equal(item.state, "blocked");
+    assert.equal(view.allowed.start, false);
+    const res = await start(id);
+    assert.equal(res.status, 409);
+    assert.deepEqual(res.data.items, ["new-client"]);
+    const pos = await posOf(id);
+    assert.equal(pos.host, "cafe8.example.com");
+    assert.equal(pos.rev, 1);
+    // Verify found no production deployment on it: a new client after all.
+    await installs().updateOne(
+      { _id: id },
+      // What Verify writes for a new project: no env yet (the go-live
+      // writes it), so the whole verify is not "ok" — only health matters.
+      {
+        $set: {
+          "pos.verify": { ...OK_VERIFY("not-deployed"), env: "missing" },
+        },
+      },
+    );
+    const after = (await call(`/installations/${id}/pos/golive`)).data;
+    assert.equal(
+      after.readiness.items.find((i) => i.id === "new-client").state,
+      "ok",
+    );
+  });
+  it("Check DNS refuses a setup change since the env was written (golive-settings)", async () => {
+    const id = await client("cafe6", {
+      over: {
+        host: "cafe6.sandbee.in",
+        tenantId: "cafe6",
+        rootDomain: "sandbee.in",
+        golive: waiting("dns", {
+          address: {
+            ...golive().address,
+            label: "cafe6",
+            host: "cafe6.sandbee.in",
+          },
+        }),
+      },
+    });
+    await installs().updateOne({ _id: id }, { $inc: { "pos.rev": 1 } });
+    const view = (await call(`/installations/${id}/pos/golive`)).data;
+    assert.equal(view.drift.check, "golive-settings");
+    assert.equal(view.allowed.check, false);
+    const res = await post(`/installations/${id}/pos/golive/check`, { rev: 2 });
+    assert.equal(res.status, 409);
+    assert.equal(res.data.code, "golive-settings");
+  });
+  it("a warning (no image store) does not make the checklist 'not ready'", async () => {
+    const id = await client("cafe9", {
+      secrets: true,
+      over: {
+        image: {
+          store: null,
+          publicBaseUrl: "",
+          cloudName: "",
+          r2AccountId: "",
+          bucket: "",
+        },
+      },
+    });
+    const view = (await call(`/installations/${id}/pos/golive`)).data;
+    assert.equal(
+      view.readiness.items.find((i) => i.id === "image").state,
+      "warn",
+    );
+    assert.equal(view.readiness.ready, true);
+    assert.equal(view.allowed.start, true);
+  });
+  it("allowed follows the gates the POST checks (worker offline: no Check DNS)", async () => {
+    const id = await client("cafe0", {
+      over: {
+        host: "cafe0.sandbee.in",
+        tenantId: "cafe0",
+        rootDomain: "sandbee.in",
+        golive: waiting("dns", {
+          address: {
+            ...golive().address,
+            label: "cafe0",
+            host: "cafe0.sandbee.in",
+          },
+        }),
+      },
+    });
+    assert.equal(
+      (await call(`/installations/${id}/pos/golive`)).data.allowed.check,
+      true,
+    );
+    await state().updateOne(
+      { _id: "pos-worker" },
+      { $set: { at: new Date(Date.now() - 10 * 60000) } },
+    );
+    try {
+      const view = (await call(`/installations/${id}/pos/golive`)).data;
+      assert.equal(view.allowed.check, false);
+    } finally {
+      await heartbeat();
+    }
   });
 });

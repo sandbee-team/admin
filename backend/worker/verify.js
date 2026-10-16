@@ -7,6 +7,7 @@ import { ProviderError } from "../lib/provider-http.js";
 import { canonicalEnvValue, nextPublicOf } from "../lib/build-inputs.js";
 import { probeHealth, probeLogin } from "../lib/pos-health.js";
 import { NEXT_PUBLIC_KEYS } from "../../shared/deploy.js";
+import { goliveOwnsProduction } from "../../shared/golive.js";
 import {
   BLOCKING_SETTINGS,
   isKnownCode,
@@ -220,6 +221,11 @@ export async function healthFlag(ctx, target, signal) {
   });
   return login.ok ? "ok" : "login-failed";
 }
+// The go-live (not live yet) whose own first deploy is what production
+// serves: any failing health then still counts as its bootstrap (also when the
+// deploy was healthy once and a later env fix broke it).
+const firstUnhealthy = (pos) =>
+  !pos?.golive?.liveAt && goliveOwnsProduction(pos);
 export const VERIFY_STEPS = [
   "vercel",
   "project",
@@ -277,10 +283,18 @@ export async function verifyChecks(
     }
   }
   await onStep("health");
+  const pos = target.pos;
+  // D47: nothing to probe before admin's first deploy of a NEW client (an
+  // imported or deployed client is always probed: no Stage 2 regression).
+  const fresh = !pos.deploy?.last && !pos.importedAt;
   flags.health =
-    inspected.project === "ok" && !productionOf(inspected.projectData)
+    fresh && inspected.project === "ok" && !productionOf(inspected.projectData)
       ? "not-deployed"
       : await healthFlag(ctx, target, signal);
+  // A go-live whose own first deploy is live but unhealthy is still a
+  // bootstrap: the owner deploys a fixed commit with Unlock and deploy.
+  if (!["ok", "not-deployed"].includes(flags.health) && firstUnhealthy(pos))
+    flags.health = "first-unhealthy";
   const envKeysMissing =
     !target.pos.golive?.env && Array.isArray(inspected.envNames)
       ? missingEnvKeys(inspected.envNames, {

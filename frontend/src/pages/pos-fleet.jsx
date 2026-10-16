@@ -41,6 +41,31 @@ export function StateBadge({ state }) {
   const [value, text] = STATE[state] || ["planned", state];
   return <Badge value={value}>{text}</Badge>;
 }
+// A client on its way live from admin (P5): any go-live that has not reached
+// `live` once and was not cancelled.
+const GOING = {
+  queued: "Going live",
+  running: "Going live",
+  deploying: "Going live — first deploy",
+  failed: "Go-live stopped",
+};
+export function GoliveBadge({ golive }) {
+  if (!golive || golive.live) return null;
+  const text =
+    golive.status === "waiting"
+      ? golive.waitingFor === "dns"
+        ? "Going live — waiting for DNS"
+        : "Going live — ready to deploy"
+      : GOING[golive.status];
+  if (!text) return null;
+  return (
+    <span className="cell-subtext golive-badge">
+      <Badge value={golive.status === "failed" ? "attention" : "in-progress"}>
+        {text}
+      </Badge>
+    </span>
+  );
+}
 // How far the live commit is behind its branch head, said honestly.
 export function behindText(row, light = false) {
   if (light && row.behindBy == null) return "—";
@@ -230,9 +255,10 @@ export function PosFleet({ user }) {
       ) : !rows.length ? (
         <div className="panel">
           <Empty icon={Server} title="No POS clients yet">
-            A client appears here once its installation has POS settings. Import
-            one from the go-live file, or open a POS installation and create its
-            settings.
+            A client appears here once its installation has POS settings. For a
+            new client, open its POS installation, enter the POS setup and
+            secrets, then use the Go live tab. A client already live elsewhere
+            is imported from its go-live file.
             {can(user.role, "secrets") && (
               <>
                 <br />
@@ -384,6 +410,7 @@ export function PosFleet({ user }) {
                     <td>{behindText(row)}</td>
                     <td>
                       <StateBadge state={row.state} />
+                      <GoliveBadge golive={row.golive} />
                     </td>
                     <td className="small">
                       {row.cached === true

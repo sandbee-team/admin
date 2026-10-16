@@ -37,7 +37,10 @@ import { PurgePanel } from "../components/deploy/purge-panel";
 import { StaleBanner } from "../components/deploy/stale-banner";
 import { VersionCard } from "../components/deploy/version-card";
 import { describeError, titlesOf } from "../components/deploy/format";
-import { describeProjectIssue } from "../../../shared/deploy-errors";
+import {
+  describeCode,
+  describeProjectIssue,
+} from "../../../shared/deploy-errors";
 const VERIFY_LABEL = {
   vercel: "Vercel token",
   project: "Project settings",
@@ -331,9 +334,41 @@ export function InstallationDeploy({ installation, user }) {
           {data.verify && data.verify.env && data.verify.env !== "ok" && (
             <p className="small subtle">
               Environment variables on Vercel differ from the stored settings.
-              Use the local console’s “Update on Vercel” until admin can do
-              this.
+              {settings.golive ? (
+                <>
+                  {" "}
+                  {settings.golive.live
+                    ? "Use Sync env on the "
+                    : "Run the go-live again on the "}
+                  <Link
+                    href={`/installations/${id}/golive`}
+                    className="text-link"
+                  >
+                    Go live tab
+                  </Link>
+                  {settings.golive.live ? ", then Redeploy." : "."}
+                </>
+              ) : (
+                " Use the local console’s “Update on Vercel” until admin can do this."
+              )}
             </p>
+          )}
+          {data.verify?.envKeysMissing?.length > 0 && (
+            <div className="verify-missing small" role="status">
+              <strong>{describeCode("env-keys-missing").title}:</strong>{" "}
+              {describeCode("env-keys-missing").plainMessage}
+              <ul aria-label="Environment variables missing on Vercel">
+                {data.verify.envKeysMissing.map((name) => (
+                  <li key={name}>
+                    <code>{name}</code>
+                  </li>
+                ))}
+              </ul>
+              <span className="subtle">
+                Names only: admin never reads the values.{" "}
+                {describeCode("env-keys-missing").action}
+              </span>
+            </div>
           )}
           {owner && data.cache.configured && (
             <div className="account-actions">

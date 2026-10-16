@@ -14,6 +14,10 @@ import { encrypt } from "../backend/lib/crypto.js";
 import { createGitHub } from "../backend/lib/github.js";
 import { aadOf, newPos } from "../backend/modules/pos.js";
 import { JOB_STEPS } from "../shared/deploy.js";
+import { GOLIVE_RUN_STEPS, GOLIVE_STEPS } from "../shared/golive.js";
+import { addressStateOf } from "../shared/web-address.js";
+import { newGolive } from "../backend/lib/deploy-job.js";
+import { GOLIVE_ENV_KEYS } from "../backend/lib/golive-env.js";
 import {
   MONGO_LIMIT_BYTES,
   WORKER_FREE_REQUESTS,
@@ -217,6 +221,39 @@ for (const name of [
     createdAt: new Date(),
   });
 }
+// golive.spec.js (P5): the deploy-owner letters are used up.
+for (const name of ["a", "b", "c", "d", "e", "f"]) {
+  const _id = randomUUID();
+  await db.collection("staff").insertOne({
+    _id,
+    email: `golive-owner-${name}@example.test`,
+    name: `golive owner ${name}`,
+    role: "owner",
+    status: "active",
+    revision: 1,
+    authVersion: 1,
+    passwordHash: await hashPassword("Browser test passphrase 2026!"),
+    totp: {
+      key: encrypt(DEPLOY_KEY, c.VAULT_KEY, `staff:${_id}:totp`),
+      enabledAt: new Date(),
+      lastStep: null,
+    },
+    createdAt: new Date(),
+  });
+}
+// Its own admin (email code): the sign-in limit per staff member is shared by
+// every spec that signs deploy-admin in.
+await db.collection("staff").insertOne({
+  _id: randomUUID(),
+  email: "golive-admin@example.test",
+  name: "golive admin",
+  role: "admin",
+  status: "active",
+  revision: 1,
+  authVersion: 1,
+  passwordHash: await hashPassword("Browser test passphrase 2026!"),
+  createdAt: new Date(),
+});
 // ---- Sales documents (sales.spec.js) ----------------------------------------
 // Owners with the deploy key (settings need a step-up), an admin, a customer.
 for (const name of ["a", "b"]) {
@@ -881,9 +918,8 @@ const POS_CONFIG = (slug, host) => ({
   },
   posAdmin: { username: "owner1" },
 });
-async function seedPos(name) {
-  const spec = SCENARIOS[name],
-    id = nid("d", spec.n),
+async function seedPos(name, spec = SCENARIOS[name]) {
+  const id = nid("d", spec.n),
     customerId = nid("e", spec.n);
   const pos = newPos(POS_CONFIG(spec.slug, spec.host));
   if (spec.ids === false) {
@@ -937,6 +973,7 @@ async function seedPos(name) {
     previous: spec.previous?.() ?? null,
     cutoverAt: spec.last ? new Date() : null,
   };
+  spec.extra?.(pos, id);
   await db.collection("installations").deleteOne({ _id: id });
   await db.collection("customers").deleteOne({ _id: customerId });
   await db.collection("customers").insertOne({
@@ -969,6 +1006,332 @@ async function seedPos(name) {
   });
 }
 for (const name of Object.keys(SCENARIOS)) await seedPos(name);
+// ---- Go-live fixtures (golive.spec.js, P5) ----------------------------------
+// New clients entered by hand (P5 §3 step 1) and go-live slots as the worker
+// (backend/worker/golive.js) leaves them. Kept out of SCENARIOS: they are
+// seeded only by `reset?scenario=<name>` and removed by `reset?scenario=all`,
+// so the fleet, overview and rollout specs never see them.
+const CNAME = "0123456789abcdef.vercel-dns-017.com";
+const ENV_MISSING = ["REALTIME_URL", "REALTIME_PUBLISH_SECRET", "TENANT_ID"];
+// The stored slot at `phase` (running | failed | waiting-dns | waiting-deploy
+// | live), built on `old` (the slot a real route wrote) when there is one.
+// q: step, code, warnings=a,b, txt=1, admin=seeded|exists, realtime=1.
+function goliveAt(phase, q, old, label, host) {
+  const base =
+    old ??
+    newGolive({
+      action: "start",
+      branch: "main",
+      sha: "a".repeat(40),
+      by: { id: "u", name: "golive owner" },
+      now: Date.now() - 600000,
+      label,
+      host,
+    });
+  const names = ["start", "check"].includes(base.action)
+    ? GOLIVE_STEPS
+    : GOLIVE_RUN_STEPS[base.action];
+  const index = (name) => names.indexOf(name);
+  const upto = Math.max(
+    0,
+    phase === "running"
+      ? index(q("step") ?? names[0])
+      : phase === "failed"
+        ? index(q("step") ?? "project")
+        : phase === "waiting-dns"
+          ? index("dns")
+          : phase === "waiting-deploy"
+            ? index("deploy")
+            : names.length,
+  );
+  const realtimeOn = q("realtime") === "1";
+  const passed = (name) => index(name) !== -1 && index(name) < upto;
+  const NOTE = {
+    project: "Project created",
+    secrets: "Secrets minted",
+    realtime: realtimeOn
+      ? "Worker uploaded"
+      : "No Cloudflare token: realtime off",
+    domain: "Address added",
+    env: `${GOLIVE_ENV_KEYS.length} variables written`,
+    admin: "Admin login created",
+  };
+  const steps = names.map((name, i) => ({
+    name,
+    state:
+      i < upto
+        ? name === "realtime" && !realtimeOn
+          ? "skipped"
+          : "done"
+        : i === upto
+          ? phase === "running"
+            ? "running"
+            : phase === "failed"
+              ? "failed"
+              : "pending"
+          : "pending",
+    startedAt: i <= upto ? ago(300000 - i * 10000) : null,
+    endedAt: i < upto ? ago(295000 - i * 10000) : null,
+    note:
+      i < upto
+        ? (NOTE[name] ?? "")
+        : i === upto && phase === "waiting-dns"
+          ? `Waiting for DNS (${q("warnings")?.split(",")[0] || "dns-pending"})`
+          : "",
+  }));
+  const status = {
+    running: "running",
+    failed: "failed",
+    "waiting-dns": "waiting",
+    "waiting-deploy": "waiting",
+    live: "live",
+  }[phase];
+  const ready = ["waiting-deploy", "live"].includes(phase);
+  const txt = q("txt") === "1";
+  const fence = base.lease?.fence ?? 0;
+  return {
+    ...base,
+    status,
+    step:
+      phase === "waiting-dns"
+        ? "dns"
+        : phase === "waiting-deploy"
+          ? "ready"
+          : (names[Math.min(upto, names.length - 1)] ?? "check"),
+    steps,
+    startedAt: base.startedAt ?? ago(300000),
+    endedAt: status === "running" ? null : new Date(),
+    waitingFor:
+      phase === "waiting-dns"
+        ? "dns"
+        : phase === "waiting-deploy"
+          ? "deploy"
+          : null,
+    lease:
+      status === "running"
+        ? { owner: "w1", until: new Date(Date.now() + 60000), fence: fence + 1 }
+        : { owner: null, until: null, fence },
+    attempt: 1,
+    cancelRequested: false,
+    error:
+      phase === "failed"
+        ? {
+            step: q("step") ?? "project",
+            code: q("code") ?? "project-live",
+            message: "The step failed.",
+          }
+        : null,
+    warnings: (q("warnings") ?? "").split(",").filter(Boolean),
+    address:
+      passed("domain") || (phase === "live" && base.address?.records?.length)
+        ? {
+            ...base.address,
+            records: [
+              { type: "CNAME", name: label, value: CNAME },
+              ...(txt
+                ? [
+                    {
+                      type: "TXT",
+                      name: `_vercel.${label}`,
+                      value: `vc-domain-verify=${host},5f3a9c`,
+                    },
+                  ]
+                : []),
+            ],
+            cname:
+              phase === "waiting-dns"
+                ? { ok: false, found: null }
+                : { ok: true, found: CNAME },
+            txt: txt
+              ? phase === "waiting-dns"
+                ? { ok: false, found: [] }
+                : { ok: true, found: [`vc-domain-verify=${host},5f3a9c`] }
+              : null,
+            verified: ready,
+            configured: ready ? true : phase === "waiting-dns" ? false : null,
+            tls: phase === "live",
+            // As the dns step stores it.
+            state: addressStateOf({
+              verified: ready,
+              configured: ready ? true : phase === "waiting-dns" ? false : null,
+              reachable: phase === "live",
+              hasTxtRow: txt,
+              answeredAs: null,
+            }),
+            checkedAt: ["waiting-dns", "waiting-deploy", "live"].includes(phase)
+              ? ago(60000)
+              : null,
+          }
+        : base.address,
+    env: passed("env")
+      ? {
+          at: ago(240000),
+          keys: GOLIVE_ENV_KEYS.map((name) => ({
+            name,
+            type: "encrypted",
+            targets: ["production", "preview"],
+            set: true,
+            fp16: "0123456789abcdef",
+            updatedAt: Date.now() - 240000,
+          })),
+        }
+      : base.env,
+    admin: passed("admin")
+      ? { state: q("admin") ?? "seeded", at: ago(200000) }
+      : base.admin,
+    realtime:
+      realtimeOn && passed("realtime")
+        ? {
+            bundleSha256: "d".repeat(64),
+            sha: base.sha,
+            tenantId: label,
+            deployedAt: ago(250000),
+            verifiedAt: ago(250000),
+          }
+        : base.realtime,
+    deployRequestId:
+      phase === "live"
+        ? (base.deployRequestId ?? randomUUID())
+        : base.deployRequestId,
+    liveAt: phase === "live" ? (base.liveAt ?? new Date()) : base.liveAt,
+  };
+}
+// The slot plus the POS fields the same worker steps write.
+function applyGolive(pos, phase, q, id) {
+  const label = pos.subdomain,
+    host = `${label}.sandbee.in`;
+  if (!pos.golive) {
+    // What Start writes (backend/modules/golive.js).
+    pos.host = host;
+    pos.tenantId = label;
+    pos.rootDomain = "sandbee.in";
+  }
+  const g = goliveAt(phase, q, pos.golive ?? null, label, host);
+  pos.golive = g;
+  if (g.steps.some((s) => s.name === "project" && s.state === "done")) {
+    pos.vercel.projectId = `prj_gl${String(id).slice(-4)}`;
+    pos.vercel.orgId = "team_gl";
+    pos.vercel.projectName = pos.slug;
+    g.projectId = pos.vercel.projectId;
+  }
+  // The worker runs against the stored rev and records it with the env and
+  // the admin login (Unlock and deploy refuses a later change).
+  pos.rev = pos.rev ?? 1;
+  g.rev = pos.rev;
+  if (g.env) g.env = { ...g.env, rev: pos.rev };
+  if (g.admin) g.admin = { ...g.admin, rev: pos.rev };
+  const verify = (health) => ({
+    at: new Date(),
+    by: { id: "w", name: "Worker" },
+    vercel: "ok",
+    project: "ok",
+    env: "ok",
+    mongo: "ok",
+    cloudflare: null,
+    health,
+  });
+  // ready: the inline bootstrap verify (D47); live: the finish step's verify.
+  if (phase === "waiting-deploy") pos.verify = verify("not-deployed");
+  if (phase === "live") {
+    pos.verify = verify("ok");
+    pos.deployLock = false;
+    pos.unlockedAt = pos.unlockedAt ?? new Date();
+    pos.deploy = {
+      ...pos.deploy,
+      current: null,
+      last: version(9, { requestId: g.deployRequestId, sha: "a".repeat(40) }),
+      cutoverAt: new Date(),
+    };
+  }
+}
+// A client entered by hand: label = slug, no project ids, locked, never
+// deployed, every secret it needs.
+const newClient =
+  (phase, params = {}, cloudflare = null) =>
+  (pos, id) => {
+    pos.subdomain = pos.slug;
+    pos.host = "";
+    pos.tenantId = "";
+    pos.rootDomain = "";
+    pos.vercel = { ...pos.vercel, projectId: "", orgId: "", projectName: "" };
+    pos.cloudflare = cloudflare;
+    pos.image.keys = encrypt(
+      JSON.stringify({ accessKeyId: "AKIDUI", secretAccessKey: "ui-secret" }),
+      c.VAULT_KEY,
+      aadOf(id, "image.keys"),
+    );
+    // What the secrets step mints before the admin step seeds the login.
+    pos.posAdmin.password = encrypt(
+      "Ui#Admin-Pass1",
+      c.VAULT_KEY,
+      aadOf(id, "posAdmin.password"),
+    );
+    if (phase) applyGolive(pos, phase, (name) => params[name] ?? null, id);
+  };
+const GOLIVE_CLIENT = {
+  token: true,
+  mongo: true,
+  unlocked: false,
+  verify: null,
+};
+const GOLIVE_SCENARIOS = {
+  glstart: {
+    n: 31,
+    slug: "ui-gl-start",
+    customer: "Golive Start Cafe",
+    ...GOLIVE_CLIENT,
+    extra: newClient(null),
+  },
+  glwait: {
+    n: 32,
+    slug: "ui-gl-wait",
+    customer: "Golive Wait Cafe",
+    ...GOLIVE_CLIENT,
+    extra: newClient("waiting-dns", { warnings: "dns-pending", txt: "1" }),
+  },
+  glfail: {
+    n: 33,
+    slug: "ui-gl-fail",
+    customer: "Golive Fail Cafe",
+    ...GOLIVE_CLIENT,
+    extra: newClient("failed", { step: "project", code: "project-live" }),
+  },
+  gllive: {
+    n: 34,
+    slug: "ui-gl-live",
+    customer: "Golive Live Cafe",
+    ...GOLIVE_CLIENT,
+    extra: newClient("live", { warnings: "redirect-failed", admin: "exists" }),
+  },
+  // Session 4 open item 1: a Worker URL entered by hand, no Cloudflare token.
+  glworker: {
+    n: 35,
+    slug: "ui-gl-worker",
+    customer: "Golive Worker Cafe",
+    ...GOLIVE_CLIENT,
+    extra: newClient(
+      null,
+      {},
+      {
+        accountId: "",
+        workerName: "pos-realtime-ui-gl-worker",
+        workerUrl: "https://pos-realtime-ui-gl-worker.demo.workers.dev",
+      },
+    ),
+  },
+  // An imported client whose Vercel env misses keys (verify warning, D43).
+  envmissing: {
+    n: 36,
+    slug: "ui-env-missing",
+    customer: "Env Missing Cafe",
+    ...READY,
+    extra: (pos) => {
+      pos.importedAt = new Date();
+      pos.verify.envKeysMissing = ENV_MISSING;
+    },
+  },
+};
+const goliveSpecOf = (name) => GOLIVE_SCENARIOS[name];
 // Fake GitHub (branches, commits, compare) and build cache: no network. main's
 // head has a stored build, feature/x does not. A live commit of sha(7) has a
 // different history from main.
@@ -1079,12 +1442,36 @@ const control = createServer(async (req, res) => {
     const scenario = url.searchParams.get("scenario");
     const query = (name) => url.searchParams.get(name);
     if (url.pathname === "/pos/reset") {
-      for (const name of scenario === "all"
-        ? Object.keys(SCENARIOS)
-        : [scenario])
-        await seedPos(name);
+      if (goliveSpecOf(scenario))
+        await seedPos(scenario, goliveSpecOf(scenario));
+      else
+        for (const name of scenario === "all"
+          ? Object.keys(SCENARIOS)
+          : [scenario])
+          await seedPos(name);
+      // The go-live clients exist only while golive.spec.js runs.
+      if (scenario === "all")
+        for (const spec of Object.values(GOLIVE_SCENARIOS)) {
+          await db
+            .collection("installations")
+            .deleteOne({ _id: nid("d", spec.n) });
+          await db.collection("customers").deleteOne({ _id: nid("e", spec.n) });
+        }
       // No spec ever starts with a rollout left over from another one.
       await db.collection("system_state").deleteOne({ _id: "pos-rollout" });
+    } else if (url.pathname === "/pos/golive") {
+      // /pos/golive?scenario=NAME&phase=running|failed|waiting-dns|
+      // waiting-deploy|live[&step=..&code=..&warnings=a,b&txt=1&admin=..]:
+      // moves the go-live slot (and the POS fields its steps write) as the
+      // go-live worker lane would. Keeps the run a real route created.
+      const spec = goliveSpecOf(scenario);
+      if (!spec) return res.writeHead(404).end('{"error":"No such client."}');
+      const id = nid("d", spec.n);
+      const row = await db.collection("installations").findOne({ _id: id });
+      applyGolive(row.pos, query("phase") ?? "running", query, id);
+      await db
+        .collection("installations")
+        .updateOne({ _id: id }, { $set: { pos: row.pos } });
     } else if (url.pathname === "/pos/rollout") {
       // Moves the row a real POST /pos/rollout created, as the worker would:
       // ?target=SLUG&tstatus=..[&code=..&items=a,b] (one client),

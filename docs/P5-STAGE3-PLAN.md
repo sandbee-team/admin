@@ -311,7 +311,7 @@ temporary GoDaddy record `p5spike` is allowed), Q5 existing screens.
 - Q5 New client entry: **existing screens (Customer → Installation → POS setup, as in P2 step 1)**;
   a one-form "New client" page later (P8) if it feels slow?
 
-## 16. As built (session 2, 2026-10-13; session 3, 2026-10-14)
+## 16. As built (session 2, 2026-10-13; session 3, 2026-10-14; sessions 4-5, 2026-10-16)
 
 **Docs.** Plan approved unchanged; D41-D48 recorded in `docs/POS-INTEGRATION.md` (main @ 4082048).
 D49/D50 stay reserved for P2's F1/F2; next free D-number D51.
@@ -657,3 +657,128 @@ red each time); `npm test` → tests 1023, suites 197, pass 1017, fail 0, cancel
 Linux-only ones), todo 0; `npm run build` → `✓ built in 3.40s` (the existing > 500 kB chunk warning
 only; no frontend file changed, so no Playwright run). Changed files formatted with prettier (only
 those files).
+
+### Session 5 (2026-10-16): W6 UI, open item 1, two reviews and four re-review rounds
+
+**Open item 1 decided (D56).** A block with a hand-entered `pos.cloudflare.workerUrl` but no
+Cloudflare token would get its `REALTIME_*` env blanked by the env step and then fail Verify
+(`env-drift`). The readiness item `realtime` is now `blocked` for it ("add the token, or clear the
+Worker URL", fix link `#cloudflare`), and `realtime` joins the Start and Sync env gates: a BLOCKED
+realtime item (also a bad account id or a slug > 50, which were shown but not enforced before)
+refuses the run (409 `not-ready`, items `["realtime"]`); its warning (realtime off) still passes;
+`readiness.ready` = nothing blocked. Nothing is changed quietly. Session 4's open items (2) are
+done in W6; (3) (an interrupted UPDATE of an existing Worker is PUT again) is accepted as is.
+
+**W6 — UI.**
+
+- `frontend/src/pages/installation-golive.jsx` (new): `usePoll` on GET `…/pos/golive` (2 s while
+  queued/running/deploying, else 15 s); progress; web address records; first deploy panel; owner
+  checks (ported from the local summary: WAF rules, R2 CORS, sign in once, reveal the password
+  once — not when the login already existed or the client re-passworded it); readiness checklist
+  (`words` prop: "Is this client ready to go live?" / "Ready to start"); Start (branch picker,
+  default `main`, the commit fixed when the dialog opens) or "Run all steps again…" / "Start
+  again…"; after go-live: Sync env… and Update realtime Worker…; "What admin set up" (project,
+  address, Worker, env count, admin login; nothing is deleted). Every action shows the reason the
+  server would give instead of a dead button (role first, then `allowed`, busy, `drift`,
+  `deployBlocked`, `goliveBlockedFor`). Start / Sync env / Worker update and Unlock and deploy =
+  typed slug + `withStepUp`; Cancel = confirm dialog; Check DNS = direct POST (owner and admin;
+  also while waiting for the deploy, to refresh a verify older than 24 h).
+- `components/golive/golive-progress.jsx` (new): the 11 go-live steps (a Sync env run shows its
+  2), one status sentence per status / waitingFor / stalled / cancelRequested, the error with its
+  title + message + action from `shared/deploy-errors.js`, non-DNS warnings (`admin-exists`,
+  `redirect-failed`), cancel foot; a Check DNS run is titled "DNS check" only on its own steps.
+- `components/golive/address-records.jsx` (new): Type / Name (Host) / Value (Points to) table with
+  a Copy button per name and value (rows stack on phones), address state chip, the DNS waiting
+  reasons (`dns-pending`, `dns-wrong-target`, `txt-pending`, `domain-unverified`,
+  `dns-unreachable`) with their actions, what the last check found, last checked, Check DNS.
+- `installation-workspace.jsx`: tab "Go live" when the block is missing, has a go-live, or was
+  neither imported nor deployed by admin; POS setup gains the `#cloudflare` and `#admin` anchors.
+- `installation-deploy.jsx`: Verify's `envKeysMissing` (names only) in the verification details;
+  the env-drift hint points a go-live client to Sync env (live) or a re-run (not live yet).
+- `pos-fleet.jsx` + `/pos/fleet`: "Going live" badge ("— waiting for DNS", "— ready to deploy",
+  "— first deploy", "Go-live stopped"); `goliveBadge` gains `live`; the fleet projection reads only
+  status / waitingFor / liveAt; the empty state names the Go live path.
+- `test/ui-server.js`: owners `golive-owner-a..f` and an own `golive-admin` (the per-staff sign-in
+  limit is shared by every spec that signs `deploy-admin` in — it made `rollout.spec` fail once);
+  `GOLIVE_SCENARIOS` (new client, waiting DNS with TXT, failed `project-live`, live with
+  `admin-exists` + `redirect-failed`, hand-entered Worker URL, imported client with
+  `envKeysMissing`) seeded only by `reset?scenario=<name>` and removed by `reset?scenario=all` (the
+  fleet and rollout specs never see them); control route `/pos/golive?scenario=&phase=running|
+  failed|waiting-dns|waiting-deploy|live` writes the slot and the POS fields as the worker does.
+- `test/ui/golive.spec.js` (new, 3 tests): Start → running → waiting DNS (copy buttons checked
+  through the clipboard) → Check DNS → waiting deploy → Unlock and deploy → fleet badge → live →
+  Sync env; an admin at waiting DNS and waiting deploy (no Unlock and deploy button) and on a live
+  client, at 320/390/768/1440 px + axe; failure, the blocked realtime item and its fix link,
+  cancel, `envKeysMissing` on the Deploy tab.
+
+**Reviews: 2 independent read-only opus reviews of `git diff main`** (A backend security, B
+contract + UI + tests; tree fingerprint `0310ee4e09e50e63` before and after both). A: no auth or
+step-up bypass, no secret leak, no SSRF, no provider delete; 1 high, 4 medium, 6 low. B: 2 high,
+3 medium, 9 low. Merged and fixed — every critical/high/medium and the cheap lows — each with a
+test written to fail on the reviewed code (14/14 red before, green after):
+
+| # | Finding | Fix |
+| - | ------- | --- |
+| H1 | A failed or other-commit realtime bundle run was carried into every later run and reused | `newGolive` drops `realtime.run` (only a takeover of the same run reuses it) |
+| H2 | After an unhealthy first deploy (no previous version) no admin path could deploy again | Verify writes health `first-unhealthy` while the go-live's own production fails its health check; `verifyStateOf` reads it as `bootstrap` (`BOOTSTRAP_HEALTH`), so a re-run with a fix → ready → Unlock and deploy → live |
+| H3 | Setup changed after the env/admin steps (image keys, database URI) went unnoticed: Unlock and deploy shipped the old env, a re-run skipped the admin login | `golive.env.rev`; ready, finish, Check DNS and Unlock and deploy refuse `golive-settings`; the admin step skips a recorded `seeded` only at the same rev |
+| M1 | Start rewrote host/tenant/root of a hand-entered live client before `project-live` | `new-client` is blocked for a hand-entered project id unless a Verify of the last 24 h says `not-deployed` |
+| M2 | Sync env / Worker update followed hand edits of project id, tenant, root domain, Worker URL | `golive.projectId`, `realtime.url`; shared `goliveDriftOf` → 409 `golive-address` / `golive-realtime`; the worker's realtime and env steps re-check (`golive-stale`) |
+| M3 | A takeover adopted a pos.rev changed under a dead lease, and could run beside a deploy/task the API then allowed | `golive.rev` set at enqueue, moved by the worker's own bumps, checked at the first checkpoint; observe's finish re-queue stores the current rev (filter-guarded); a takeover claim needs the deploy and task slots inactive |
+| M4 | Sync env after a failed Worker update blanked `REALTIME_*` silently | 409 `golive-realtime`; the worker throws `realtime-probe-failed` instead of writing the off triple |
+| M5 | A re-Start refused the client's own generic `cname.vercel-dns.com` record | the check step also accepts the answer its dns step accepted |
+| M6 | A Cancel during the step that ends in waiting/live was lost; the UI then disabled Cancel | `settle()` / `commit({when})` write the final state only while `cancelRequested` is not true; Cancel is disabled only for a running run |
+| L | Admin saw Unlock and deploy; GET `allowed` ignored gates/busy/drift; `ready` false on a warning; Sync env minted an admin password; `txt-pending` without a TXT row; texts; no re-check while waiting for deploy; Verify `not-deployed` for any client | owner check first; `allowed` folds busy + gates + `drift` (in GET); `ready` = nothing blocked; mint only on Start before a seeded login; `domain-unverified`; texts; Check DNS while waiting for deploy; `not-deployed` only for a new client |
+
+**Re-reviews (read-only opus, one per round, tree fingerprinted before and after each).**
+
+- Round 1 (`bd67957eb74e517e`), 3 medium: after a HEALTHY first deploy a settings change went
+  live without a redeploy or got stuck → `first-unhealthy` for any failing health of the go-live's
+  own production; ready finishes without a deploy only when the env was not written after the
+  deploy (`envWritten`, or `env.at` later than `deploy.last.at`), else it waits for Unlock and
+  deploy again; finish refuses `golive-settings` when setup changed during the deploy; a
+  never-deployed hand-entered project id was a dead end → allowed with a current `not-deployed`
+  verify; a re-check turned a seeded login into "exists" → `admin-mismatch`.
+- Round 2 (`4eb1e8eeca6ee508`), 1 high + 1 medium: a second deploy that failed and rolled back
+  left `deploy.last` = #1 while `deployRequestId` named #2 → every Start ended `project-live` →
+  `goliveOwnsProduction`; `admin-mismatch` also fired when the client re-passworded the login in
+  the POS or the URI moved to a database with its own admin → only on a change of the STORED
+  username or password.
+- Round 3 (`b075ef5f9645fc8b`), 1 high + 2 medium: ownership was not bound to the go-live's
+  project (a hand-edited id to a live project passed) → `goliveOwnsProduction` needs
+  `pos.vercel.projectId === golive.projectId`, the project step also `project.id ===
+  golive.projectId` and production = admin's recorded deploy; a new project's verify is never fully
+  "ok" (env missing) → `handEnteredLive` checks health + age only; a Deploy-tab rollback stamps
+  `last.at` → `envAfterDeploy` is true for `rolled-back-to`. Lows: keyed fingerprints (`pwFp`,
+  `uriFp`) instead of timestamps for the admin login, `userFound` for "kept", no second seed audit.
+- Round 4 (`e54e82bbaa9b0998`), 1 medium: a stale `lastAliasRequest` after a plain promote made
+  the project step refuse its own project → `isProduction` (the deploy worker's rule) or
+  `productionOf`. Lows: `changedInPos` drops the hand-over item; texts.
+- Final narrow check (`caeebe27bc650a7a`): no critical, high or medium.
+
+Each round's fixes have tests that are red on the code before them (round 1: 14/14, round 2: 4/4,
+round 3: 2/2, round 4: 4/4, round 5: 2/2; checked by swapping the earlier sources back in).
+
+Known (low, accepted): a concurrent POS setup save on installation B and a Start on A with the
+same label can both commit (write skew; B can never Start with it — the unique index refuses — and
+the DNS check catches a foreign record); a takeover can wait behind a queued deploy that a freeze
+holds; `env.rev` compares the whole `pos.rev` (any setup save, even a no-op, asks for Run all steps
+again); a run that dies between the end of `ready` and its waiting write ends `internal` on
+takeover (Start again recovers); the `admin-exists` warning is cleared by a later run (the owner
+checks read `golive.admin.state`); with `changedInPos` the "sign in once" check still names the
+username (the client knows the new password).
+
+Evidence (Windows dev PC, 2026-10-16, branch `p5-stage3`): `npm test` → tests 1048, suites 203, pass 1042, fail 0, cancelled 0,
+skipped 6 (the Linux-only ones), todo 0 (1023 after session 4 + 25 new: 1 for W6's gate + 24
+review-fix regressions); `npm run build` → `✓ built in 2.38s` (the existing > 500 kB chunk
+warning only); `npx playwright test --reporter=line` → `57 passed (7.7m)` (54 before + the 3
+go-live tests). An earlier full Playwright run failed once in `rollout.spec` ("Too many
+requests" on `deploy-admin`'s email-code sign-in): fixed by giving `golive.spec` its own admin.
+Changed files formatted with prettier (only those files). All of it is local on `p5-stage3`;
+nothing was pushed, deployed or written to a provider.
+
+- Open for session 6 (W7): docs `API.md` (the go-live routes and 409 codes), `SECURITY.md`
+  (provider writes, keyed fingerprints, no deletes), `DEPLOYMENT.md` (image rebuild installs
+  bcryptjs; no new container, volume or `.env` variable); the owner pushes pos-builder `realtime`;
+  `bash scripts/test-linux.sh` on the server; merge + push + server steps; dress rehearsal S4
+  (`p5spike`, throwaway Atlas DB): seeded login, empty-DB boot, Verify ok, redirect.

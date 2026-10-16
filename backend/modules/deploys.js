@@ -68,6 +68,7 @@ import {
   cleanText,
   cutoverView,
   deployView,
+  goliveBadge,
   jobView,
   key8,
   storedCommit,
@@ -1268,6 +1269,10 @@ export function deployRoutes(deps) {
                 "pos.image.publicBaseUrl": 1,
                 "pos.image.cloudName": 1,
                 "pos.cloudflare.workerUrl": 1,
+                // The "Going live" badge (P5): never the lease or the steps.
+                "pos.golive.status": 1,
+                "pos.golive.waitingFor": 1,
+                "pos.golive.liveAt": 1,
                 // Usage summary (Phase 2): never `mail` or the check lease.
                 "pos.usage.watch": 1,
                 "pos.usage.check.status": 1,
@@ -1397,6 +1402,7 @@ export function deployRoutes(deps) {
           behindBy,
           branchGone: relation === "branch-gone",
           cached,
+          golive: goliveBadge(pos.golive),
           usage: fleetUsageView(pos.usage, row.status),
         };
       }),

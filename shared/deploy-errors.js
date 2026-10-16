@@ -1020,7 +1020,7 @@ for (const [code, step, title, msg, action] of [
     "task",
     "Env keys missing",
     "Some environment variables the POS needs are not on Vercel.",
-    "Add them in Vercel, or move the client to admin's Sync env.",
+    "Add them in Vercel (Settings, Environment Variables), then press Verify now.",
   ],
   [
     "realtime-bundle-failed",
@@ -1119,6 +1119,40 @@ for (const [code, step, title, msg, action] of [
     "Settings changed",
     "POS settings changed while the go-live ran, so it stopped.",
     "Start again.",
+  ],
+  // Session 5 review: setup changed after the env step wrote Vercel's env
+  // (the first deploy would ship the old env / admin login).
+  [
+    "golive-settings",
+    "ready",
+    "Settings changed",
+    "POS settings changed after the environment was written to Vercel.",
+    "Run the go-live again (Start again); deploy again when it asks.",
+  ],
+  // The login admin seeded no longer matches the stored username/password.
+  [
+    "admin-mismatch",
+    "admin",
+    "Admin login differs",
+    "The POS admin login admin created does not match the stored username or password any more.",
+    "Put the username and password admin created it with back in POS setup (or remove that login in the client's database), then Start again.",
+  ],
+  // Vercel has not verified the address and asked for no TXT record.
+  [
+    "domain-unverified",
+    "dns",
+    "Vercel not verified yet",
+    "The DNS record is right, but Vercel has not verified the web address yet.",
+    "Wait a few minutes, then press Check DNS.",
+  ],
+  // Verify's health flag when a go-live's own first deploy is live but failed
+  // its health check (verifyStateOf "bootstrap"): deploy a fixed commit.
+  [
+    "first-unhealthy",
+    "ready",
+    "Production unhealthy",
+    "Production is the go-live's own deploy, but it fails its health check, so the client is not live yet.",
+    "Fix the cause (a commit or a setting), run the go-live again, then Unlock and deploy.",
   ],
   // Verify's health flag for a project without a production deployment
   // (verifyStateOf "bootstrap", D47): not a failure before the first deploy.

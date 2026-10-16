@@ -23,20 +23,31 @@ function Fix({ fix }) {
 }
 // actions: { [itemId]: {label, onClick, busy, reason} }. A reason means the
 // action exists but cannot be used (shown as text, never a dead button).
-export function ReadinessChecklist({ readiness, verify, actions = {} }) {
+// `words` = {title, verb, ready} for the Go live tab (defaults: Deploy tab).
+const DEPLOY_WORDS = {
+  title: "Is this client ready?",
+  verb: "deploying",
+  ready: "Ready to deploy",
+};
+export function ReadinessChecklist({
+  readiness,
+  verify,
+  actions = {},
+  words = DEPLOY_WORDS,
+}) {
   return (
     <section className="panel" aria-labelledby="readiness-title">
       <div className="panel-title">
         <div>
-          <h2 id="readiness-title">Is this client ready?</h2>
+          <h2 id="readiness-title">{words.title}</h2>
           <p>
             {readiness.ready
               ? "Everything required is in place."
-              : "Fix the items marked “Needs attention” before deploying."}
+              : `Fix the items marked “Needs attention” before ${words.verb}.`}
           </p>
         </div>
         <Badge value={readiness.ready ? "done" : "disabled"}>
-          {readiness.ready ? "Ready to deploy" : "Not ready"}
+          {readiness.ready ? words.ready : "Not ready"}
         </Badge>
       </div>
       <div className="check-groups">

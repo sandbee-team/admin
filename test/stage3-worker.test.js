@@ -1105,17 +1105,15 @@ const CASES = [
     "project",
     {
       setup: (env, id) =>
-        env.db
-          .collection("installations")
-          .updateOne(
-            { _id: id },
-            {
-              $set: {
-                "pos.vercel.projectId": "prj_gone",
-                "pos.vercel.orgId": "team_x",
-              },
+        env.db.collection("installations").updateOne(
+          { _id: id },
+          {
+            $set: {
+              "pos.vercel.projectId": "prj_gone",
+              "pos.vercel.orgId": "team_x",
             },
-          ),
+          },
+        ),
     },
   ],
   [
@@ -1265,15 +1263,12 @@ describe("go-live: every failure code the worker can produce", () => {
     const id = await seedClient(env);
     const c = new MongoClient(app.repl.getUri());
     await c.connect();
-    await c
-      .db(env.posDb)
-      .collection("staffs")
-      .insertOne({
-        name: "Boss",
-        username: "boss",
-        role: "admin",
-        password: "x",
-      });
+    await c.db(env.posDb).collection("staffs").insertOne({
+      name: "Boss",
+      username: "boss",
+      role: "admin",
+      password: "x",
+    });
     await c.close();
     await queue(env, id);
     await w.loop.drain();
@@ -1785,5 +1780,622 @@ describe("go-live: busy both ways, and the bootstrap verify", () => {
     assert.ok(isKnownCode("env-keys-missing"));
     assert.deepEqual(verifyView(verify).envKeysMissing, verify.envKeysMissing);
     assertNoSecrets(verify, BASE_SECRETS, "verify");
+  });
+});
+
+// ---- session 5 review fixes ----------------------------------------------------------------
+describe("go-live: session 5 review fixes", () => {
+  it("a new run never reuses an earlier run's bundle run (failed, or another commit)", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedClient(env, { realtime: true });
+    env.rt.state.tweak.fail = "Bundle";
+    await queue(env, id);
+    await w.loop.drain();
+    let g = await goliveOf(env, id);
+    assert.equal(g.status, "failed");
+    assert.equal(g.error.code, "realtime-bundle-failed");
+    assert.ok(g.realtime?.run?.runId, "the failed run is on record");
+    // A transient failure: the next Start (another commit) bundles afresh.
+    env.rt.state.tweak = {};
+    await queue(env, id, { sha: SHA2 });
+    assert.equal((await goliveOf(env, id)).realtime.run, null);
+    await w.loop.drain();
+    g = await goliveOf(env, id);
+    assert.equal(g.status, "waiting", JSON.stringify(g.error));
+    assert.equal(env.rt.state.dispatches.length, 2);
+    assert.equal(env.rt.state.dispatches[1].inputs.sha, SHA2);
+    assert.equal(g.realtime.sha, SHA2);
+  });
+
+  it("an unhealthy first deploy: Start again with a fixed commit reaches Unlock and deploy, then live", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedClient(env);
+    await toWaitingDeploy(env, w, id);
+    env.health.bad.add("dpl_1");
+    await unlockAndDeploy(env, id);
+    await w.loop.drain();
+    let g = await goliveOf(env, id);
+    assert.equal(g.status, "failed");
+    assert.equal(g.error.code, "health-failed");
+    await queue(env, id, { sha: SHA2 });
+    await w.loop.drain();
+    g = await goliveOf(env, id);
+    assert.equal(g.status, "waiting", JSON.stringify(g.error));
+    assert.equal(g.waitingFor, "deploy");
+    const row = await rowOf(env, id);
+    assert.equal(row.pos.verify.health, "first-unhealthy");
+    assert.equal(verifyStateOf(row.pos.verify, env.clock.t), "bootstrap");
+    await unlockAndDeploy(env, id);
+    await w.loop.drain();
+    g = await goliveOf(env, id);
+    assert.equal(g.status, "live", JSON.stringify(g.error));
+    assert.equal(env.uploads, 2);
+    assert.equal(vcalls(env, "POST", /^\/v11\/projects$/).length, 1);
+    await assertClean(env, id);
+  });
+
+  it("settings changed while waiting: Check DNS stops (golive-settings); running all steps again re-checks the admin login", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedClient(env);
+    await queue(env, id);
+    await w.loop.drain();
+    assert.equal((await goliveOf(env, id)).waitingFor, "dns");
+    assert.equal((await posAdmins(env)).length, 1);
+    // The owner fixes the database URI (a secret write bumps pos.rev); the
+    // new database has no admin login yet.
+    await env.db
+      .collection("installations")
+      .updateOne({ _id: id }, { $inc: { "pos.rev": 1 } });
+    env.posDb = `posclient${env.n}b`;
+    enterDns(env);
+    await queue(env, id, { action: "check" });
+    await w.loop.drain();
+    let g = await goliveOf(env, id);
+    assert.equal(g.status, "failed");
+    assert.deepEqual(
+      [g.error.step, g.error.code],
+      ["ready", "golive-settings"],
+    );
+    await queue(env, id);
+    await w.loop.drain();
+    g = await goliveOf(env, id);
+    assert.equal(g.status, "waiting", JSON.stringify(g.error));
+    assert.equal(g.waitingFor, "deploy");
+    assert.equal(
+      (await posAdmins(env)).length,
+      1,
+      "seeded in the new database",
+    );
+    assert.equal(g.env.rev, (await rowOf(env, id)).pos.rev);
+  });
+
+  it("a takeover after setup changed under a dead lease ends golive-stale; it waits while a task holds the client", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedClient(env);
+    await queue(env, id);
+    const dead = (rev) => ({
+      "pos.golive.rev": rev,
+      "pos.golive.status": "running",
+      "pos.golive.step": "check",
+      "pos.golive.attempt": 1,
+      "pos.golive.lease": {
+        owner: "w-dead",
+        until: new Date(env.clock.t - 1000),
+        fence: 1,
+      },
+    });
+    const rev = (await rowOf(env, id)).pos.rev;
+    await env.db
+      .collection("installations")
+      .updateOne({ _id: id }, { $set: dead(rev), $inc: { "pos.rev": 1 } });
+    await w.loop.drain();
+    let g = await goliveOf(env, id);
+    assert.equal(g.status, "failed");
+    assert.equal(g.error.code, "golive-stale");
+    assert.equal(vcalls(env, "POST", /^\/v11\/projects$/).length, 0);
+    // A task the API let start beside the dead run: no takeover meanwhile.
+    const id2 = await seedClient(env, { slug: "cafe2" });
+    await queue(env, id2);
+    const rev2 = (await rowOf(env, id2)).pos.rev;
+    await env.db.collection("installations").updateOne(
+      { _id: id2 },
+      {
+        $set: {
+          ...dead(rev2),
+          "pos.task": {
+            id: randomUUID(),
+            kind: "db-backup",
+            status: "running",
+            step: "dump",
+            lease: {
+              owner: "w-other",
+              until: new Date(env.clock.t + 600000),
+              fence: 1,
+            },
+            attempt: 1,
+            by: OWNER,
+            requestedAt: new Date(env.clock.t),
+          },
+        },
+      },
+    );
+    await w.loop.drain();
+    g = await goliveOf(env, id2);
+    assert.equal(g.status, "running");
+    assert.equal(g.lease.owner, "w-dead");
+    await env.db
+      .collection("installations")
+      .updateOne({ _id: id2 }, { $set: { "pos.task": null } });
+    await w.loop.drain();
+    g = await goliveOf(env, id2);
+    assert.equal(g.status, "waiting", JSON.stringify(g.error));
+  });
+
+  it("a re-Start accepts the generic Vercel CNAME its own dns step accepted", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedClient(env);
+    await queue(env, id);
+    await w.loop.drain();
+    env.dns.add(HOST, "CNAME", "cname.vercel-dns.com");
+    env.vercel.http.configure(HOST);
+    await queue(env, id, { action: "check" });
+    await w.loop.drain();
+    let g = await goliveOf(env, id);
+    assert.equal(g.waitingFor, "deploy", JSON.stringify(g.error));
+    await queue(env, id);
+    await w.loop.drain();
+    g = await goliveOf(env, id);
+    assert.equal(g.status, "waiting", JSON.stringify(g.error));
+    assert.equal(g.waitingFor, "deploy");
+  });
+
+  it("a Cancel asked during the step that ends in waiting is not lost", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedClient(env);
+    env.tls = async () => {
+      await env.db
+        .collection("installations")
+        .updateOne(
+          { _id: id },
+          { $set: { "pos.golive.cancelRequested": true } },
+        );
+      return { ok: false, status: 0, code: "cert-pending" };
+    };
+    await queue(env, id);
+    await w.loop.drain();
+    const g = await goliveOf(env, id);
+    assert.equal(g.status, "cancelled");
+    assert.equal(g.error.code, "golive-cancelled");
+    assert.equal(g.lease.owner, null);
+  });
+
+  it("Sync env never mints a new POS admin password once the login exists", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedClient(env);
+    await goLive(env, w, id);
+    await env.db
+      .collection("installations")
+      .updateOne({ _id: id }, { $set: { "pos.posAdmin.password": null } });
+    await queue(env, id, { action: "sync-env" });
+    await w.loop.drain();
+    const row = await rowOf(env, id);
+    assert.equal(
+      row.pos.golive.status,
+      "live",
+      JSON.stringify(row.pos.golive.error),
+    );
+    assert.equal(row.pos.posAdmin.password, null);
+  });
+
+  it("Verify of an imported client probes its health even without a reported production deployment", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedClient(env, { over: { importedAt: new Date() } });
+    const project = await env.vercel.createProject(LABEL);
+    await env.db.collection("installations").updateOne(
+      { _id: id },
+      {
+        $set: {
+          "pos.vercel.projectId": project.id,
+          "pos.vercel.orgId": project.accountId,
+          "pos.vercel.projectName": project.name,
+        },
+      },
+    );
+    const probes = env.health.calls.length;
+    await enqueueVerify(env, id);
+    await w.loop.drain();
+    const row = await rowOf(env, id);
+    assert.equal(
+      row.pos.task.status,
+      "succeeded",
+      JSON.stringify(row.pos.task.error),
+    );
+    assert.notEqual(row.pos.verify.health, "not-deployed");
+    assert.ok(env.health.calls.length > probes, "health probed");
+  });
+});
+
+describe("go-live: re-review fixes", () => {
+  it("a setup change during the first deploy: finish stops (golive-settings); Start again writes the env and needs a second deploy", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedClient(env);
+    await toWaitingDeploy(env, w, id);
+    await unlockAndDeploy(env, id);
+    // While the deploy builds, the owner replaces the database URI.
+    const NEW_URI = MONGO_URI.replace("/cafe", "/cafe2");
+    await env.db.collection("installations").updateOne(
+      { _id: id },
+      {
+        $set: {
+          "pos.mongo.uri": encrypt(NEW_URI, VAULT_KEY, aadOf(id, "mongo.uri")),
+        },
+        $inc: { "pos.rev": 1 },
+      },
+    );
+    await w.loop.drain();
+    let g = await goliveOf(env, id);
+    assert.equal(g.status, "failed");
+    assert.deepEqual(
+      [g.error.step, g.error.code],
+      ["finish", "golive-settings"],
+    );
+    assert.equal(g.liveAt, null);
+    const posts = envPosts(env).length;
+    await queue(env, id);
+    await w.loop.drain();
+    g = await goliveOf(env, id);
+    assert.equal(g.status, "waiting", JSON.stringify(g.error));
+    assert.equal(g.waitingFor, "deploy", "production still runs the old env");
+    assert.equal(envPosts(env).length, posts + 1);
+    await unlockAndDeploy(env, id);
+    await w.loop.drain();
+    g = await goliveOf(env, id);
+    assert.equal(g.status, "live", JSON.stringify(g.error));
+    assert.equal(env.uploads, 2);
+  });
+
+  it("a seeded login whose stored password changed is not read as somebody else's (admin-mismatch)", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedClient(env);
+    await queue(env, id);
+    await w.loop.drain();
+    assert.equal((await goliveOf(env, id)).admin.state, "seeded");
+    await env.db.collection("installations").updateOne(
+      { _id: id },
+      {
+        $set: {
+          "pos.posAdmin.password": encrypt(
+            "Another#Passw0rd",
+            VAULT_KEY,
+            aadOf(id, "posAdmin.password"),
+          ),
+          // As the API stores it with every secret write.
+          "pos.secretsChangedAt.posAdmin_password": new Date(
+            env.clock.t + 1000,
+          ),
+        },
+        $inc: { "pos.rev": 1 },
+      },
+    );
+    await queue(env, id);
+    await w.loop.drain();
+    const g = await goliveOf(env, id);
+    assert.equal(
+      g.status,
+      "failed",
+      JSON.stringify([g.steps.map((x) => [x.name, x.state, x.note]), g.admin]),
+    );
+    assert.deepEqual([g.error.step, g.error.code], ["admin", "admin-mismatch"]);
+    assert.equal(g.admin.state, "seeded", "not downgraded to exists");
+    assert.equal((await posAdmins(env)).length, 1);
+  });
+});
+
+describe("go-live: re-review round 2 fixes", () => {
+  it("a second deploy that fails and rolls back does not lock the go-live out (no project-live)", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedClient(env);
+    // Deploy #1 is healthy, but the finish verify fails (the database refuses).
+    env.mongoPing = async () =>
+      env.vercel.state.production ? "auth-failed" : "ok";
+    await toWaitingDeploy(env, w, id);
+    await unlockAndDeploy(env, id);
+    await w.loop.drain();
+    let g = await goliveOf(env, id);
+    assert.deepEqual([g.error.step, g.error.code], ["finish", "auth-failed"]);
+    // The owner fixes the database URI; Start again writes the env.
+    env.clock.t += 60000;
+    env.mongoPing = async () => "ok";
+    await env.db.collection("installations").updateOne(
+      { _id: id },
+      {
+        $set: {
+          "pos.mongo.uri": encrypt(
+            MONGO_URI.replace("/cafe", "/cafe2"),
+            VAULT_KEY,
+            aadOf(id, "mongo.uri"),
+          ),
+          "pos.secretsChangedAt.mongo_uri": new Date(env.clock.t),
+        },
+        $inc: { "pos.rev": 1 },
+      },
+    );
+    await queue(env, id);
+    await w.loop.drain();
+    g = await goliveOf(env, id);
+    assert.equal(g.waitingFor, "deploy", JSON.stringify(g.error));
+    // Deploy #2 fails its health check and is rolled back to #1.
+    env.health.bad.add("dpl_2");
+    env.clock.t += 60000;
+    await unlockAndDeploy(env, id);
+    await w.loop.drain();
+    const row = await rowOf(env, id);
+    assert.equal(row.pos.deploy.current.status, "rolled-back");
+    g = row.pos.golive;
+    assert.equal(g.status, "failed");
+    // Start again: production is still the go-live's own deploy #1, which
+    // runs the old env, so it waits for another deploy (never project-live).
+    await queue(env, id);
+    await w.loop.drain();
+    g = await goliveOf(env, id);
+    assert.equal(g.status, "waiting", JSON.stringify(g.error));
+    assert.equal(g.waitingFor, "deploy");
+    await unlockAndDeploy(env, id);
+    await w.loop.drain();
+    g = await goliveOf(env, id);
+    assert.equal(g.status, "live", JSON.stringify(g.error));
+  });
+
+  it("a login the client re-passworded in the POS stays ours; a new database with an admin only warns", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedClient(env);
+    await queue(env, id);
+    await w.loop.drain();
+    assert.equal((await goliveOf(env, id)).admin.state, "seeded");
+    // The client changes the password in the POS; the owner saves an
+    // unrelated setting (pos.rev moves).
+    const c = new MongoClient(app.repl.getUri());
+    await c.connect();
+    try {
+      await c
+        .db(env.posDb)
+        .collection("staffs")
+        .updateOne(
+          { role: "admin" },
+          { $set: { password: await bcrypt.hash("Client#Changed1", 4) } },
+        );
+    } finally {
+      await c.close();
+    }
+    await env.db
+      .collection("installations")
+      .updateOne({ _id: id }, { $inc: { "pos.rev": 1 } });
+    await queue(env, id);
+    await w.loop.drain();
+    let g = await goliveOf(env, id);
+    assert.equal(g.status, "waiting", JSON.stringify(g.error));
+    assert.equal(g.admin.state, "seeded");
+    assert.deepEqual(g.warnings.includes("admin-exists"), false);
+    // The owner points the URI at another database that has its own admin.
+    env.clock.t += 60000;
+    env.posDb = `posclient${env.n}c`;
+    await seedPosAdmin({
+      uri: MONGO_URI,
+      username: "theirs",
+      password: "Their#Passw0rd1",
+      open: () => openPosDb(env),
+    });
+    await env.db.collection("installations").updateOne(
+      { _id: id },
+      {
+        $set: { "pos.secretsChangedAt.mongo_uri": new Date(env.clock.t) },
+        $inc: { "pos.rev": 1 },
+      },
+    );
+    await queue(env, id);
+    await w.loop.drain();
+    g = await goliveOf(env, id);
+    assert.equal(g.status, "waiting", JSON.stringify(g.error));
+    assert.equal(g.admin.state, "exists");
+    assert.ok(g.warnings.includes("admin-exists"));
+  });
+});
+
+describe("go-live: re-review round 3 fixes", () => {
+  it("a project id changed by hand to a live project is refused (project-live), even after the go-live's own deploy", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedClient(env);
+    await toWaitingDeploy(env, w, id);
+    env.health.bad.add("dpl_1");
+    await unlockAndDeploy(env, id);
+    await w.loop.drain();
+    assert.equal((await goliveOf(env, id)).status, "failed");
+    const theirs = env.vercel.http.addProject({
+      name: "theirs",
+      production: true,
+    });
+    // The project the hand-entered id names serves its own production.
+    const real = env.vercel.project;
+    env.vercel.project = async (pid, options) =>
+      pid === theirs
+        ? {
+            id: theirs,
+            name: "theirs",
+            accountId: "team_theirs",
+            nodeVersion: "22.x",
+            sourceFilesOutsideRootDirectory: true,
+            productionDeploymentId: "dpl_theirs",
+            lastAliasRequest: null,
+          }
+        : real(pid, options);
+    await env.db
+      .collection("installations")
+      .updateOne(
+        { _id: id },
+        { $set: { "pos.vercel.projectId": theirs }, $inc: { "pos.rev": 1 } },
+      );
+    const posts = envPosts(env).length;
+    await queue(env, id);
+    await w.loop.drain();
+    const g = await goliveOf(env, id);
+    assert.equal(g.status, "failed");
+    assert.deepEqual([g.error.step, g.error.code], ["project", "project-live"]);
+    assert.equal(g.projectId, "prj_new1");
+    assert.equal(
+      envPosts(env).length,
+      posts,
+      "nothing written to their project",
+    );
+  });
+
+  it("after a rollback to an older version, a re-run deploys again before going live", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedClient(env);
+    env.mongoPing = async () =>
+      env.vercel.state.production ? "auth-failed" : "ok";
+    await toWaitingDeploy(env, w, id);
+    await unlockAndDeploy(env, id);
+    await w.loop.drain();
+    assert.equal((await goliveOf(env, id)).error.code, "auth-failed");
+    // What a Deploy-tab rollback leaves: the older version, stamped now.
+    env.clock.t += 60000;
+    await env.db.collection("installations").updateOne(
+      { _id: id },
+      {
+        $set: {
+          "pos.deploy.last.status": "rolled-back-to",
+          "pos.deploy.last.at": new Date(env.clock.t),
+        },
+      },
+    );
+    env.mongoPing = async () => "ok";
+    await queue(env, id);
+    await w.loop.drain();
+    const g = await goliveOf(env, id);
+    assert.equal(g.status, "waiting", JSON.stringify(g.error));
+    assert.equal(g.waitingFor, "deploy");
+  });
+
+  it("re-saving the same POS admin password is no change; the client's own new password keeps the login ours", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedClient(env);
+    await queue(env, id);
+    await w.loop.drain();
+    const row = await rowOf(env, id);
+    assert.equal(row.pos.golive.admin.state, "seeded");
+    const same = decrypt(
+      row.pos.posAdmin.password,
+      VAULT_KEY,
+      aadOf(id, "posAdmin.password"),
+    );
+    const c = new MongoClient(app.repl.getUri());
+    await c.connect();
+    try {
+      await c
+        .db(env.posDb)
+        .collection("staffs")
+        .updateOne(
+          { role: "admin" },
+          { $set: { password: await bcrypt.hash("Client#Changed1", 4) } },
+        );
+    } finally {
+      await c.close();
+    }
+    env.clock.t += 60000;
+    await env.db.collection("installations").updateOne(
+      { _id: id },
+      {
+        $set: {
+          "pos.posAdmin.password": encrypt(
+            same,
+            VAULT_KEY,
+            aadOf(id, "posAdmin.password"),
+          ),
+          "pos.secretsChangedAt.posAdmin_password": new Date(env.clock.t),
+        },
+        $inc: { "pos.rev": 1 },
+      },
+    );
+    await queue(env, id);
+    await w.loop.drain();
+    const g = await goliveOf(env, id);
+    assert.equal(g.status, "waiting", JSON.stringify(g.error));
+    assert.equal(g.admin.state, "seeded");
+    assert.equal(
+      (await audits(env, "pos.golive.admin-seeded")).length,
+      1,
+      "no second seed audit",
+    );
+  });
+});
+
+describe("go-live: re-review round 4 fixes", () => {
+  it("a stale lastAliasRequest does not make the go-live's own project read as an existing client", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedClient(env);
+    env.mongoPing = async () =>
+      env.vercel.state.production ? "auth-failed" : "ok";
+    await toWaitingDeploy(env, w, id);
+    await unlockAndDeploy(env, id);
+    await w.loop.drain();
+    assert.equal((await goliveOf(env, id)).error.code, "auth-failed");
+    // After a plain promote Vercel may still report an older alias request.
+    env.vercel.state.lastAlias = {
+      toDeploymentId: "dpl_older",
+      jobStatus: "succeeded",
+    };
+    env.mongoPing = async () => "ok";
+    await queue(env, id);
+    await w.loop.drain();
+    const g = await goliveOf(env, id);
+    assert.equal(g.status, "live", JSON.stringify(g.error));
+    assert.equal(env.uploads, 1, "no second deploy");
+  });
+
+  it("a login the client re-passworded in the POS is marked, so the page drops the hand-over", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedClient(env);
+    await queue(env, id);
+    await w.loop.drain();
+    assert.equal(goliveView(await goliveOf(env, id)).admin.changedInPos, false);
+    const c = new MongoClient(app.repl.getUri());
+    await c.connect();
+    try {
+      await c
+        .db(env.posDb)
+        .collection("staffs")
+        .updateOne(
+          { role: "admin" },
+          { $set: { password: await bcrypt.hash("Client#Changed1", 4) } },
+        );
+    } finally {
+      await c.close();
+    }
+    await env.db
+      .collection("installations")
+      .updateOne({ _id: id }, { $inc: { "pos.rev": 1 } });
+    await queue(env, id);
+    await w.loop.drain();
+    const g = await goliveOf(env, id);
+    assert.equal(g.admin.state, "seeded");
+    assert.equal(goliveView(g).admin.changedInPos, true);
+    assert.equal("pwFp" in goliveView(g).admin, false);
   });
 });

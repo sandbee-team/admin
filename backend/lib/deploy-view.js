@@ -442,13 +442,15 @@ export function goliveView(golive, now = Date.now(), workerAt) {
       ? {
           state: oneOf(["seeded", "exists"], golive.admin.state),
           at: date(golive.admin.at),
+          changedInPos: golive.admin.changedInPos === true,
         }
       : null,
     deployRequestId: clean(golive.deployRequestId, 64),
     liveAt: date(golive.liveAt),
   };
 }
-// What the POS settings view and the fleet need to know (tab, badge).
+// What the POS settings view and the fleet need to know (tab, badge). `live`:
+// the client went live once (a later Sync env run is not "going live").
 export const goliveBadge = (golive) =>
   golive
     ? {
@@ -457,6 +459,7 @@ export const goliveBadge = (golive) =>
           golive.status === "waiting"
             ? oneOf(WAITING_FOR, golive.waitingFor)
             : null,
+        live: Boolean(date(golive.liveAt)),
       }
     : null;
 

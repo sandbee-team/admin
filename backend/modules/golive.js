@@ -17,10 +17,12 @@ import {
   verifyStateOf,
 } from "../../shared/deploy.js";
 import {
+  DRIFT_MESSAGES,
   GOLIVE_RATE,
   goliveActionProblem,
   goliveBlockedFor,
   goliveBlocks,
+  goliveDriftOf,
   goliveReadinessOf,
 } from "../../shared/golive.js";
 import {
@@ -73,16 +75,13 @@ const gateGolive = (view, action) => {
   const items = goliveBlockedFor(view, action);
   if (items.length) throw notReadyError(items);
 };
-// A run that follows the go-live's address needs the block to still name it.
-const sameAddress = (pos) =>
-  Boolean(pos.golive?.address?.label) &&
-  pos.subdomain === pos.golive.address.label &&
-  pos.host === pos.golive.address.host;
-const addressChanged = () =>
-  conflict(
-    "golive-address",
-    "The web address changed since the go-live started. Press Start again.",
-  );
+// A run that follows the go-live needs POS setup to still name its address,
+// tenant and project (and, per action, the env and Worker it wrote):
+// 409 golive-address | golive-settings | golive-realtime (shared/golive.js).
+const checkDrift = (pos, action) => {
+  const code = goliveDriftOf(pos, action);
+  if (code) throw conflict(code, DRIFT_MESSAGES[code]);
+};
 // Deploy job and task slots free, and no go-live run still holding the block.
 const allFree = (now, workerAt) => ({
   $and: [
@@ -150,6 +149,19 @@ export function goliveRoutes(deps) {
         ? blockedFor(unlockedView(facts), "deploy")
         : [];
       const label = pos.subdomain || "";
+      const busy = Boolean(busyOf(pos, now, workerAt));
+      const drift = Object.fromEntries(
+        ["check", "deploy", "sync-env", "realtime"].map((a) => [
+          a,
+          goliveDriftOf(pos, a),
+        ]),
+      );
+      // What the POST routes would accept now (state, gates, drift, busy).
+      const runs = (action) =>
+        can(action) &&
+        !busy &&
+        !drift[action] &&
+        goliveBlockedFor(readiness, action).length === 0;
       res.json({
         rev: pos.rev,
         slug: pos.slug,
@@ -161,20 +173,20 @@ export function goliveRoutes(deps) {
           problem: label ? labelProblem(label) : null,
         },
         allowed: {
-          start:
-            can("start") && goliveBlockedFor(readiness, "start").length === 0,
-          check: can("check"),
-          "sync-env":
-            can("sync-env") &&
-            goliveBlockedFor(readiness, "sync-env").length === 0,
-          realtime:
-            can("realtime") &&
-            goliveBlockedFor(readiness, "realtime").length === 0,
-          deploy: can("deploy") && deployBlocked.length === 0,
+          start: runs("start"),
+          check: runs("check"),
+          "sync-env": runs("sync-env"),
+          realtime: runs("realtime"),
+          deploy:
+            can("deploy") &&
+            !busy &&
+            !drift.deploy &&
+            deployBlocked.length === 0,
           cancel: can("cancel"),
         },
         deployBlocked,
-        busy: Boolean(busyOf(pos, now, workerAt)),
+        drift,
+        busy,
         worker: workerView(facts.worker, now),
         freeze: freezeView(facts.freeze),
         verifyState: verifyStateOf(pos.verify, now),
@@ -202,8 +214,8 @@ export function goliveRoutes(deps) {
       gateGolive(goliveReadinessOf(early.ctx), action);
       const busy = busyOf(row.pos, Date.now(), workerAt);
       if (busy) throw busyError(busy);
-      // Sync env and a Worker update write the go-live's own address.
-      if (action !== "start" && !sameAddress(row.pos)) throw addressChanged();
+      // Sync env and a Worker update write the go-live's own address/project.
+      checkDrift(row.pos, action);
       // Never accept an arbitrary commit: it must be on the branch right now.
       if (input.sha) await verifySha(input.branch, input.sha);
       let next;
@@ -243,7 +255,7 @@ export function goliveRoutes(deps) {
               set["pos.verify"] = null;
               bump = true;
             }
-          } else if (!sameAddress(pos)) throw addressChanged();
+          } else checkDrift(pos, action);
           const golive = newGolive({
             action,
             branch: input.branch,
@@ -253,6 +265,7 @@ export function goliveRoutes(deps) {
             prior: pos.golive ?? null,
             label,
             host,
+            rev: input.rev + (bump ? 1 : 0),
           });
           set["pos.golive"] = golive;
           const done = await installations.updateOne(
@@ -301,7 +314,7 @@ export function goliveRoutes(deps) {
       const early = await factsOf(row, req.staff);
       refuse(row.pos.golive, "check", Date.now(), early.worker?.at ?? null);
       checkRev(row.pos, input.rev);
-      if (!sameAddress(row.pos)) throw addressChanged();
+      checkDrift(row.pos, "check");
       gateGolive(goliveReadinessOf(early.ctx), "check");
       const next = await transaction(client, async (session) => {
         await authorizeWrite(db, session, req.staff, "credentials");
@@ -312,7 +325,7 @@ export function goliveRoutes(deps) {
         const wAt = facts.worker?.at ?? null;
         refuse(pos.golive, "check", now, wAt);
         checkRev(pos, input.rev);
-        if (!sameAddress(pos)) throw addressChanged();
+        checkDrift(pos, "check");
         gateGolive(goliveReadinessOf(facts.ctx), "check");
         const golive = newGolive({
           action: "check",
@@ -321,6 +334,7 @@ export function goliveRoutes(deps) {
           prior: pos.golive,
           label: pos.golive.address.label,
           host: pos.golive.address.host,
+          rev: input.rev,
         });
         const done = await installations.updateOne(
           {
@@ -365,7 +379,7 @@ export function goliveRoutes(deps) {
       const early = await factsOf(row, req.staff);
       const workerAt = early.worker?.at ?? null;
       refuse(row.pos.golive, "deploy", Date.now(), workerAt);
-      if (!sameAddress(row.pos)) throw addressChanged();
+      checkDrift(row.pos, "deploy");
       gate(unlockedView(early), "deploy");
       if (jobBlocks(row.pos.deploy?.current, Date.now(), workerAt))
         throw busyError("A deploy is already running for this installation.");
@@ -397,7 +411,7 @@ export function goliveRoutes(deps) {
           409,
           "Reload and try again.",
         );
-        if (!sameAddress(pos)) throw addressChanged();
+        checkDrift(pos, "deploy");
         gate(unlockedView(facts), "deploy");
         const job = newJob({
           kind: "deploy",
