@@ -202,6 +202,106 @@ const SECRETS = [
   ["generated.realtimePublishSecret", "Realtime publish secret"],
   ["posAdmin.password", "POS admin password"],
 ];
+// Where each secret comes from (shown under its row and in its Set box).
+const SECRET_HELP = {
+  "vercel.token":
+    "Vercel → Account Settings → Tokens → Create. Scope: the team or account that owns the client's project.",
+  "mongo.uri":
+    "A live client: MONGODB_URI from Vercel → Project → Settings → Environment Variables (or Atlas → Connect → Drivers). A new client: a new, empty database. It must end with /<database>.",
+  "cloudflare.token":
+    "Cloudflare → My Profile → API Tokens → Create, for the client's account only. A live client: Account Analytics Read. Realtime from Go live: also Workers Scripts Edit and Account Settings Read.",
+  "image.keys":
+    "A new client with an image store: its API keys (R2 or Cloudinary). A live client: leave empty.",
+  "generated.authSecret":
+    "Leave empty: Go live creates it. A live client does not need it.",
+  "generated.healthStatsToken":
+    "A live client: HEALTH_STATS_TOKEN from the Vercel environment variables, if it exists. Set the Host first. Go live creates it for a new client.",
+  "generated.realtimePublishSecret":
+    "Leave empty: Go live creates it. A live client does not need it.",
+  "posAdmin.password":
+    "A new client: leave empty, Go live creates the login and you reveal the password once to hand it over. A live client: optional, stored only.",
+};
+// Setup guide (the owner's ask, 2026-10-31): the order of the steps and where
+// every value comes from, for a client already live on Vercel (moved from the
+// local console) and for a new client (Go live tab).
+function PosGuide({ defaultOpen }) {
+  const [open] = useState(defaultOpen);
+  return (
+    <details className="panel pos-guide" open={open}>
+      <summary>
+        <span className="pos-guide-title">Setup guide</span>
+        <span className="small subtle">
+          What to fill in, where each value comes from, and in which order.
+        </span>
+      </summary>
+      <div className="pos-guide-body">
+        <section aria-labelledby="guide-live-title">
+          <h2 id="guide-live-title">A client already live on Vercel</h2>
+          <ol>
+            <li>
+              Fill in the fields below: each one says where its value comes from
+              (the client’s Vercel project: Settings → General and Settings →
+              Environment Variables). Then save.
+            </li>
+            <li>
+              Secrets: Vercel token and MongoDB connection string; the Health
+              stats token if the Vercel env has HEALTH_STATS_TOKEN; the
+              Cloudflare token if the client uses a Worker. Leave the rest
+              empty.
+            </li>
+            <li>
+              Deploy tab → Verify now. Every check must be ok; fix here what it
+              reports.
+            </li>
+            <li>
+              Vercel → Project → Settings → Functions → Function Region: Mumbai
+              (bom1). Admin’s builds carry no region, so without it the
+              functions run in the USA.
+            </li>
+            <li>
+              Stop the local console for this client (deployLock in its client
+              file, or remove its profile), so only admin uploads from now on.
+            </li>
+            <li>
+              Deploy tab → Unlock (slug and authenticator) → deploy a branch.
+              Everything on that branch goes live; a failed health check rolls
+              back by itself.
+            </li>
+            <li>Usage tab → Watch.</li>
+          </ol>
+        </section>
+        <section aria-labelledby="guide-new-title">
+          <h2 id="guide-new-title">A new client</h2>
+          <ol>
+            <li>
+              Slug, Subdomain (the web address label: label.sandbee.in) and POS
+              admin username. Leave Host, Root domain, Tenant ID and Vercel
+              project ID empty: Go live fills them. Vercel org ID: the team’s ID
+              (team_…) for a team account, else empty.
+            </li>
+            <li>
+              Image store if the client uses one; for realtime, tick Cloudflare
+              and add the account ID. Then save.
+            </li>
+            <li>
+              Secrets: Vercel token, MongoDB connection string, Image store keys
+              (with a store), Cloudflare token (for realtime). Leave the other
+              four empty: admin creates them.
+            </li>
+            <li>
+              Go live tab → Start → enter the DNS record it shows at GoDaddy →
+              Check DNS → Unlock and deploy.
+            </li>
+          </ol>
+        </section>
+        <p className="form-note">
+          Copy every secret from its source straight into its Set box; never
+          into notes or chat.
+        </p>
+      </div>
+    </details>
+  );
+}
 const STALE = "POS settings changed. They were reloaded: review and try again.";
 function PosSetup({ installation, user }) {
   const resource = useResource(`/installations/${installation._id}/pos`),
@@ -287,6 +387,12 @@ function PosBody({ installationId, initial, user, onStale, onFresh, reload }) {
     );
   return (
     <>
+      <PosGuide
+        defaultOpen={
+          !pos?.secrets?.["vercel.token"]?.set ||
+          !pos?.secrets?.["mongo.uri"]?.set
+        }
+      />
       <PosForm
         base={base}
         installationId={installationId}
@@ -369,6 +475,7 @@ function PosBody({ installationId, initial, user, onStale, onFresh, reload }) {
                       )}
                     </div>
                   </div>
+                  <p className="secret-help">{SECRET_HELP[field]}</p>
                 </li>
               );
             })}
@@ -526,22 +633,41 @@ function PosForm({ base, installationId, pos, writable, onSaved, onStale }) {
         <div className="form-section" id="host">
           <h2>Where it lives</h2>
           <div className="form-grid">
-            <Field label="Slug" hint="Lowercase letters, digits and hyphens.">
+            <Field
+              label="Slug"
+              hint="Lowercase letters, digits and hyphens. Your short name for this client; you type it to confirm deploys."
+            >
               <input required maxLength={52} {...top("slug")} />
             </Field>
-            <Field label="Subdomain" hint="One DNS label, e.g. shop.">
+            <Field
+              label="Subdomain"
+              hint="One DNS label, e.g. shop. A new client: its web address label (label.sandbee.in). A live client: the first part of its host."
+            >
               <input maxLength={63} {...top("subdomain")} />
             </Field>
-            <Field label="Host">
+            <Field
+              label="Host"
+              hint="A live client: the address that opens its POS directly, without https:// (e.g. name.vercel.app or its own domain). A new client: leave empty, Go live fills it."
+            >
               <input maxLength={253} {...top("host")} />
             </Field>
-            <Field label="Root domain">
+            <Field
+              label="Root domain"
+              hint="A live client: the ROOT_DOMAIN value in Vercel → Project → Settings → Environment Variables, exactly. A new client: leave empty."
+            >
               <input maxLength={253} {...top("rootDomain")} />
             </Field>
-            <Field label="Tenant ID">
+            <Field
+              label="Tenant ID"
+              hint="A live client: the TENANT_ID value in the Vercel environment variables, exactly (its /api/health shows it as tenant). A new client: leave empty."
+            >
               <input maxLength={64} {...top("tenantId")} />
             </Field>
-            <Field label="POS admin username" id="admin">
+            <Field
+              label="POS admin username"
+              id="admin"
+              hint="A new client: the POS login Go live creates (e.g. admin). A live client: optional, stored only."
+            >
               <input maxLength={32} {...nested("posAdmin", "username")} />
             </Field>
           </div>
@@ -568,16 +694,28 @@ function PosForm({ base, installationId, pos, writable, onSaved, onStale }) {
         <div className="form-section" id="vercel">
           <h2>Vercel</h2>
           <div className="form-grid">
-            <Field label="Vercel project name">
+            <Field
+              label="Vercel project name"
+              hint="The project’s name in Vercel. A live client: for your reference only. A new client: the name Go live gives the project (empty = the slug)."
+            >
               <input maxLength={52} {...nested("vercel", "projectName")} />
             </Field>
-            <Field label="Vercel project ID">
+            <Field
+              label="Vercel project ID"
+              hint="A live client: Vercel → Project → Settings → General → Project ID (prj_…). A new client: leave empty, Go live fills it."
+            >
               <input maxLength={64} {...nested("vercel", "projectId")} />
             </Field>
-            <Field label="Vercel org ID">
+            <Field
+              label="Vercel org ID"
+              hint="Team account: Team Settings → General → Team ID (team_…). Personal account: Account Settings → General → Vercel ID. A new client on a personal account: leave empty."
+            >
               <input maxLength={64} {...nested("vercel", "orgId")} />
             </Field>
-            <Field label="Vercel team ID">
+            <Field
+              label="Vercel team ID"
+              hint="Leave empty: admin uses a team_… org ID by itself."
+            >
               <input maxLength={64} {...nested("vercel", "teamId")} />
             </Field>
           </div>
@@ -598,15 +736,29 @@ function PosForm({ base, installationId, pos, writable, onSaved, onStale }) {
             />
             This POS uses a Cloudflare Worker
           </label>
+          <p className="form-note">
+            Realtime. A live client: tick it only when its Vercel environment
+            variables have NEXT_PUBLIC_REALTIME_URL. A new client: tick it for
+            realtime (Go live uploads the Worker).
+          </p>
           {value.cloudflareOn && (
             <div className="form-grid">
-              <Field label="Cloudflare account ID">
+              <Field
+                label="Cloudflare account ID"
+                hint="Cloudflare dashboard → the client’s account → Account ID (32 characters, also in the address bar)."
+              >
                 <input maxLength={64} {...nested("cloudflare", "accountId")} />
               </Field>
-              <Field label="Worker name">
+              <Field
+                label="Worker name"
+                hint="A live client: the Worker’s name in Cloudflare → Workers & Pages. A new client: leave empty, Go live names it."
+              >
                 <input maxLength={52} {...nested("cloudflare", "workerName")} />
               </Field>
-              <Field label="Worker URL" hint="HTTPS only.">
+              <Field
+                label="Worker URL"
+                hint="HTTPS only. A live client: https:// and the host of NEXT_PUBLIC_REALTIME_URL (without /join), exactly: every build uses it. A new client: leave empty."
+              >
                 <input
                   type="url"
                   maxLength={500}
@@ -618,7 +770,10 @@ function PosForm({ base, installationId, pos, writable, onSaved, onStale }) {
         </div>
         <div className="form-section" id="image">
           <h2>Image store</h2>
-          <Field label="Image store">
+          <Field
+            label="Image store"
+            hint="A live client: Cloudflare R2 if its Vercel environment variables have NEXT_PUBLIC_R2_PUBLIC_BASE_URL, Cloudinary if NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME, else None. Every build uses it, so it must match."
+          >
             <Select
               value={store}
               onChange={(event) => {
@@ -637,23 +792,29 @@ function PosForm({ base, installationId, pos, writable, onSaved, onStale }) {
           </Field>
           {store === "r2" && (
             <div className="form-grid">
-              <Field label="Public base URL" hint="HTTPS only.">
+              <Field
+                label="Public base URL"
+                hint="HTTPS only. A live client: NEXT_PUBLIC_R2_PUBLIC_BASE_URL, exactly. Else Cloudflare → R2 → the bucket → Settings → Public access."
+              >
                 <input
                   type="url"
                   maxLength={500}
                   {...nested("image", "publicBaseUrl")}
                 />
               </Field>
-              <Field label="R2 account ID">
+              <Field label="R2 account ID" hint="Cloudflare → R2 → Account ID.">
                 <input maxLength={64} {...nested("image", "r2AccountId")} />
               </Field>
-              <Field label="Bucket">
+              <Field label="Bucket" hint="Cloudflare → R2 → the bucket’s name.">
                 <input maxLength={63} {...nested("image", "bucket")} />
               </Field>
             </div>
           )}
           {store === "cloudinary" && (
-            <Field label="Cloud name">
+            <Field
+              label="Cloud name"
+              hint="A live client: NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME, exactly. Else Cloudinary dashboard → Cloud name."
+            >
               <input maxLength={64} {...nested("image", "cloudName")} />
             </Field>
           )}
@@ -710,7 +871,7 @@ function PosSecretModal({ base, pos, field, name, onClose, onSaved, onStale }) {
           hint={
             json
               ? 'JSON: {"accessKeyId": "…", "secretAccessKey": "…"} for R2, or {"apiKey": "…", "apiSecret": "…"} for Cloudinary.'
-              : undefined
+              : SECRET_HELP[field]
           }
         >
           {json ? (

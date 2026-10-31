@@ -324,7 +324,16 @@ test("owner keeps accounts, files and POS setup; secrets show only briefly", asy
   ).toBeVisible();
   await expect(page.getByText("Deploys — coming in Stage 2")).toHaveCount(0);
   await expect(page.getByLabel("Deploy lock on")).toHaveCount(0);
+  // The setup guide: open until the Vercel token and the database URI are
+  // set; every field and secret says where its value comes from.
+  const guide = page.locator("details.pos-guide");
+  await expect(guide).toHaveAttribute("open", "");
+  for (const name of ["A client already live on Vercel", "A new client"])
+    await expect(guide.getByRole("heading", { name })).toBeVisible();
   const form = page.getByRole("form", { name: "POS configuration" });
+  await expect(
+    form.getByLabel("Vercel project ID"),
+  ).toHaveAccessibleDescription(/Settings → General → Project ID/);
   await form.getByLabel("Slug", { exact: true }).fill("record-pos");
   await form.getByLabel("Subdomain", { exact: true }).fill("recordpos");
   await form.getByLabel("Host", { exact: true }).fill("recordpos.example.test");
@@ -340,6 +349,9 @@ test("owner keeps accounts, files and POS setup; secrets show only briefly", asy
     .getByRole("button", { name: "Save POS settings", exact: true })
     .click();
   await expect(page.getByText("Revision 2")).toBeVisible();
+  await expect(page.locator("#secrets")).toContainText(
+    "Vercel → Account Settings → Tokens → Create",
+  );
   await page
     .getByRole("button", { name: "Set Vercel token", exact: true })
     .click();

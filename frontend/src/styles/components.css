@@ -346,6 +346,58 @@
 .pos-form {
   margin-bottom: var(--space-5);
 }
+.pos-guide {
+  margin-bottom: var(--space-5);
+}
+.pos-guide > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+  padding: 18px 23px;
+  cursor: pointer;
+}
+.pos-guide-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.pos-guide-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-5);
+  padding: 4px 23px 22px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.pos-guide-body h2 {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: 13px;
+}
+.pos-guide-body ol {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 6px;
+}
+.pos-guide-body .form-note {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.secret-help {
+  width: 100%;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 760px) {
+  .pos-guide-body {
+    grid-template-columns: 1fr;
+  }
+}
 .pos-form fieldset {
   border: 0;
   padding: 0;
