@@ -446,3 +446,83 @@ test("go-live: failure, blocked readiness, cancel and env keys missing", async (
   ).toHaveCount(0);
   expect((await axe(page)).violations, "deploy tab accessibility").toEqual([]);
 });
+
+test("POS setup of a new client: four steps, provider links, skip never blocks, realtime, Go live", async ({
+  page,
+}) => {
+  test.setTimeout(120000);
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await control("worker?state=online");
+  await control("reset?scenario=glstart");
+  await ownerIn(page, "c");
+  await page.goto(url("glstart", "pos"));
+  const steps = page.getByRole("region", { name: "Set up this client" });
+  await expect(steps).toContainText("3/3 done");
+  await expect(
+    steps.getByRole("button", { name: /^Web address/ }),
+  ).toContainText("ui-gl-start.sandbee.in");
+  // Every field stays under "All settings", closed.
+  await expect(page.locator("details.all-settings")).not.toHaveAttribute(
+    "open",
+    "",
+  );
+  // Each step opens the provider page in a new tab; Next moves on.
+  await steps.getByRole("button", { name: /^Vercel/ }).click();
+  const vercel = steps.getByRole("link", { name: "Open Vercel" });
+  await expect(vercel).toHaveAttribute(
+    "href",
+    "https://vercel.com/account/settings/tokens",
+  );
+  await expect(vercel).toHaveAttribute("target", "_blank");
+  await expect(steps.getByRole("button", { name: "Check" })).toBeVisible();
+  await steps.getByRole("button", { name: "Next" }).click();
+  await expect(steps.getByRole("link", { name: "Open Atlas" })).toBeVisible();
+  await steps.getByRole("button", { name: "Next" }).click();
+  // Realtime is optional: Paste token turns Cloudflare on first, Skip never
+  // blocks.
+  const realtime = steps.getByRole("button", { name: /^Realtime/ });
+  await expect(realtime).toContainText("Optional");
+  await expect(
+    steps.getByRole("link", { name: "Open Cloudflare" }),
+  ).toHaveAttribute("href", "https://dash.cloudflare.com/profile/api-tokens");
+  await steps.getByRole("button", { name: "Paste token" }).click();
+  const dialog = modalOf(page);
+  await expect(dialog).toContainText("Set cloudflare token");
+  await dialog.getByRole("button", { name: "Close dialog" }).click();
+  await page.locator("details.all-settings > summary").click();
+  await expect(
+    page.getByRole("checkbox", { name: "This POS uses a Cloudflare Worker" }),
+  ).toBeChecked();
+  await steps.getByRole("button", { name: "Skip" }).click();
+  await expect(realtime).toContainText("Skipped");
+  // An open step at phone and desktop width.
+  await steps.getByRole("button", { name: /^Vercel/ }).click();
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect((await axe(page)).violations, `steps at ${width}`).toEqual([]);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+      `no sideways scroll at ${width}`,
+    ).toBe(true);
+  }
+  // Unsaved edits in All settings hold a step save back; typing the old
+  // value back clears them, and the save remounts the form without a crash.
+  const project = page
+    .getByRole("form", { name: "POS configuration" })
+    .getByLabel("Vercel project name");
+  await project.fill("edited-name");
+  await steps.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(steps).toContainText("Save your changes in All settings first");
+  await project.fill("");
+  await steps.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(steps).not.toContainText("Save your changes in All settings");
+  await expect(page.getByText("This view could not be loaded")).toHaveCount(0);
+  await steps.getByRole("link", { name: "Go live" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Go live", level: 1 }),
+  ).toBeVisible();
+  expect(errors).toEqual([]);
+});

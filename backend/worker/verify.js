@@ -226,6 +226,27 @@ export async function healthFlag(ctx, target, signal) {
 // deploy was healthy once and a later env fix broke it).
 const firstUnhealthy = (pos) =>
   !pos?.golive?.liveAt && goliveOwnsProduction(pos);
+// A new client on its way to Go live: no admin deploy, not imported, and no
+// project of its own yet (or one its go-live is still setting up).
+const goliveCandidate = (pos) =>
+  !pos.deploy?.last &&
+  !pos.importedAt &&
+  (!pos.vercel?.projectId || Boolean(pos.golive && !pos.golive.liveAt));
+// Its Cloudflare token must do what Start needs: reach the account with an
+// account call (a token can verify active and reach none, spike S2) and,
+// without a stored account id, see exactly one account (D55). The POS setup
+// Check shows this before Start instead of a failed check step.
+async function cloudflareAccess(ctx, token, accountId, signal) {
+  const access = await ctx
+    .cloudflareFor(token)
+    .tokenAccess(accountId, { signal });
+  if (!access.ok) return isKnownCode(access.code) ? access.code : "invalid";
+  if (!accountId && access.accountIds.length !== 1)
+    // No account at all reads like any refused grant (go-live adds the
+    // cloudflare- prefix to bare codes, FLAG_CODES).
+    return access.accountIds.length ? "cf-account-ambiguous" : "denied";
+  return "ok";
+}
 export const VERIFY_STEPS = [
   "vercel",
   "project",
@@ -271,13 +292,21 @@ export async function verifyChecks(
   await onStep("cloudflare");
   const cfToken = openSecret(ctx, target.id, target.pos, "cloudflare.token");
   if (cfToken) {
+    const accountId = target.pos.cloudflare?.accountId ?? "";
     try {
-      const verified = await ctx.cloudflareVerify(
-        cfToken,
-        target.pos.cloudflare?.accountId ?? "",
-        { signal },
-      );
-      flags.cloudflare = verified.ok ? "ok" : "invalid";
+      if (goliveCandidate(target.pos))
+        flags.cloudflare = await cloudflareAccess(
+          ctx,
+          cfToken,
+          accountId,
+          signal,
+        );
+      else {
+        const verified = await ctx.cloudflareVerify(cfToken, accountId, {
+          signal,
+        });
+        flags.cloudflare = verified.ok ? "ok" : "invalid";
+      }
     } catch (error) {
       flags.cloudflare = providerCode(error);
     }

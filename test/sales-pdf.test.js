@@ -400,7 +400,8 @@ const HEADINGS = [
 // A snapshot as format 1 stored it (before 2026-10-15: no gstRegistered, no
 // design; every seller GST-registered).
 function formatOne(type) {
-  const deal = dealFixture();
+  // The date those documents were issued with: their bytes are pinned below.
+  const deal = dealFixture({ validUntil: "2026-10-31" });
   const totals = computeTotals(deal, { sellerState: "27", roundOff: true });
   delete totals.registered;
   return {
@@ -506,7 +507,7 @@ describe("sales documents", () => {
         "NOT A TAX INVOICE",
         "QT/26-27/0001",
         "14 Oct 2026",
-        "31 Oct 2026",
+        "31 Oct 2099",
         "FROM",
         "BILL TO",
         "Sandbee Technologies Private Limited",
@@ -546,7 +547,7 @@ describe("sales documents", () => {
         "NOTES Prices include onboarding for two staff members.",
         "TERMS AND CONDITIONS",
         "1. All prices are in Indian Rupees (INR). GST is charged at the rates shown.",
-        "2. This quotation is valid until 31 Oct 2026. After that date, prices and scope may change.",
+        "2. This quotation is valid until 31 Oct 2099. After that date, prices and scope may change.",
         "For Sandbee Technologies Private Limited",
         "A. Founder",
         "Director",

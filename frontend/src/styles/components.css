@@ -346,44 +346,145 @@
 .pos-form {
   margin-bottom: var(--space-5);
 }
-.pos-guide {
+/* New client steps on POS setup: one row per step, one open at a time. */
+.client-steps {
   margin-bottom: var(--space-5);
 }
-.pos-guide > summary {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-2) var(--space-3);
-  padding: 18px 23px;
-  cursor: pointer;
+.client-steps-error {
+  padding: 0 23px var(--space-3);
 }
-.pos-guide-title {
-  font-size: 16px;
-  font-weight: 600;
+.client-step-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
-.pos-guide-body {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-5);
-  padding: 4px 23px 22px;
+.client-step {
   border-top: 1px solid var(--line);
-  font-size: 12px;
-  line-height: 1.55;
-  overflow-wrap: anywhere;
 }
-.pos-guide-body h2 {
-  margin: var(--space-4) 0 var(--space-2);
+.client-step-head {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 12px 23px;
+  border: 0;
+  background: transparent;
+  text-align: left;
   font-size: 13px;
 }
-.pos-guide-body ol {
-  margin: 0;
-  padding-left: 20px;
-  display: grid;
-  gap: 6px;
+.client-step-head:hover {
+  background: var(--surface-hover);
 }
-.pos-guide-body .form-note {
-  grid-column: 1 / -1;
+.client-step-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.client-step-n {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  font-size: 11px;
+  font-weight: 600;
+}
+.client-step.is-open .client-step-n {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+.client-step-title {
+  font-weight: 600;
+}
+.client-step-summary {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.client-step-body {
+  display: grid;
+  gap: var(--space-3);
+  justify-items: start;
+  padding: 0 23px 18px 58px;
+  font-size: 12px;
+}
+.client-step-body > p,
+.client-step-form > p {
   margin: 0;
+  color: var(--muted);
+}
+.client-step-form {
+  display: grid;
+  gap: var(--space-3);
+  width: 100%;
+}
+.client-step-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0 var(--space-3);
+}
+.client-step-fields .field {
+  margin-bottom: 0;
+  width: 180px;
+}
+.client-step-suffix {
+  padding-bottom: 9px;
+  margin-right: var(--space-4);
+  font-size: 12px;
+  color: var(--muted);
+}
+.client-step-actions,
+.client-step-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.client-step-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+.client-step-inline .field {
+  margin-bottom: 0;
+  width: 280px;
+  max-width: 100%;
+}
+.client-steps .panel-foot .button {
+  font-size: 12px;
+}
+.all-settings {
+  margin-bottom: var(--space-5);
+}
+.all-settings > summary {
+  width: max-content;
+  margin-bottom: var(--space-3);
+  padding: 6px 2px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+@media (max-width: 600px) {
+  .client-step-head {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    padding: 12px 16px;
+  }
+  .client-step-summary {
+    grid-column: 2 / -1;
+    grid-row: 2;
+  }
+  .client-step-body {
+    padding: 0 16px 16px;
+  }
+  .client-step-fields .field {
+    width: 100%;
+  }
+  .client-steps-error {
+    padding-inline: 16px;
+  }
 }
 .secret-help {
   width: 100%;
@@ -392,11 +493,6 @@
   line-height: 1.5;
   color: var(--muted);
   overflow-wrap: anywhere;
-}
-@media (max-width: 760px) {
-  .pos-guide-body {
-    grid-template-columns: 1fr;
-  }
 }
 .pos-form fieldset {
   border: 0;
@@ -606,9 +702,9 @@
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-3);
+  padding: 8px var(--space-3);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 10px;
   background: var(--canvas);
   font-size: 12px;
   cursor: pointer;
@@ -628,16 +724,29 @@
   width: auto;
   margin: 0;
 }
+/* One line per branch: name, commit, headline (cut with …), age. */
 .branch-main {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1) var(--space-3);
   min-width: 0;
 }
 .branch-headline {
-  flex-basis: 100%;
-  overflow-wrap: anywhere;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+.branch-main > .small {
+  flex: none;
+}
+.branch-main > strong {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .plan-summary {
   margin-top: var(--space-3);
@@ -653,15 +762,21 @@
   margin: 0;
   padding-left: var(--space-4);
 }
+/* Buttons keep their own width: a grid cell must not stretch them. */
 .deploy-actions {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: var(--space-3);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-3) var(--space-5);
+}
+.deploy-actions > .deploy-action {
+  flex: 0 1 220px;
 }
 .deploy-action {
   display: grid;
   gap: var(--space-2);
   align-content: start;
+  justify-items: start;
   min-width: 0;
 }
 .deploy-action .button {
@@ -803,6 +918,13 @@
   }
   .branch-cache {
     grid-column: 2;
+  }
+  .branch-main {
+    flex-wrap: wrap;
+  }
+  .branch-headline {
+    flex-basis: 100%;
+    order: 3;
   }
   .deploy-error {
     padding: var(--space-4);

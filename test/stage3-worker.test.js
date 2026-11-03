@@ -1739,6 +1739,87 @@ describe("go-live: busy both ways, and the bootstrap verify", () => {
     assert.deepEqual(verifyView(row.pos.verify).envKeysMissing, []);
   });
 
+  // POS setup's Check (2026-11-04): before Start, Verify checks the
+  // Cloudflare token the way Start's check step does (an account call), so a
+  // token that only verifies "active" no longer reads as ok.
+  const OTHER = "fedcba9876543210fedcba9876543210";
+  const cfCases = [
+    ["one account, no id stored", {}, {}, "ok"],
+    [
+      "the token reaches no account (403/9109)",
+      { accountsGrant: false },
+      {},
+      "denied",
+    ],
+    [
+      "the stored id is another account",
+      {},
+      { "pos.cloudflare.accountId": OTHER },
+      "denied",
+    ],
+    ["no account at all", { accountList: [] }, {}, "denied"],
+    [
+      "two accounts and no id stored",
+      {
+        accountList: [
+          { id: ACCOUNT_ID, name: "A" },
+          { id: OTHER, name: "B" },
+        ],
+      },
+      {},
+      "cf-account-ambiguous",
+    ],
+    [
+      "the right id stored",
+      { accountsGrant: false },
+      { "pos.cloudflare.accountId": ACCOUNT_ID },
+      "ok",
+    ],
+  ];
+  for (const [name, cf, set, want] of cfCases)
+    it(`Verify of a new client before Start, Cloudflare: ${name} → ${want}`, async () => {
+      const env = await makeEnv({ cf });
+      const w = await makeWorker(env);
+      const id = await seedClient(env, { realtime: true });
+      if (Object.keys(set).length)
+        await env.db
+          .collection("installations")
+          .updateOne({ _id: id }, { $set: set });
+      await enqueueVerify(env, id);
+      await w.loop.drain();
+      const row = await rowOf(env, id);
+      assert.equal(row.pos.task.status, "succeeded");
+      assert.equal(row.pos.verify.cloudflare, want);
+      if (want !== "ok") assert.ok(isKnownCode(want), want);
+      assertNoSecrets(row.pos.verify, BASE_SECRETS, "verify");
+    });
+  it("Verify of an existing client keeps the plain token check (no account call)", async () => {
+    const env = await makeEnv({
+      cf: { accountsGrant: false },
+      vercel: createFakeVercel(),
+    });
+    const w = await makeWorker(env);
+    const id = await seedClient(env, { realtime: true });
+    await env.db.collection("installations").updateOne(
+      { _id: id },
+      {
+        $set: {
+          "pos.vercel.projectId": env.vercel.state.projectId,
+          "pos.vercel.orgId": "team_1",
+        },
+      },
+    );
+    await enqueueVerify(env, id);
+    await w.loop.drain();
+    const row = await rowOf(env, id);
+    assert.equal(row.pos.verify.cloudflare, "ok");
+    assert.equal(
+      env.cf.calls.filter((c) => c.path.includes("/accounts")).length,
+      0,
+      "no account call",
+    );
+  });
+
   it("Verify of a client whose env admin did not write: names-only parity (env-keys-missing)", async () => {
     const env = await makeEnv({ vercel: createFakeVercel() });
     const w = await makeWorker(env);

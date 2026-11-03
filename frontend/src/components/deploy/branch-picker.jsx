@@ -126,15 +126,17 @@ export function BranchPicker({
                 onChange={() => onSelect(branch.name)}
               />
               <span className="branch-main">
-                <strong>{branch.name}</strong>
+                <strong title={branch.name}>{branch.name}</strong>
                 <code>{sha7(branch.sha)}</code>
                 {live?.sha === branch.sha && <Badge value="live">Live</Badge>}
-                <span className="branch-headline">{branch.headline}</span>
-                <span className="small subtle">
-                  {branch.date
-                    ? `${when(branch.date)} · ${dateTime(branch.date)}`
-                    : ""}
+                <span className="branch-headline" title={branch.headline}>
+                  {branch.headline}
                 </span>
+                {branch.date && (
+                  <span className="small subtle" title={dateTime(branch.date)}>
+                    {when(branch.date)}
+                  </span>
+                )}
               </span>
               {showCache && (
                 <span className="branch-cache">

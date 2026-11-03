@@ -1244,7 +1244,8 @@ const FLAG_CODES = {
   project: (f) => (f === "settings" ? "project-settings" : `project-${f}`),
   env: (f) => `env-${f}`,
   mongo: (f) => f,
-  cloudflare: (f) => `cloudflare-${f}`,
+  // cf-account-ambiguous is already a full code (Verify of a new client).
+  cloudflare: (f) => (f.startsWith("cf-") ? f : `cloudflare-${f}`),
   health: (f) => (f === "not-deployed" ? "unhealthy" : f),
 };
 function flagCodeOf(verify, { bootstrap }) {

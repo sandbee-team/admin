@@ -225,7 +225,9 @@ export const dealFixture = (over = {}) => ({
     }),
   ],
   discount: { type: "percent", value: 500 },
-  validUntil: "2026-10-31",
+  // Far in the future: the API refuses to issue a quotation whose valid-until
+  // date has passed (it was 2026-10-31 and expired with the clock).
+  validUntil: "2099-10-31",
   notes: "Prices include onboarding for two staff members.",
   ...over,
 });

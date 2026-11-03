@@ -324,12 +324,15 @@ test("owner keeps accounts, files and POS setup; secrets show only briefly", asy
   ).toBeVisible();
   await expect(page.getByText("Deploys — coming in Stage 2")).toHaveCount(0);
   await expect(page.getByLabel("Deploy lock on")).toHaveCount(0);
-  // The setup guide: open until the Vercel token and the database URI are
-  // set; every field and secret says where its value comes from.
-  const guide = page.locator("details.pos-guide");
-  await expect(guide).toHaveAttribute("open", "");
-  for (const name of ["A client already live on Vercel", "A new client"])
-    await expect(guide.getByRole("heading", { name })).toBeVisible();
+  // A new client: four short steps first, every field under "All settings".
+  const clientSteps = page.getByRole("region", { name: "Set up this client" });
+  await expect(clientSteps).toContainText("0/3 done");
+  for (const name of ["Web address", "Vercel", "Database", "Realtime"])
+    await expect(
+      clientSteps.getByRole("button", { name: new RegExp(`^${name}`) }),
+    ).toBeVisible();
+  await expect(clientSteps.getByLabel("Web address")).toBeVisible();
+  await page.locator("details.all-settings > summary").click();
   const form = page.getByRole("form", { name: "POS configuration" });
   await expect(
     form.getByLabel("Vercel project ID"),
@@ -350,7 +353,7 @@ test("owner keeps accounts, files and POS setup; secrets show only briefly", asy
     .click();
   await expect(page.getByText("Revision 2")).toBeVisible();
   await expect(page.locator("#secrets")).toContainText(
-    "Vercel → Account Settings → Tokens → Create",
+    "Vercel → Account Settings → Tokens.",
   );
   await page
     .getByRole("button", { name: "Set Vercel token", exact: true })
@@ -402,6 +405,8 @@ test("admin sees the vault but no reveal, download, delete or test controls", as
     page.getByRole("button", { name: "Upload file", exact: true }),
   ).toBeVisible();
   await page.goto(`${INSTALLATION}/pos`);
+  // Still a new client: the secrets sit under "All settings".
+  await page.locator("details.all-settings > summary").click();
   await expect(
     page.getByRole("button", { name: "Replace Vercel token", exact: true }),
   ).toBeVisible();
