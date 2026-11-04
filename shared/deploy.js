@@ -41,7 +41,13 @@ export const BUILD_STATES = [
   "failed",
   "cancelled",
 ];
-export const TASK_KINDS = ["verify", "db-backup", "purge-preview", "purge"];
+export const TASK_KINDS = [
+  "verify",
+  "db-backup",
+  "purge-preview",
+  "purge",
+  "data-copy",
+];
 export const BUILD_SOURCES = ["cache", "fresh", "artifact"];
 // Readiness item ids: one list for the UI checklist and the 409 not-ready body.
 export const READINESS_ITEMS = [

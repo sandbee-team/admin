@@ -36,6 +36,7 @@ import { getText, postText, probeTls } from "../lib/safe-https.js";
 import { HEARTBEAT_MS, LEASE_MS } from "../../shared/deploy.js";
 import { realtimeGitHubOf } from "./realtime-bundle.js";
 import { runDbBackup } from "./db-backup.js";
+import { runDataCopy } from "./data-copy.js";
 import { createHeartbeat } from "./heartbeat.js";
 import {
   cliEnv,
@@ -200,7 +201,7 @@ export async function buildContext({
       wake: new AbortController(),
     },
     log: makeLog(),
-    handlers: { "db-backup": runDbBackup },
+    handlers: { "db-backup": runDbBackup, "data-copy": runDataCopy },
     ...overrides,
   };
   ctx.t = { ...DEFAULT_TIMING, ...overrides.t };

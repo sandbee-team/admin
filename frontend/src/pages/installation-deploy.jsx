@@ -33,6 +33,7 @@ import {
 import { DeployProgress } from "../components/deploy/deploy-progress";
 import { DeployError } from "../components/deploy/deploy-error";
 import { BackupPanel } from "../components/deploy/backup-panel";
+import { CopyPanel } from "../components/deploy/copy-panel";
 import { PurgePanel } from "../components/deploy/purge-panel";
 import { StaleBanner } from "../components/deploy/stale-banner";
 import { VersionCard } from "../components/deploy/version-card";
@@ -434,6 +435,7 @@ export function InstallationDeploy({ installation, user }) {
           customerId={installation.customerId}
           owner={owner}
         />
+        <CopyPanel installationId={id} owner={owner} />
         <PurgePanel
           base={base}
           data={data}

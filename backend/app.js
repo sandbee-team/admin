@@ -16,6 +16,7 @@ import { posRoutes } from "./modules/pos.js";
 import { deployRoutes } from "./modules/deploys.js";
 import { goliveRoutes } from "./modules/golive.js";
 import { dbBackupRoutes } from "./modules/db-backup.js";
+import { dataCopyRoutes } from "./modules/data-copy.js";
 import { posImportRoutes } from "./modules/pos-import.js";
 import { ecomRoutes } from "./modules/ecom.js";
 import { usageRoutes } from "./modules/usage.js";
@@ -121,6 +122,7 @@ export function createApp(deps) {
   app.use("/api", deployRoutes(context));
   app.use("/api", goliveRoutes(context));
   app.use("/api", dbBackupRoutes(context));
+  app.use("/api", dataCopyRoutes(context));
   app.use("/api", posImportRoutes(context));
   app.use("/api", usageRoutes(context));
   app.use("/api", salesRoutes(context));

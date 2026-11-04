@@ -23,11 +23,14 @@ const locations = {
       `file:${row._id}:${file?.id}`,
     ]),
   ],
-  installations: (row) =>
-    POS_SECRET_FIELDS.map((field) => [
+  installations: (row) => [
+    ...POS_SECRET_FIELDS.map((field) => [
       at(row.pos, field),
       `pos:${row._id}:${field}`,
     ]),
+    // The old database of "Copy data from the demo" (D58).
+    [row.pos?.copy?.source, `pos:${row._id}:copy.source`],
+  ],
 };
 export function* secretBoxes(collection, row) {
   for (const [box, aad] of locations[collection]?.(row) ?? [])

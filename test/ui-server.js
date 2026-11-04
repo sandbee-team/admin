@@ -202,6 +202,8 @@ for (const name of [
   "x",
   "y",
   "z",
+  // copy.spec.js
+  "copy",
 ]) {
   const _id = randomUUID();
   await db.collection("staff").insertOne({
@@ -802,6 +804,91 @@ const SCENARIOS = {
     ...READY,
     last: () => version(6),
   },
+  // copy.spec.js: "Copy data from the demo" (D58).
+  copy: {
+    n: 40,
+    slug: "ui-copy",
+    customer: "Copy Cafe",
+    ...READY,
+    mongo: true,
+  },
+};
+// A data-copy slot as backend/worker/data-copy.js leaves it. Keeps the params
+// of the run the panel created; `q`: mode, blocked=1, code.
+const COPY_COUNTS = {
+  details: 4,
+  settings: 31,
+  printers: 5,
+  menu: 86,
+  staff: 3,
+  customers: 214,
+  orders: 1240,
+  tables: 12,
+  expenses: 40,
+  bookings: 6,
+};
+const copyTask = (status, q, old) => {
+  const params = {
+    from: old?.params?.from ?? "2026-10-01",
+    groups: old?.params?.groups ?? Object.keys(COPY_COUNTS),
+    mode: q("mode") ?? old?.params?.mode ?? "check",
+    sourceAt: old?.params?.sourceAt ?? null,
+  };
+  const groups = Object.fromEntries(
+    params.groups.map((g) => [g, COPY_COUNTS[g]]),
+  );
+  const ended = !["queued", "running"].includes(status);
+  return {
+    id: old?.id ?? randomUUID(),
+    kind: "data-copy",
+    status,
+    step:
+      status === "running"
+        ? params.mode === "copy"
+          ? "orders"
+          : "check"
+        : ended
+          ? "done"
+          : "queued",
+    progress:
+      status === "running" && params.mode === "copy"
+        ? { documents: 640 }
+        : null,
+    lease: { owner: "w1", until: new Date(Date.now() + 60000), fence: 1 },
+    attempt: 1,
+    by: { id: "u", name: "deploy owner" },
+    requestedAt: ago(60000),
+    finishedAt: ended ? new Date() : null,
+    params,
+    result:
+      status === "succeeded"
+        ? {
+            mode: params.mode,
+            from: params.from,
+            groups,
+            kept: 1,
+            blocked: q("blocked")
+              ? { orders: 2, customers: 1, payments: 0, expenses: 0 }
+              : null,
+            needs: q("needs") ? q("needs").split(",") : [],
+            notes: ["telegram", "device-printers", "older-customers"],
+            older: 3,
+            open: 0,
+            undated: 0,
+            others: [{ name: "dailyRollup", count: 12 }],
+            ...(params.mode === "copy"
+              ? { copied: groups, removed: 9, documents: 1600 }
+              : {}),
+          }
+        : null,
+    error:
+      status === "failed"
+        ? {
+            code: q("code") ?? "copy-source-unreachable",
+            message: "The old database could not be reached.",
+          }
+        : null,
+  };
 };
 const task = (status, extra = {}) => ({
   id: randomUUID(),
@@ -1692,15 +1779,18 @@ const control = createServer(async (req, res) => {
         { upsert: true },
       );
     } else if (url.pathname === "/pos/task") {
-      // /pos/task?scenario=NAME&status=..[&kind=purge-preview|purge&...]
-      // (see purgeTask); without a kind, a db-backup task.
+      // /pos/task?scenario=NAME&status=..[&kind=purge-preview|purge|data-copy&...]
+      // (see purgeTask, copyTask); without a kind, a db-backup task.
       const id = nid("d", SCENARIOS[scenario].n);
       const status = query("status") ?? "running",
         kind = query("kind");
       let next = task(status);
       if (kind) {
         const row = await db.collection("installations").findOne({ _id: id });
-        next = purgeTask(kind, status, query, row.pos.task);
+        next =
+          kind === "data-copy"
+            ? copyTask(status, query, row.pos.task)
+            : purgeTask(kind, status, query, row.pos.task);
       }
       await db
         .collection("installations")

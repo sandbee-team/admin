@@ -86,6 +86,13 @@ Files: S3 only ever receives ciphertext (`SBF1` + IV + AES-256-GCM + tag, additi
 - **Audit and logs.** Audit details carry ids, step names, counts and codes only (`pos.golive.*`, `pos.unlocked`, `pos.verify.completed`); never a token, URI, password, env value or provider text.
 - **Known limits.** Admin now writes into client Vercel projects and client databases (accepted, D42/D45, bounded as above). A client Cloudflare token with "All accounts" or "All zones" scope could reach sandbee.in once P4 moves its DNS: ask every client for a token scoped to its own account. A concurrent POS setup save on another installation and a Start with the same label can both commit (the unique label index and the DNS check catch it before anything goes live).
 
+## Copy data from the demo (D58)
+
+- **Who.** Saving or removing the old database string and Copy need `deploy` (owner) and a fresh step-up; Check needs `deploy` only (it reads both databases and writes nothing). 30 runs per hour per installation.
+- **The old database string** (it carries a password) is a vault box `pos:<id>:copy.source` (listed in `backend/lib/secrets.js`, so key checks and restore drills cover it). Only Atlas hosts (`*.mongodb.net`, the same rule as client databases) are accepted at save and again by the worker, so it cannot become a probe of the internal network; the client's own database is refused at save (`same-db`) and by the worker (`copy-same-db`). Views return host names and the database name only.
+- **Writes.** Only into the client's own database, only on the owner's Copy, and only while that POS has no bills, customers, due payments or expenses of its own (ids the old database does not have): otherwise `copy-target-used` and nothing is written. The old database is only read. Telegram secrets (encrypted with the old deployment's AUTH_SECRET) are never copied. Staff password hashes are bcrypt and are copied as stored; the go-live admin's login is never overwritten.
+- **Audit and logs.** Counts, dates, group names, collection names and fixed codes only; never the string, a document or a value.
+
 ## Availability and load
 
 JSON requests are bounded at 32 KB (the two POS import routes and the three sales text PUTs, settings, client profile and deal, allow 128 KB). Lists are paginated at 30 items; option pickers are capped at 100 with search. Field lengths, lifecycle values, identifiers and extra properties are validated with shared strict schemas. Connection pools are capped; common summary data uses a local LRU with five-second TTL and invalidation on local writes. Authorization never uses this cache. Another replica may show a summary up to five seconds old.

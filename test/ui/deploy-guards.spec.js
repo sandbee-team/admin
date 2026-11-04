@@ -162,8 +162,8 @@ test("a failing poll shows a stale banner that clears; a stalled job names the o
       /Last updated \d\d:\d\d:\d\d — retrying…/,
       { timeout: 30000 },
     );
-    // The Deploy tab and the backup panel each say so.
-    await expect(banner).toHaveCount(2);
+    // The Deploy tab, the backup panel and the copy panel each say so.
+    await expect(banner).toHaveCount(3);
   } finally {
     await control("fail?match=");
   }

@@ -845,6 +845,91 @@ add(
   "File storage is not configured.",
   "Set up S3 storage first.",
 );
+// ---- copy data from the demo (D58) --------------------------------------------------
+add(
+  "copy-no-source",
+  "copy",
+  "No old database",
+  "No old database is saved for this client.",
+  "Paste the old database connection string first.",
+);
+add(
+  "copy-no-target",
+  "copy",
+  "No database URI",
+  "This client has no database URI, so there is nothing to copy into.",
+  "Add the URI in POS setup.",
+);
+add(
+  "copy-same-db",
+  "copy",
+  "Same database",
+  "The old and the new database are the same.",
+  "Paste the demo's connection string, not this client's.",
+);
+add(
+  "copy-target-used",
+  "copy",
+  "New POS in use",
+  "The new POS has new or changed bills, customers or expenses of its own, so nothing was copied.",
+  "Copy works only before the client starts using the new POS.",
+);
+add(
+  "copy-no-admin",
+  "copy",
+  "No admin login yet",
+  "The new POS has no admin login yet, so staff logins were not copied.",
+  "Go live first (it creates the admin login), then copy.",
+);
+add(
+  "copy-no-settings",
+  "copy",
+  "No settings yet",
+  "The new POS has no settings yet, so only one part of the settings cannot be copied.",
+  "Open the new POS once, or pick both Cafe details and Bill & print settings.",
+);
+add(
+  "copy-source-invalid",
+  "copy",
+  "Old string not valid",
+  "The old database connection string is not valid.",
+  "Copy it again from Atlas (Connect, Drivers).",
+);
+add(
+  "copy-source-not-atlas",
+  "copy",
+  "Old database not Atlas",
+  "The old database is not an Atlas cluster.",
+  "Use the Atlas connection string.",
+);
+add(
+  "copy-source-auth-failed",
+  "copy",
+  "Old database refused",
+  "The old database rejected the user or password.",
+  "Check the user and password in the connection string.",
+);
+add(
+  "copy-source-unreachable",
+  "copy",
+  "Old database unreachable",
+  "The old database could not be reached.",
+  "In Atlas, allow the server IP under Network Access.",
+);
+add(
+  "copy-duplicate",
+  "copy",
+  "Record clash",
+  "A record clashes with a different one already in the new POS.",
+  "Check the new POS, then copy again.",
+);
+add(
+  "copy-failed",
+  "copy",
+  "Copy stopped",
+  "The copy did not finish. What was copied is kept, and copying again is safe.",
+  "Press Copy again.",
+);
 // ---- rollout: "deploy this commit to all clients" (P3) --------------------------------
 // Stored per client on the pos-rollout row (and as the rollout's stop code).
 add(
