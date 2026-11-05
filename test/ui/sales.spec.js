@@ -206,8 +206,27 @@ test("owner fills Sales settings with step-up and uploads a logo", async ({
   await page.getByLabel("GSTIN").fill("27AAACS9999K1ZD");
   await page.getByLabel("IFSC").fill("HDFC0000001");
   await page.getByLabel("UPI ID").fill("sandbee@examplebank");
+  await expect(
+    page.getByRole("checkbox", { name: /scan-to-pay UPI QR/ }),
+  ).toBeChecked();
+  await page.getByLabel("Payment screenshot number").fill("+91 99999 88888");
   await page.getByLabel("Signatory name").fill("A. Founder");
   await expect(page.getByText(`Next new number: INV/${FY}/0001`)).toBeVisible();
+  // The next number: shown in the hint, never below what is already used.
+  const nextQuotation = page.getByLabel("Next quotation number");
+  await expect(nextQuotation).toHaveValue("1");
+  await nextQuotation.fill("7");
+  await expect(page.getByText(`Next new number: QT/${FY}/0007`)).toBeVisible();
+  // Below the used numbers: the browser refuses the form, nothing is sent.
+  await nextQuotation.fill("0");
+  await page.getByRole("button", { name: "Save settings" }).click();
+  expect(await nextQuotation.evaluate((e) => e.validity.rangeUnderflow)).toBe(
+    true,
+  );
+  await expect(
+    page.getByText("Unsaved changes", { exact: true }),
+  ).toBeVisible();
+  await nextQuotation.fill("1");
   await page.getByRole("button", { name: "Save settings" }).click();
   await expect(page.getByText("Unsaved changes", { exact: true })).toHaveCount(
     0,
@@ -334,7 +353,7 @@ test("admin builds a deal with discounts and issues quotation, agreement and inv
   const downloading = page.waitForEvent("download");
   await page.getByRole("button", { name: `Download INV/${FY}/0001` }).click();
   const file = await downloading;
-  expect(file.suggestedFilename()).toBe(`invoice-INV-${FY}-0001.pdf`);
+  expect(file.suggestedFilename()).toBe(`Tax invoice INV-${FY}-0001.pdf`);
   expect(
     readFileSync(await file.path())
       .subarray(0, 5)
@@ -353,7 +372,7 @@ test("admin builds a deal with discounts and issues quotation, agreement and inv
   const mail = JSON.parse(readFileSync("test-results/sales-mail.json", "utf8"));
   expect(mail).toMatchObject({
     to: ["cafe-blue@example.test"],
-    filename: `invoice-INV-${FY}-0001.pdf`,
+    filename: `Tax invoice INV-${FY}-0001.pdf`,
     pdf: "%PDF-",
   });
 
@@ -363,7 +382,7 @@ test("admin builds a deal with discounts and issues quotation, agreement and inv
   await noViolations(page, "sales tab");
   await noOverflow(page, "Customer sales tab");
   await page.goto(`${CUSTOMER}/files`);
-  await expect(page.getByText(`invoice-INV-${FY}-0001.pdf`)).toBeVisible();
+  await expect(page.getByText(`Tax invoice INV-${FY}-0001.pdf`)).toBeVisible();
 });
 
 test("owner cancels the invoice with a reason after a step-up", async ({

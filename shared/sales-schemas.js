@@ -352,7 +352,13 @@ export const salesSchemas = {
         .strict()
         .prefault({}),
       quotation: z
-        .object({ validityDays: z.number().int().min(1).max(365).default(15) })
+        .object({
+          validityDays: z.number().int().min(1).max(365).default(15),
+          // A scan-to-pay UPI QR for the quoted total (needs the UPI ID).
+          payQr: z.boolean().default(true),
+          // Printed under the QR; empty = the company phone.
+          screenshotTo: pdfText(32).default(""),
+        })
         .strict()
         .prefault({}),
       invoice: z
@@ -434,6 +440,19 @@ export const salesSchemas = {
         ctx.addIssue({ code: "custom", message: error.message });
       }
     }),
+  // Sent with the settings: the next number of a type in the current
+  // financial year (it moves the counter forward only).
+  next: z
+    .object(
+      Object.fromEntries(
+        DOC_TYPES.map((type) => [
+          type,
+          z.number().int().min(1).max(9999).optional(),
+        ]),
+      ),
+    )
+    .strict()
+    .default({}),
   newDeal: z.object({ title: pdfText(160, { min: 2 }) }).strict(),
   status: z
     .object({ rev, action: z.enum(["finalize", "reopen", "lost"]) })

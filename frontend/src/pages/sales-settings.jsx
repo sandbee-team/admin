@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { Fragment, useRef, useState } from "react";
 import { ImageUp, Trash2 } from "lucide-react";
 import { useResource } from "../hooks/use-resource";
 import {
@@ -19,6 +19,7 @@ import { api, upload, isStale, dateTime } from "../lib/api";
 import { useNavigationGuard } from "../lib/router";
 import { can } from "../../../shared/policy";
 import {
+  DOC_TYPES,
   GST_RATES,
   PLACEHOLDERS,
   docNumber,
@@ -81,8 +82,16 @@ export function SalesSettings({ user }) {
   );
 }
 
+// The next number of each type this financial year, as the server counts.
+const nextOf = (data) =>
+  Object.fromEntries(
+    DOC_TYPES.map((type) => [type, Number(data.next[type].split("/").pop())]),
+  );
+
 function SettingsForm({ data, canEdit, onSaved, onStale }) {
-  const [form, setForm] = useState(() => editable(data)),
+  const current = nextOf(data),
+    [nextSeq, setNextSeq] = useState(current),
+    [form, setForm] = useState(() => editable(data)),
     [dirty, setDirty] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
@@ -103,6 +112,19 @@ function SettingsForm({ data, canEdit, onSaved, onStale }) {
     setBusy(true);
     setError("");
     try {
+      // Only a changed next number is sent; it can only go up.
+      const moved = DOC_TYPES.filter(
+        (type) => String(nextSeq[type]) !== String(current[type]),
+      );
+      for (const type of moved) {
+        const value = Number(nextSeq[type]);
+        if (!Number.isInteger(value) || value < current[type] || value > 9999) {
+          setError(
+            `The next ${type} number must be a whole number from ${current[type]} to 9999.`,
+          );
+          return;
+        }
+      }
       const body = {
         rev: data.rev,
         ...form,
@@ -111,8 +133,16 @@ function SettingsForm({ data, canEdit, onSaved, onStale }) {
           address: form.company.address.map((l) => l.trim()).filter(Boolean),
         },
         gst: { ...form.gst, defaultRate: Number(form.gst.defaultRate) },
-        quotation: { validityDays: Number(form.quotation.validityDays) },
+        quotation: {
+          ...form.quotation,
+          validityDays: Number(form.quotation.validityDays),
+        },
         invoice: { dueDays: Number(form.invoice.dueDays) },
+        ...(moved.length && {
+          next: Object.fromEntries(
+            moved.map((type) => [type, Number(nextSeq[type])]),
+          ),
+        }),
       };
       await withStepUp(() => api("/sales/settings", { method: "PUT", body }));
       setDirty(false);
@@ -387,6 +417,17 @@ function SettingsForm({ data, canEdit, onSaved, onStale }) {
                   maxLength={300}
                 />
               </Field>
+              <Field
+                label="Payment screenshot number"
+                hint="Printed under the UPI QR on quotations. Empty = the company phone."
+              >
+                <input
+                  value={form.quotation.screenshotTo}
+                  onChange={set("quotation", "screenshotTo")}
+                  maxLength={32}
+                  inputMode="tel"
+                />
+              </Field>
               <Field label="Signatory name">
                 <input
                   value={form.signatory.name}
@@ -402,40 +443,66 @@ function SettingsForm({ data, canEdit, onSaved, onStale }) {
                 />
               </Field>
             </div>
+            <label className="check-row">
+              <input
+                type="checkbox"
+                checked={form.quotation.payQr}
+                onChange={set("quotation", "payQr")}
+              />
+              Print a scan-to-pay UPI QR for the total on quotations, with a
+              note to send the payment screenshot
+            </label>
           </section>
           <section className="form-section">
             <h2>{registered ? "Numbering and GST" : "Numbering"}</h2>
             <p className="form-note">
-              Numbers restart every 1 April and never skip. An invoice number
-              may have at most 16 characters (Rule 46): the invoice prefix can
-              have up to 6.
+              Numbers restart at 1 every 1 April. To continue your old
+              numbering, set the next number: it can only go up, so a number is
+              never given twice. An invoice number may have at most 16
+              characters (Rule 46): the invoice prefix can have up to 6.
             </p>
             <div className="form-grid">
               {[
-                ["quotation", "Quotation prefix"],
-                ["agreement", "Agreement prefix"],
-                ["invoice", "Invoice prefix"],
-              ].map(([type, label]) => (
-                <Field
-                  key={type}
-                  label={label}
-                  hint={`Next new number: ${docNumber(form.numbering[type].prefix, fy, Number(data.next[type].split("/").pop()))}`}
-                >
-                  <input
-                    value={form.numbering[type].prefix}
-                    onChange={(e) => {
-                      setForm({
-                        ...form,
-                        numbering: {
-                          ...form.numbering,
-                          [type]: { prefix: e.target.value },
-                        },
-                      });
-                      setDirty(true);
-                    }}
-                    maxLength={6}
-                  />
-                </Field>
+                ["quotation", "Quotation"],
+                ["agreement", "Agreement"],
+                ["invoice", "Invoice"],
+              ].map(([type, name]) => (
+                <Fragment key={type}>
+                  <Field
+                    label={`${name} prefix`}
+                    hint={`Next new number: ${docNumber(form.numbering[type].prefix, fy, Number(nextSeq[type]) || current[type])}`}
+                  >
+                    <input
+                      value={form.numbering[type].prefix}
+                      onChange={(e) => {
+                        setForm({
+                          ...form,
+                          numbering: {
+                            ...form.numbering,
+                            [type]: { prefix: e.target.value },
+                          },
+                        });
+                        setDirty(true);
+                      }}
+                      maxLength={6}
+                    />
+                  </Field>
+                  <Field
+                    label={`Next ${name.toLowerCase()} number`}
+                    hint={`${current[type]} or more`}
+                  >
+                    <input
+                      type="number"
+                      min={current[type]}
+                      max={9999}
+                      value={nextSeq[type]}
+                      onChange={(e) => {
+                        setNextSeq({ ...nextSeq, [type]: e.target.value });
+                        setDirty(true);
+                      }}
+                    />
+                  </Field>
+                </Fragment>
               ))}
               {registered && (
                 <>

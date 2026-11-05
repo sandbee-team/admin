@@ -408,3 +408,22 @@ lawyer review the agreement text and the stamp duty; switch GST on once register
 
 **Released 2026-10-15** (main @ 94dab5f): Linux suite on the server 814 tests, 812 pass, 0 fail,
 2 skipped; app and worker healthy, `/ready` ok.
+
+## 16. Revision 3 (2026-11-05, D59): scan-to-pay QR, no visible version, next number
+
+- **Snapshot format 3** (`SNAPSHOT_FORMAT = 3`): `payQr {uri, screenshotTo}` on a quotation when
+  Sales settings have a UPI ID and `quotation.payQr` is on (default). `uri` = `upi://pay?pa=<UPI
+  ID>&pn=<account name or company>&am=<total in rupees>&cu=INR&tn=<quotation number>`
+  (`upiPayUri`, shared/sales.js; a draft has no `tn`). The payment card draws the QR (uqr, ECC M,
+  modules on a quarter-point grid as one path: `Page.boxes`), "Scan to pay", the total, and under
+  it "After paying, send the payment screenshot to <screenshotTo or company phone>, quoting <QT
+  no.>".
+- Format 3 prints no version (facts grid, footer, PDF title); new agreements and invoices store
+  the quotation number alone as `quotationRef`. Format 2 snapshots keep printing "Version"/"v2"
+  and re-render byte-identical (layout hashes pinned in test/sales-pdf.test.js).
+- File name (download, e-mail attachment, stored copy) = `<docTitle> <number, / as ->.pdf`, e.g.
+  `Quotation QT-26-27-0001.pdf`, `Tax invoice INV-26-27-0001.pdf`; the e-mail subject and text
+  name the number without a version. The panel still shows v1/v2 for the owner.
+- **Next number**: Sales settings → Numbering, "Next <type> number" per type (current financial
+  year). `PUT /sales/settings` `next{type: n}` sets the counter to n-1 in the settings
+  transaction, only forward; a used number is refused (400). Restarts at 1 every 1 April.

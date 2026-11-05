@@ -243,8 +243,9 @@ const valid = (deal, settings) =>
   statesGiven(deal, settings);
 const complete = (deal, settings) =>
   deal.lines.length > 0 && valid(deal, settings);
+// "Quotation QT-26-27-0001.pdf": no version (a re-issue keeps the number).
 const fileName = (doc) =>
-  `${doc.type}-${doc.number.replaceAll("/", "-")}${doc.type === "invoice" ? "" : `-v${doc.version}`}.pdf`;
+  `${docTitle(doc)} ${doc.number.replaceAll("/", "-")}.pdf`;
 // Parsed logo/signature by hash (they never change): parsing re-inflates a PNG.
 const parsed = new Map();
 function parsedImage(sha, data) {
@@ -274,10 +275,9 @@ export function salesRoutes({ db, client, c, auth, s3, sendDocument }) {
       ...row,
       // A section saved before a field existed gets that field's default.
       ...Object.fromEntries(
-        ["company", "bank", "signatory", "gst", "design"].map((k) => [
-          k,
-          { ...defaults[k], ...row?.[k] },
-        ]),
+        ["company", "bank", "signatory", "gst", "design", "quotation"].map(
+          (k) => [k, { ...defaults[k], ...row?.[k] }],
+        ),
       ),
       templates: currentTemplates(row?.templates),
       rev: row?.rev ?? 0,
@@ -449,13 +449,33 @@ export function salesRoutes({ db, client, c, auth, s3, sendDocument }) {
     auth.permit("billing"),
     auth.requireStepUp,
     async (req, res) => {
-      const { rev, ...body } = req.body ?? {};
+      const { rev, next, ...body } = req.body ?? {};
       const expected = z.number().int().min(0).parse(rev);
       const data = salesSchemas.settings.parse(body);
+      const starts = Object.entries(salesSchemas.next.parse(next)).filter(
+        ([, seq]) => seq !== undefined,
+      );
       const saved = await transaction(client, async (session) => {
         await authorizeWrite(db, session, req.staff, "billing");
         const now = new Date(),
+          fy = fyOf(now),
           set = { ...data, updatedAt: now, updatedBy: by(req.staff) };
+        // A new next number moves this year's counter forward only: a number
+        // already issued is never given out again.
+        for (const [type, seq] of starts) {
+          const id = `${type}:${fy.start}`,
+            used = (await counters.findOne({ _id: id }, { session }))?.seq ?? 0;
+          ensure(
+            seq > used,
+            400,
+            `${DOC_TITLES[type]} numbers cannot go back: ${docNumber(data.numbering[type].prefix, fy.label, used)} is already issued.`,
+          );
+          await counters.updateOne(
+            { _id: id },
+            { $set: { seq: seq - 1 } },
+            { session, upsert: true },
+          );
+        }
         if (expected === 0) {
           try {
             await settingsCol.insertOne(
@@ -488,7 +508,10 @@ export function salesRoutes({ db, client, c, auth, s3, sendDocument }) {
           "sales.settings-updated",
           "sales",
           "sales-settings",
-          "Company, numbering and texts",
+          [
+            "Company, numbering and texts",
+            ...starts.map(([type, seq]) => `next ${type} ${seq}`),
+          ].join("; "),
           req,
         );
         return loadSettings(session);
@@ -1081,7 +1104,7 @@ export function salesRoutes({ db, client, c, auth, s3, sendDocument }) {
           number,
           version,
           issuedAt,
-          quotationRef: quotation ? versionLabel(quotation) : null,
+          quotationRef: quotation ? quotation.number : null,
         });
         // The image rows this document prints are written in this transaction:
         // a concurrent replacement that would delete them conflicts and retries.
@@ -1356,8 +1379,9 @@ export function salesRoutes({ db, client, c, auth, s3, sendDocument }) {
       await consume(db, `sales-email-doc:${doc._id}`, 5, HOUR);
       const { pdf } = await pdfOf(doc, req);
       doc = await current();
+      // What the client reads names no version (as the PDF since format 3).
       const s = doc.snapshot,
-        label = versionLabel(doc),
+        label = doc.number,
         title = docTitle(doc);
       const text = [
         `Dear ${s.buyer.name},`,

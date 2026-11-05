@@ -367,6 +367,17 @@ export const docNumber = (prefix, fyLabel, seq) =>
   `${prefix}${fyLabel}/${String(seq).padStart(4, "0")}`;
 export const versionLabel = (doc) =>
   doc.type === "invoice" ? doc.number : `${doc.number} v${doc.version}`;
+// The UPI "pay" link a scan-to-pay QR carries: the UPI ID as is (UPI_RE
+// allows only URL-safe characters), the amount in rupees, the document number
+// as the payment note.
+export function upiPayUri({ upiId, payee, paise, note }) {
+  const params = [`pa=${upiId}`];
+  if (payee) params.push(`pn=${encodeURIComponent(payee.slice(0, 50))}`);
+  if (paise > 0) params.push(`am=${(paise / 100).toFixed(2)}`);
+  params.push("cu=INR");
+  if (note) params.push(`tn=${encodeURIComponent(note)}`);
+  return `upi://pay?${params.join("&")}`;
+}
 
 // ---- Identifiers -------------------------------------------------------------
 const B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";

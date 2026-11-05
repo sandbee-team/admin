@@ -19,7 +19,8 @@ import {
   renderDocument,
   SNAPSHOT_FORMAT,
 } from "../backend/lib/sales-pdf.js";
-import { computeTotals } from "../shared/sales.js";
+import { encode as qrEncode } from "uqr";
+import { computeTotals, upiPayUri } from "../shared/sales.js";
 import {
   makePng,
   pdfObjects,
@@ -496,7 +497,7 @@ describe("sales documents", () => {
   it("quotation with line and overall discounts: every amount printed and totals right", () => {
     const { snap: s, pdf } = make("quotation");
     assert.equal(s.format, SNAPSHOT_FORMAT);
-    assert.equal(SNAPSHOT_FORMAT, 2);
+    assert.equal(SNAPSHOT_FORMAT, 3);
     assert.equal(s.gstRegistered, true);
     assert.equal(s.totals.payable, 1119900);
     const text = save("quotation", pdf, ...GST_TOTAL);
@@ -551,7 +552,8 @@ describe("sales documents", () => {
         "For Sandbee Technologies Private Limited",
         "A. Founder",
         "Director",
-        "QT/26-27/0001 v1",
+        "SCAN TO PAY",
+        "After paying, send the payment screenshot to +91 20 0000 0000, quoting QT/26-27/0001.",
         "Quotation - not a tax invoice",
       ],
       "quotation",
@@ -673,7 +675,7 @@ describe("sales documents", () => {
       settings: unregistered(),
       deal: cafeDeal(),
     });
-    assert.equal(s.format, 2);
+    assert.equal(s.format, 3);
     assert.equal(s.gstRegistered, false);
     assert.equal(s.design.accent, "#355E45");
     assert.equal(s.totals.registered, false);
@@ -872,6 +874,146 @@ describe("sales documents", () => {
         (r) => r.text === "TAX INVOICE" && r.color.join() === "0.21,0.37,0.27",
       ),
     );
+  });
+  it("format 2 snapshots (issued before 2026-11-05) re-render to the same bytes, version included", () => {
+    // Pinned from the renderer that issued them (main @ 2be2c60).
+    const pinned = {
+      quotation:
+        "e0efe6a7609733836b8a9a9376b49c2013ffbf0939b3a08f691d27ad42ed4278",
+      agreement:
+        "63eeaad7f95cf7857a2de0d654aa6407365e9ec3f5cee775b13160ed296dbbb3",
+      invoice:
+        "78e0f7768bb41a3a639c7a25b18010acebf01f9f8be5da2079117a75a0e542f0",
+    };
+    const formatTwo = (type) => {
+      const s = snap(type, { version: 2 });
+      s.format = 2;
+      delete s.payQr;
+      return s;
+    };
+    for (const type of Object.keys(pinned))
+      assert.equal(
+        layoutHash(
+          renderDocument(formatTwo(type), type === "invoice" ? {} : assets),
+        ),
+        pinned[type],
+        type,
+      );
+    lacks(
+      flat(renderDocument(formatTwo("quotation"), assets)),
+      ["Version 2", "QT/26-27/0001 v2"],
+      "format 2",
+    );
+  });
+  it("a quotation with a UPI ID prints a scan-to-pay QR of its total and where to send the screenshot; no version", () => {
+    assert.equal(
+      upiPayUri({
+        upiId: "a.b-c_d@okaxis",
+        payee: "Cafe & Co",
+        paise: 150,
+        note: "QT/1",
+      }),
+      "upi://pay?pa=a.b-c_d@okaxis&pn=Cafe%20%26%20Co&am=1.50&cu=INR&tn=QT%2F1",
+    );
+    assert.equal(
+      upiPayUri({ upiId: "x@y", paise: 0 }),
+      "upi://pay?pa=x@y&cu=INR",
+    );
+    // The QR as drawn: one black path of row runs, read back module by module.
+    const drawnQr = (pdf) => {
+      for (const o of pdfObjects(pdf)) {
+        if (!o.data) continue;
+        const ops = (
+          /FlateDecode/.test(o.dict) ? inflateSync(o.data) : o.data
+        ).toString("latin1");
+        for (const m of ops.matchAll(
+          /0 0 0 rg ((?:[-\d.]+ [-\d.]+ [-\d.]+ [-\d.]+ re ?)+)f/g,
+        )) {
+          const boxes = [
+            ...m[1].matchAll(/([-\d.]+) ([-\d.]+) ([-\d.]+) ([-\d.]+) re/g),
+          ].map((b) => b.slice(1).map(Number));
+          if (boxes.length < 50) continue;
+          const cell = boxes[0][3],
+            left = Math.min(...boxes.map((b) => b[0])),
+            top = Math.max(...boxes.map((b) => b[1] + b[3])),
+            size = Math.round(
+              (Math.max(...boxes.map((b) => b[0] + b[2])) - left) / cell,
+            ),
+            grid = Array.from({ length: size }, () => Array(size).fill(false));
+          for (const [x, y, w, h] of boxes) {
+            assert.equal(h, cell);
+            const r = Math.round((top - y - h) / cell),
+              c = Math.round((x - left) / cell);
+            for (let k = 0; k < Math.round(w / cell); k++)
+              grid[r][c + k] = true;
+          }
+          return grid;
+        }
+      }
+      return null;
+    };
+    const upi = (over = {}) => unregistered({ bank: UPI_BANK, ...over });
+    const s = snap("quotation", {
+      version: 3,
+      settings: upi({ quotation: { screenshotTo: "+91 99999 88888" } }),
+      deal: cafeDeal(),
+    });
+    assert.deepEqual(s.payQr, {
+      uri: "upi://pay?pa=sandbee@hdfcbank&pn=Sandbee&am=9491.00&cu=INR&tn=QT%2F26-27%2F0001",
+      screenshotTo: "+91 99999 88888",
+    });
+    const pdf = renderDocument(s, {});
+    const text = save("quotation-upi", pdf, ...PLAIN_TOTAL);
+    lacks(
+      text,
+      [
+        "PAYMENT DETAILS",
+        "UPI ID sandbee@hdfcbank",
+        "SCAN TO PAY",
+        "Rs. 9,491.00",
+        "with any UPI app",
+        "After paying, send the payment screenshot to +91 99999 88888, quoting QT/26-27/0001.",
+        "QT/26-27/0001 · Page 1 of",
+      ],
+      "UPI quotation",
+    );
+    assert.doesNotMatch(text, /Version|\bv3\b/);
+    assert.deepEqual(
+      drawnQr(pdf),
+      qrEncode(s.payQr.uri, { ecc: "M", border: 0 }).data,
+    );
+    assertClean(pdf, "UPI quotation");
+    // A draft: no number in the link or the note; the company phone by default.
+    const draft = snap("quotation", {
+      settings: upi(),
+      deal: cafeDeal(),
+      draft: true,
+      number: null,
+    });
+    assert.equal(
+      draft.payQr.uri,
+      "upi://pay?pa=sandbee@hdfcbank&pn=Sandbee&am=9491.00&cu=INR",
+    );
+    lacks(
+      flat(renderDocument(draft, {})),
+      ["After paying, send the payment screenshot to +91 98250 12345."],
+      "draft",
+    );
+    // Turned off, no UPI ID, or not a quotation: no QR.
+    for (const none of [
+      snap("quotation", {
+        settings: upi({ quotation: { payQr: false } }),
+        deal: cafeDeal(),
+      }),
+      snap("quotation", { settings: unregistered(), deal: cafeDeal() }),
+      snap("invoice", { settings: upi(), deal: cafeDeal() }),
+      snap("agreement", { settings: upi(), deal: cafeDeal() }),
+    ]) {
+      assert.equal(none.payQr, null, none.type);
+      const out = renderDocument(none, {});
+      assert.equal(drawnQr(out), null, none.type);
+      assert.doesNotMatch(flat(out), /SCAN TO PAY|payment screenshot/);
+    }
   });
   it("prints in the configured accent colour, darkened when too light to read", () => {
     const runsOf = (accent) =>

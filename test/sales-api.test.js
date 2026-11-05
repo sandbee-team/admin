@@ -412,7 +412,7 @@ describe("sales: deals and documents", () => {
       .rows;
     assert.equal(files.length, 1);
     assert.equal(files[0].category, "quotation");
-    assert.equal(files[0].name, `quotation-QT-${FY}-0001-v1.pdf`);
+    assert.equal(files[0].name, `Quotation QT-${FY}-0001.pdf`);
     // A double click: the second request carries the old rev.
     assert.equal((await issue(d1, "quotation")).status, 409);
     d1 = await deal(d1.id);
@@ -424,6 +424,13 @@ describe("sales: deals and documents", () => {
     const v1 = (await req(`/sales/documents/${q1.id}`, { session: admin }))
       .data;
     assert.equal(v1.status, "superseded");
+    // The client sees no version: not in the PDF, not in its file name.
+    const pdf = pdfText(
+      (await raw(`/sales/documents/${q2.id}/download`, { session: admin }))
+        .buffer,
+    ).join("\n");
+    assert.ok(pdf.includes(`QT/${FY}/0001`));
+    assert.doesNotMatch(pdf, /Version|\bv[12]\b/);
   });
   it("issued documents are immutable: v1 downloads byte-identical, from the archive", async () => {
     const stored = await ctx.db
@@ -522,7 +529,8 @@ describe("sales: deals and documents", () => {
     for (const want of [
       "TAX INVOICE",
       `INV/${FY}/0001`,
-      `QT/${FY}/0001 v2`,
+      "Quotation ref.",
+      `QT/${FY}/0001`,
       "GSTIN",
       "27AAACS9999K1ZD",
       "Reverse charge",
@@ -530,6 +538,7 @@ describe("sales: deals and documents", () => {
       "11,199.00",
     ])
       assert.ok(text.includes(want), `invoice lacks ${want}`);
+    assert.doesNotMatch(text, /\bv2\b/);
     d1 = await deal(d1.id);
     const twice = await issue(d1, "invoice");
     assert.equal(twice.status, 409);
@@ -671,9 +680,10 @@ describe("sales: deals and documents", () => {
     const mail = sent[before];
     assert.deepEqual(mail.to, ["owner@cafeblue.example"]);
     assert.equal(mail.replyTo, COMPANY.email);
-    assert.equal(mail.filename, `quotation-QT-${FY}-0001-v2.pdf`);
+    assert.equal(mail.filename, `Quotation QT-${FY}-0001.pdf`);
     assert.equal(mail.content.subarray(0, 5).toString(), "%PDF-");
-    assert.match(mail.subject, new RegExp(`Quotation QT/${FY}/0001 v2`));
+    assert.match(mail.subject, new RegExp(`^Quotation QT/${FY}/0001 - `));
+    assert.doesNotMatch(`${mail.subject}\n${mail.text}`, /\bv2\b/);
     assert.match(mail.text, /As discussed today\./);
     assert.equal(
       (
@@ -1065,6 +1075,72 @@ describe("sales: lifecycle edges", () => {
       },
     });
     assert.equal(same.status, 400);
+  });
+  it("a next number set in settings starts the numbering there and never goes back", async () => {
+    await stepUp(owner);
+    const s = (await req("/sales/settings", { session: owner })).data;
+    const save = (rev, next) =>
+      req("/sales/settings", {
+        method: "PUT",
+        session: owner,
+        body: { rev, ...SETTINGS, templates: s.templates, next },
+      });
+    const used = await counter("quotation"),
+      start = used + 101,
+      four = (n) => String(n).padStart(4, "0");
+    const moved = await save(s.rev, { quotation: start });
+    assert.equal(moved.status, 200, JSON.stringify(moved.data));
+    assert.equal(moved.data.next.quotation, `QT/${FY}/${four(start)}`);
+    assert.equal(await counter("quotation"), start - 1);
+    const q = await issue(
+      await newDeal(B, admin, "From the settings"),
+      "quotation",
+    );
+    assert.equal(q.status, 201, JSON.stringify(q.data));
+    assert.equal(q.data.number, `QT/${FY}/${four(start)}`);
+    // The quotation carries a scan-to-pay QR for its total and the note.
+    const text = pdfText(
+      (await raw(`/sales/documents/${q.data.id}/download`, { session: admin }))
+        .buffer,
+    )
+      .join("\n")
+      .split("\n")
+      .join(" ");
+    assert.ok(text.includes("SCAN TO PAY"));
+    assert.ok(
+      text.includes(
+        `After paying, send the payment screenshot to ${COMPANY.phone}, quoting QT/${FY}/${four(start)}.`,
+      ),
+    );
+    const stored = await ctx.db
+      .collection("sales_documents")
+      .findOne({ _id: q.data.id });
+    assert.equal(stored.snapshot.format, 3);
+    assert.equal(
+      stored.snapshot.payQr.uri,
+      `upi://pay?pa=${BANK.upiId}&pn=${encodeURIComponent(BANK.accountName)}&am=11199.00&cu=INR&tn=QT%2F${FY}%2F${four(start)}`,
+    );
+    // Back to a used number: refused, nothing changes.
+    const back = await save(moved.data.rev, { quotation: start });
+    assert.equal(back.status, 400);
+    assert.match(back.data.error, /Quotation numbers cannot go back/);
+    assert.equal(await counter("quotation"), start);
+    for (const next of [
+      { quotation: 0 },
+      { quotation: 10000 },
+      { quotation: 1.5 },
+      { receipt: 5 },
+    ])
+      assert.equal((await save(moved.data.rev, next)).status, 400);
+    // A stale save moves nothing.
+    assert.equal((await save(s.rev, { quotation: start + 50 })).status, 409);
+    assert.equal(await counter("quotation"), start);
+    assert.ok(
+      await ctx.db.collection("audit_events").findOne({
+        action: "sales.settings-updated",
+        detail: `Company, numbering and texts; next quotation ${start}`,
+      }),
+    );
   });
   it("removing an image unused by any document deletes its bytes; long texts fit the request limit", async () => {
     await stepUp(owner);

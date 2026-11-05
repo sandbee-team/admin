@@ -141,6 +141,17 @@ export class Page {
     else if (fill) this.ops.push(`${rgb(fill)} rg ${box} f`);
     else if (stroke) this.ops.push(`${n(width)} w ${rgb(stroke)} RG ${box} S`);
   }
+  // Many filled boxes [x, y, w, h] as one path (a QR code: no seams between
+  // neighbouring modules).
+  boxes(list, { fill = [0, 0, 0] } = {}) {
+    if (!list.length) return;
+    const path = list
+      .map(
+        ([x, y, w, h]) => `${n(x)} ${n(A4.height - y - h)} ${n(w)} ${n(h)} re`,
+      )
+      .join(" ");
+    this.ops.push(`${rgb(fill)} rg ${path} f`);
+  }
   // A box with corners of radius r (Bezier quarter circles).
   roundRect(x, y, w, h, r, { fill = null, stroke = null, width = 0.5 } = {}) {
     r = Math.max(0, Math.min(r, w / 2, h / 2));

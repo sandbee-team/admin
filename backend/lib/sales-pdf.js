@@ -4,6 +4,7 @@
 // anything else, so an issued document can always be re-rendered from its
 // snapshot. Snapshots of format 1 keep the renderer that issued them
 // (sales-pdf-v1.js), so they re-render to the same bytes.
+import { encode as qrEncode } from "uqr";
 import { PdfDocument, A4, wrap, textWidth } from "./pdf.js";
 import { renderFormat1 } from "./sales-pdf-v1.js";
 import {
@@ -21,10 +22,13 @@ import {
   formatRs,
   localTaxLabel,
   taxNoteOf,
+  upiPayUri,
 } from "../../shared/sales.js";
 
 // 2: GST registration is optional (gstRegistered), accent colour (design).
-export const SNAPSHOT_FORMAT = 2;
+// 3: no version printed (a re-issued quotation keeps its number), a
+// quotation's scan-to-pay UPI QR (payQr).
+export const SNAPSHOT_FORMAT = 3;
 export const DEFAULT_ACCENT = "#355E45";
 const addressOf = (party) =>
   [
@@ -133,6 +137,26 @@ export function snapshotOf({
     dueDate:
       type === "invoice" ? addDays(date, settings.invoice.dueDays) : null,
     quotationRef,
+    // The UPI link of a quotation's scan-to-pay QR and the number the payment
+    // screenshot goes to (null: no QR).
+    payQr:
+      type === "quotation" &&
+      settings.quotation?.payQr !== false &&
+      settings.bank?.upiId
+        ? {
+            uri: upiPayUri({
+              upiId: settings.bank.upiId,
+              payee:
+                settings.bank.accountName ||
+                company.tradeName ||
+                company.legalName,
+              paise: totals.payable,
+              note: number,
+            }),
+            screenshotTo:
+              settings.quotation.screenshotTo || company.phone || "",
+          }
+        : null,
   };
 }
 
@@ -172,6 +196,11 @@ function themeOf(accent) {
 }
 
 const registeredOf = (s) => s.gstRegistered !== false;
+// Format 2 printed the version of a quotation or agreement ("v2").
+const refOf = (s) =>
+  s.type === "invoice" || s.format >= 3
+    ? s.number
+    : `${s.number} v${s.version}`;
 const sellerName = (s) => s.seller.legalName || s.seller.tradeName || "";
 const TITLES = {
   quotation: () => "QUOTATION",
@@ -225,6 +254,7 @@ const MEASURE = {
   text: () => 0,
   line() {},
   rect() {},
+  boxes() {},
   roundRect() {},
   image() {},
 };
@@ -378,7 +408,7 @@ function drawLines(page, lines, x, top, width) {
 // ---- Header: logo or name, title and the document facts --------------------
 function factsOf(s, reg) {
   const number = s.number ?? "DRAFT",
-    version = s.number ? [["Version", String(s.version)]] : [],
+    version = s.number && s.format < 3 ? [["Version", String(s.version)]] : [],
     supply =
       reg && s.deal.placeOfSupply
         ? [
@@ -886,6 +916,7 @@ function paymentCard(page, s, theme, x, top, width) {
         y += 13;
       }
     }
+    if (s.payQr) y += 8 + scanToPay(p, s, theme, x + pad, y + 8, inner);
     y += 5;
     for (const part of wrap(
       "Pay only to the account above. Our bank details never change by e-mail or phone.",
@@ -906,6 +937,60 @@ function paymentCard(page, s, theme, x, top, width) {
   page.roundRect(x, top, width, height, 5, { fill: WASH });
   body(page, top + pad);
   return height;
+}
+// A quotation's scan-to-pay QR with the amount beside it and, under it, where
+// to send the payment screenshot. Returns the height used.
+function scanToPay(page, s, theme, x, top, width) {
+  const { data } = qrEncode(s.payQr.uri, { ecc: "M", border: 0 }),
+    count = data.length,
+    quiet = 2,
+    // Modules on a quarter-point grid (no seams), the code about 92 points.
+    cell = Math.floor((92 / (count + 2 * quiet)) * 4) / 4,
+    size = cell * (count + 2 * quiet),
+    x0 = Math.round(x * 4) / 4,
+    y0 = Math.round(top * 4) / 4,
+    dark = [];
+  for (let r = 0; r < count; r++)
+    for (let c = 0; c < count; c++) {
+      if (!data[r][c] || (c > 0 && data[r][c - 1])) continue;
+      let end = c;
+      while (end < count && data[r][end]) end++;
+      dark.push([
+        x0 + (quiet + c) * cell,
+        y0 + (quiet + r) * cell,
+        (end - c) * cell,
+        cell,
+      ]);
+    }
+  page.rect(x0, y0, size, size, { fill: WHITE });
+  page.boxes(dark, { fill: BLACK });
+  const tx = x + size + 12,
+    tw = width - size - 12;
+  let ty = top + 4;
+  ty += label(page, "Scan to pay", tx, ty, { color: theme.text }) + 3;
+  const [amount, amountSize] = clip(formatRs(s.totals.payable), "bold", 11, tw);
+  page.text(amount, tx, base(ty, amountSize, 16), {
+    font: "bold",
+    size: amountSize,
+    color: INK,
+  });
+  ty += 16;
+  for (const part of wrap("with any UPI app", "regular", 8, tw)) {
+    page.text(part, tx, base(ty, 8, 12), { size: 8, color: MUTED });
+    ty += 12;
+  }
+  let y = top + Math.max(y0 - top + size, ty - top) + 8;
+  if (s.payQr.screenshotTo)
+    for (const part of wrap(
+      `After paying, send the payment screenshot to ${s.payQr.screenshotTo}${s.number ? `, quoting ${s.number}` : ""}.`,
+      "bold",
+      8,
+      width,
+    )) {
+      page.text(part, x, base(y, 8, 12), { font: "bold", size: 8, color: INK });
+      y += 12;
+    }
+  return y - top;
 }
 // "For <company>", the signature image (or room to sign), the signatory.
 function sellerSignature(page, s, assets, x, top, width) {
@@ -1203,11 +1288,7 @@ function signatures(flow, s, theme, assets) {
 
 function footers(doc, s, reg) {
   const total = doc.pages.length,
-    ref = s.number
-      ? s.type === "invoice"
-        ? s.number
-        : `${s.number} v${s.version}`
-      : "DRAFT - NOT ISSUED",
+    ref = s.number ? refOf(s) : "DRAFT - NOT ISSUED",
     contact = [sellerName(s), s.seller.email, s.seller.phone]
       .filter(Boolean)
       .join(" · "),
@@ -1231,11 +1312,7 @@ function footers(doc, s, reg) {
 function renderCurrent(s, assets, stamp) {
   const reg = registeredOf(s),
     theme = themeOf(s.design?.accent),
-    label = s.number
-      ? s.type === "invoice"
-        ? s.number
-        : `${s.number} v${s.version}`
-      : "Draft";
+    label = s.number ? refOf(s) : "Draft";
   const doc = new PdfDocument({
     title: `${DOC_NAMES[s.type](reg)} ${label}`,
     author: sellerName(s),
