@@ -504,6 +504,11 @@ test("Usage tab: meters, notices, the honest Vercel box, Check now and worker of
   );
   await expect(page.getByText(/Resets daily at 05:30 IST/)).toBeVisible();
   await expect(page.getByText(/Yesterday: 61,000 requests/)).toBeVisible();
+  // D49: the region the site's function answered from.
+  const regionFact = page
+    .locator(".usage-site .usage-facts div")
+    .filter({ hasText: "Function region" });
+  await expect(regionFact.locator("dd")).toHaveText("Mumbai (bom1)");
   // Overall level and the alerts of this check.
   const result = page.locator("section", {
     has: page.getByRole("heading", { name: "Latest result" }),
@@ -557,6 +562,12 @@ test("Usage tab: meters, notices, the honest Vercel box, Check now and worker of
   // Paused by Vercel.
   await page.goto(usageUrl("usagepaused"));
   await expect(page.locator(".usage-site .badge").first()).toHaveText("Paused");
+  await expect(
+    page
+      .locator(".usage-site .usage-facts div")
+      .filter({ hasText: "Function region" })
+      .locator("dd"),
+  ).toHaveText("—");
   await expect(
     page
       .locator(".usage-site")

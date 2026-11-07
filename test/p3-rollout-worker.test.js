@@ -118,7 +118,10 @@ async function makeEnv() {
         }),
       );
       const meta = call.args[call.args.indexOf("--meta") + 1].split("=")[1];
-      const deployment = vercel.createFromCli({ sandbeeRequest: meta });
+      const deployment = vercel.createFromCli(
+        { sandbeeRequest: meta },
+        call.args,
+      );
       await env.onUpload?.(env.uploads, deployment);
     },
   });

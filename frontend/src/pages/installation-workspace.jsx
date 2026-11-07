@@ -1179,8 +1179,9 @@ function PosForm({
           <h2>Vercel</h2>
           {live && (
             <p className="form-note">
-              Before the first admin deploy: Vercel → Settings → Functions →
-              Region = Mumbai (bom1).
+              Function Region = Mumbai (bom1): Verify and every deploy set it
+              with the stored token; a deployment outside Mumbai never goes
+              live.
             </p>
           )}
           <div className="form-grid">

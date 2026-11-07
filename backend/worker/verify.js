@@ -6,7 +6,11 @@ import { decrypt } from "../lib/crypto.js";
 import { ProviderError } from "../lib/provider-http.js";
 import { canonicalEnvValue, nextPublicOf } from "../lib/build-inputs.js";
 import { probeHealth, probeLogin } from "../lib/pos-health.js";
-import { NEXT_PUBLIC_KEYS } from "../../shared/deploy.js";
+import {
+  FUNCTION_REGION,
+  NEXT_PUBLIC_KEYS,
+  inMumbai,
+} from "../../shared/deploy.js";
 import { goliveOwnsProduction } from "../../shared/golive.js";
 import {
   BLOCKING_SETTINGS,
@@ -102,9 +106,12 @@ export async function expectedNodeOf(ctx) {
 export async function inspectProject(
   vercel,
   target,
-  { signal, expectedNode = BUILD_SETTINGS.nodeVersion } = {},
+  { signal, expectedNode = BUILD_SETTINGS.nodeVersion, fixRegion = false } = {},
 ) {
   const out = {
+    // D49 with fixRegion: null (nothing to set) | {result, from}, result =
+    // "set" | "kept" (Vercel kept another region) | a provider code.
+    regionFix: null,
     problems: [],
     warnings: [],
     vercel: null,
@@ -135,6 +142,33 @@ export async function inspectProject(
           actual: cleanSetting(project[name]),
           expected: want[name],
         });
+    // D49: the project's own Function Region is Mumbai too, so a deploy made
+    // from Vercel itself (Redeploy, a Git push) cannot run anywhere else. With
+    // fixRegion admin sets it with the stored token: the one setting it writes
+    // on a live project (Vercel applies it to new deployments only).
+    if (!inMumbai(project.functionRegions)) {
+      const actual = cleanSetting(project.functionRegions?.join(", ") || null);
+      let settled = false;
+      if (fixRegion) {
+        let result;
+        try {
+          const set = await vercel.setFunctionRegion(target.projectId, {
+            signal,
+          });
+          settled = inMumbai(set.functionRegions);
+          result = settled ? "set" : "kept";
+        } catch (error) {
+          result = providerCode(error);
+        }
+        out.regionFix = { result, from: actual ?? "-" };
+      }
+      if (!settled)
+        out.problems.push({
+          name: "functionRegion",
+          actual,
+          expected: FUNCTION_REGION,
+        });
+    }
     // Warning only: the function runtime comes from the build output.
     if (majorOf(project.nodeVersion) !== majorOf(expectedNode))
       out.warnings.push({
@@ -270,6 +304,7 @@ export async function verifyChecks(
   { signal, onStep = async () => {} } = {},
 ) {
   const vercel = ctx.vercelFor({ token: target.token, teamId: target.teamId });
+  const logRegionFix = (fix) => fix && ctx.log?.("function-region", fix);
   const flags = {
     vercel: null,
     project: null,
@@ -282,7 +317,9 @@ export async function verifyChecks(
   const inspected = await inspectProject(vercel, target, {
     signal,
     expectedNode: await expectedNodeOf(ctx),
+    fixRegion: true,
   });
+  logRegionFix(inspected.regionFix);
   flags.vercel = inspected.vercel;
   flags.project = inspected.project;
   flags.env = inspected.env;

@@ -71,6 +71,17 @@ export const NEXT_PUBLIC_KEYS = [
   "NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME",
   "NEXT_PUBLIC_REALTIME_URL",
 ];
+// D49: every POS deployment admin makes runs its functions in Mumbai, India
+// (Vercel region bom1 = AWS ap-south-1, next to the clients and their Atlas
+// clusters). One region: the Hobby plan allows no more.
+export const FUNCTION_REGION = "bom1";
+export const FUNCTION_REGION_LABEL = "Mumbai (bom1)";
+export const REGION_ID_RE = /^[a-z]{3}\d$/;
+// Exactly Mumbai: a non-empty list with bom1 and nothing else.
+export const inMumbai = (regions) =>
+  Array.isArray(regions) &&
+  regions.length > 0 &&
+  regions.every((r) => r === FUNCTION_REGION);
 export const SHA_RE = /^[0-9a-f]{40}$/;
 export const BUILD_KEY_RE = /^[0-9a-f]{64}$/;
 export const BRANCH_RE =

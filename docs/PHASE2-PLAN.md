@@ -105,12 +105,12 @@ usage: {
   },
   last: {                            // the ONLY stored result, overwritten by every check
     at, durationMs,
-    site: { state: "up|down|paused", code, httpStatus, latencyMs, probes, deployActive },
+    site: { state: "up|down|paused", code, httpStatus, latencyMs, probes, region, deployActive }, // region (D49): x-vercel-id function region or null
     mongo: { source: "health|direct|null", code,
              clusters: [{ name, role, tag, active, paused, state, usedPct, bytes }], maxPct }, // ≤ 12 rows
     cloudflare: { code, day, requests, errors, pct, yesterday: { day, requests } },
     credentials: { vercel: { code, expiresAt }, cloudflare: { code, expiresAt } },
-    alerts: { storage|workers|site-down|site-paused|credential: { level, value, detail } },
+    alerts: { storage|workers|site-down|site-paused|site-region|credential: { level, value, detail } },
     level: "ok|warning|critical",
   },
   mail: { <type>: { at, level } },   // email de-duplication memory only
@@ -134,6 +134,7 @@ usage: {
 | `workers` | today's account requests ≥ 75 % / ≥ 90 % of 100,000 |
 | `site-down` | 3 failed probes in a row (critical); while a deploy/rollback is active the result is shown but not raised |
 | `site-paused` | 503 + `DEPLOYMENT_PAUSED` (critical) |
+| `site-region` | (D49) the site is up and its function answered from a region other than `bom1` (warning) |
 | `credential` | Vercel/Cloudflare token invalid or expired, or ≤ 3 days (critical); ≤ 14 days (warning) |
 | `retention` (platform) | existing `pos-worker.retention.failed|missing > 0`, or no sweep for 48 h while the worker is online — Attention only (retention.js already emails) |
 

@@ -54,6 +54,7 @@ import {
   ACTIVE_STATES,
   BOOTSTRAP_HEALTH,
   MAX_ATTEMPTS,
+  inMumbai,
   verifyStateOf,
 } from "../../shared/deploy.js";
 import {
@@ -456,13 +457,20 @@ async function projectStep(run) {
   if (productionOf(project) && !own) throw stop("project-live", "project");
   if (how === "adopted") await saveProject(run, project, "adopted");
   else await saveProject(run, project, null);
-  if (
-    !productionOf(project) &&
-    (project.nodeVersion !== BUILD_SETTINGS.nodeVersion ||
+  if (!productionOf(project)) {
+    let settled = project;
+    if (
+      project.nodeVersion !== BUILD_SETTINGS.nodeVersion ||
       project.sourceFilesOutsideRootDirectory !==
-        BUILD_SETTINGS.sourceFilesOutsideRootDirectory)
-  )
-    await v.patchProject(project.id, { signal });
+        BUILD_SETTINGS.sourceFilesOutsideRootDirectory ||
+      !inMumbai(project.functionRegions)
+    )
+      settled = await v.patchProject(project.id, { signal });
+    // D49: the project's answer after the write decides; a region Vercel did
+    // not take stops here with the dashboard fix, not later at verify.
+    if (!inMumbai(settled.functionRegions))
+      throw stop("project-region", "project");
+  }
   await run.end(
     "project",
     "done",

@@ -71,7 +71,7 @@ describe("vercel go-live adapter: projects", () => {
     await rejects(vc.projectByName("../x"), code("invalid"));
     await rejects(vc.projectByName(""), code("invalid"));
   });
-  it("createProject sends the fixed settings and region bom1, then patchProject sets node 22 and source files", async () => {
+  it("createProject sends the fixed settings and region bom1, then patchProject sets node 22, source files and bom1", async () => {
     const fake = createFakeVercel();
     const vc = make(fake);
     const made = await vc.createProject("cafe1");
@@ -85,6 +85,7 @@ describe("vercel go-live adapter: projects", () => {
     });
     assert.equal(made.name, "cafe1");
     assert.equal(made.serverlessFunctionRegion, "bom1");
+    assert.deepEqual(made.functionRegions, ["bom1"]);
     assert.equal(made.productionDeploymentId, null);
     assert.equal(made.nodeVersion, "20.x");
     clean(made, ["must-not-leak"]);
@@ -93,10 +94,68 @@ describe("vercel go-live adapter: projects", () => {
     assert.deepEqual(patch.body, {
       nodeVersion: "22.x",
       sourceFilesOutsideRootDirectory: true,
+      serverlessFunctionRegion: "bom1",
     });
     assert.equal(patched.nodeVersion, "22.x");
     assert.equal(patched.sourceFilesOutsideRootDirectory, true);
     assert.equal((await vc.projectByName("cafe1")).id, made.id);
+  });
+  it("setFunctionRegion PATCHes only the Function Region bom1 (D49)", async () => {
+    const fake = createFakeVercel();
+    const vc = make(fake);
+    const pid = fake.addProject({ name: "live1" });
+    assert.deepEqual((await vc.project(pid)).functionRegions, ["iad1"]);
+    const set = await vc.setFunctionRegion(pid);
+    const patch = fake.calls.find((c) => c.method === "PATCH");
+    assert.equal(patch.path, `/v9/projects/${pid}`);
+    assert.deepEqual(patch.body, { serverlessFunctionRegion: "bom1" });
+    assert.deepEqual(set.functionRegions, ["bom1"]);
+    await rejects(vc.setFunctionRegion(""), code("invalid"));
+  });
+  it("reads a project's default Function Region(s) and a deployment's regions as region ids only (D49)", async () => {
+    const fake = createFakeVercel();
+    const vc = make(fake);
+    const regionsOf = async (pid) => (await vc.project(pid)).functionRegions;
+    assert.deepEqual(await regionsOf("prj_test1"), ["bom1"]);
+    // resourceConfig wins; an entry that is not a region id reads "invalid".
+    fake.state.project.resourceConfig = {
+      functionDefaultRegions: ["iad1", "bom1", "<b>x</b>", 5],
+    };
+    assert.deepEqual(await regionsOf("prj_test1"), [
+      "iad1",
+      "bom1",
+      "invalid",
+      "invalid",
+    ]);
+    // Without it, the older single serverlessFunctionRegion.
+    delete fake.state.project.resourceConfig;
+    fake.state.project.serverlessFunctionRegion = "sfo1";
+    assert.deepEqual(await regionsOf("prj_test1"), ["sfo1"]);
+    fake.state.project.serverlessFunctionRegion = null;
+    assert.deepEqual(await regionsOf("prj_test1"), []);
+    fake.state.project.serverlessFunctionRegion = "";
+    assert.deepEqual(await regionsOf("prj_test1"), []);
+    // A project made by hand runs in Vercel's default until patched.
+    const byHand = fake.addProject({ name: "byhand" });
+    assert.deepEqual(await regionsOf(byHand), ["iad1"]);
+    await vc.patchProject(byHand);
+    assert.deepEqual(await regionsOf(byHand), ["bom1"]);
+    fake.state.deployments = [
+      { uid: "dpl_a", url: "a.vercel.app", state: "READY", regions: ["bom1"] },
+      {
+        uid: "dpl_b",
+        url: "b.vercel.app",
+        state: "READY",
+        regions: ["x;y", "iad1"],
+      },
+      { uid: "dpl_c", url: "c.vercel.app", state: "READY" },
+    ];
+    assert.deepEqual((await vc.deployment("dpl_a")).regions, ["bom1"]);
+    assert.deepEqual((await vc.deployment("dpl_b")).regions, [
+      "invalid",
+      "iad1",
+    ]);
+    assert.deepEqual((await vc.deployment("dpl_c")).regions, []);
   });
   it("createProject: a taken name is project-name-taken (fixed text), and is not retried", async () => {
     const fake = createFakeVercel();

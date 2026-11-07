@@ -338,7 +338,14 @@ export function createFakeVercel({ projectId = "prj_1" } = {}) {
       framework: "nextjs",
       rootDirectory: "apps/cafe",
       nodeVersion: "22.x",
+      serverlessFunctionRegion: "bom1",
+      functionRegions: ["bom1"],
     },
+    // Set to ignore the CLI's --regions (the project's regions win).
+    ignoreRegionsFlag: false,
+    // setFunctionRegion: an error to throw, or true = Vercel keeps the old one.
+    regionSetError: null,
+    ignoreRegionSet: false,
     envs: [],
     seq: 0,
     readyAfter: 1,
@@ -355,6 +362,7 @@ export function createFakeVercel({ projectId = "prj_1" } = {}) {
       prebuilt: false,
       createdAt: Date.now() - 30 * 86400000,
       meta: {},
+      regions: ["bom1"],
       polls: 0,
       ...d,
     });
@@ -374,6 +382,7 @@ export function createFakeVercel({ projectId = "prj_1" } = {}) {
     isRollbackCandidate: null,
     createdAt: d.createdAt,
     meta: { ...d.meta },
+    regions: [...d.regions],
     aliasAssigned: false,
   });
   const api = {
@@ -391,9 +400,11 @@ export function createFakeVercel({ projectId = "prj_1" } = {}) {
     verifyDomain: real.verifyDomain,
     domainConfig: real.domainConfig,
     setDomainRedirect: real.setDomainRedirect,
-    // Called by the fake CLI: a new, still building deployment.
-    createFromCli(meta) {
+    // Called by the fake CLI: a new, still building deployment. Its regions
+    // are the CLI's --regions, else the project's default regions.
+    createFromCli(meta, args = []) {
       const id = `dpl_${++state.seq}`;
+      const flag = args.find((a) => a.startsWith("--regions="));
       return add({
         id,
         readyState: "BUILDING",
@@ -401,6 +412,10 @@ export function createFakeVercel({ projectId = "prj_1" } = {}) {
         createdAt: Date.now(),
         meta,
         target: "production",
+        regions:
+          flag && !state.ignoreRegionsFlag
+            ? flag.slice("--regions=".length).split(",")
+            : [...state.project.functionRegions],
       });
     },
     async user() {
@@ -424,6 +439,16 @@ export function createFakeVercel({ projectId = "prj_1" } = {}) {
         productionDeploymentId: state.production,
         lastAliasRequest: state.lastAlias,
       };
+    },
+    async setFunctionRegion(id) {
+      note("setFunctionRegion", id);
+      if (state.regionSetError) throw state.regionSetError;
+      if (!state.ignoreRegionSet)
+        Object.assign(state.project, {
+          serverlessFunctionRegion: "bom1",
+          functionRegions: ["bom1"],
+        });
+      return api.project(id);
     },
     async projectEnv() {
       note("projectEnv");

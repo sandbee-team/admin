@@ -32,6 +32,7 @@ import {
 } from "../shared/usage-codes.js";
 import { getText, SafeHttpsError } from "../backend/lib/safe-https.js";
 import {
+  functionRegionOf,
   isPaused,
   parseStats,
   probeHealth,
@@ -97,6 +98,7 @@ describe("shared/usage limits and helpers", () => {
       "workers",
       "site-down",
       "site-paused",
+      "site-region",
       "credential",
     ]);
     assert.ok(HOBBY_LIMITS.length >= 4);
@@ -270,6 +272,22 @@ describe("evaluateAlerts (one check, current state only)", () => {
       NOW,
     );
     assert.deepEqual(noHost.alerts, {});
+  });
+  it("site-region: a live site whose functions answer outside Mumbai is a warning (D49)", () => {
+    const at = (region, state = "up") =>
+      evaluateAlerts(
+        result({ site: { state, code: "ok", region, deployActive: false } }),
+        NOW,
+      ).alerts["site-region"];
+    assert.deepEqual(at("iad1"), {
+      level: "warning",
+      value: null,
+      detail: "Functions answered from iad1, not Mumbai (bom1)",
+    });
+    assert.equal(at("bom1"), undefined);
+    assert.equal(at(null), undefined);
+    assert.equal(at(undefined), undefined);
+    assert.equal(at("iad1", "down"), undefined);
   });
   it("credential takes the worse token and names both services", () => {
     const r = evaluateAlerts(
@@ -467,6 +485,21 @@ describe("safe-https getText query option", () => {
   });
 });
 
+describe("functionRegionOf (x-vercel-id)", () => {
+  it("is the last region the request passed, only when a function answered", () => {
+    const of = (value) => functionRegionOf({ "x-vercel-id": value });
+    assert.equal(of("bom1::bom1::8bqvf-1762500000000-0123456789ab"), "bom1");
+    assert.equal(of("bom1::iad1::8bqvf-1762500000000-0123456789ab"), "iad1");
+    assert.equal(of("sin1::bom1::iad1::abc-1-def"), "iad1");
+    assert.equal(of(["bom1::sfo1::x", "bom1::bom1::y"]), "sfo1");
+    // The edge alone (cached), junk and absence: unknown.
+    assert.equal(of("bom1::8bqvf-1762500000000-0123456789ab"), null);
+    assert.equal(of("<script>::BOM1::x"), null);
+    assert.equal(of(""), null);
+    assert.equal(functionRegionOf({}), null);
+    assert.equal(functionRegionOf(undefined), null);
+  });
+});
 describe("probeSite", () => {
   let t = 0;
   const now = () => t;
@@ -494,6 +527,33 @@ describe("probeSite", () => {
     });
     assert.equal(fake.calls[0].options.query, undefined);
     assert.equal(fake.calls[0].options.headers["x-stats-token"], undefined);
+  });
+  it("names the function region the answer came from (D49)", async () => {
+    const answer = (id) =>
+      createFakeHealth({
+        health: [
+          {
+            status: 200,
+            body: okBody(),
+            headers: {
+              "content-type": "application/json",
+              "x-vercel-id": id,
+            },
+          },
+        ],
+      });
+    const probe = (fake) =>
+      probeSite({ host: HOST, tenantId: "demo", get: fake.get, now });
+    assert.equal((await probe(answer("bom1::iad1::a-1-b"))).region, "iad1");
+    const both = await probeSite({
+      host: HOST,
+      tenantId: "demo",
+      get: answer("bom1::bom1::a-1-b").get,
+      stats: true,
+      now,
+    });
+    assert.equal(both.region, "bom1");
+    assert.equal("region" in (await probe(answer("bom1::a-1-b"))), false);
   });
   it("asks for stats with the token only when told to", async () => {
     const fake = createFakeHealth({

@@ -28,7 +28,10 @@
 //    redirect/redirectStatusCode. GET /v6/domains/{name}/config -> misconfigured
 //    true until fake.configure(name) (then false, configuredBy "CNAME");
 //    recommendedCNAME has 2 ranked entries, rank 2 listed FIRST.
-//  - fake.addProject({name, production}) seeds another project.
+//  - fake.addProject({name, production, region}) seeds another project (in
+//    iad1, Vercel's default, unless `region` is given). PATCH
+//    /v9/projects/{id} with serverlessFunctionRegion also sets
+//    resourceConfig.functionDefaultRegions, as create does.
 import { json } from "./github.js";
 
 const body = (init) => {
@@ -79,6 +82,8 @@ export function createFakeVercel({
       rootDirectory: "apps/cafe",
       nodeVersion: "22.x",
       sourceFilesOutsideRootDirectory: true,
+      serverlessFunctionRegion: "bom1",
+      resourceConfig: { functionDefaultRegions: ["bom1"] },
       installCommand: null,
       buildCommand: null,
       outputDirectory: null,
@@ -199,6 +204,14 @@ export function createFakeVercel({
       if (method === "PATCH") {
         for (const k of ["nodeVersion", "sourceFilesOutsideRootDirectory"])
           if (sent && k in sent) p[k] = sent[k];
+        // The single region also becomes the default list, as on create.
+        if (sent && "serverlessFunctionRegion" in sent) {
+          p.serverlessFunctionRegion = sent.serverlessFunctionRegion;
+          p.resourceConfig = {
+            ...p.resourceConfig,
+            functionDefaultRegions: [sent.serverlessFunctionRegion],
+          };
+        }
       }
       return json(200, p);
     }
@@ -344,7 +357,7 @@ export function createFakeVercel({
     state,
     envsOf,
     // Another project (default: no production deployment) -> its id.
-    addProject({ name, production = false, id } = {}) {
+    addProject({ name, production = false, id, region = null } = {}) {
       const pid = id ?? `prj_seed${++state.seq}`;
       state.projects.set(pid, {
         id: pid,
@@ -354,6 +367,9 @@ export function createFakeVercel({
         rootDirectory: "apps/cafe",
         nodeVersion: "22.x",
         sourceFilesOutsideRootDirectory: true,
+        // Made by hand: Vercel's default region unless one is given.
+        serverlessFunctionRegion: region,
+        resourceConfig: { functionDefaultRegions: [region ?? "iad1"] },
         installCommand: null,
         buildCommand: null,
         outputDirectory: null,

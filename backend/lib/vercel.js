@@ -1,6 +1,7 @@
 // Vercel adapter, built per client token. Reads and returns whitelisted fields
 // only; environment values are returned for plain variables alone and are never
 // requested decrypted.
+import { FUNCTION_REGION, REGION_ID_RE } from "../../shared/deploy.js";
 import { recommendedCnameOf } from "../../shared/web-address.js";
 import { BUILD_SETTINGS } from "./build-inputs.js";
 import { ProviderError, request } from "./provider-http.js";
@@ -24,11 +25,26 @@ const metaOf = (meta) => {
         out[key] = value.slice(0, 200);
   return out;
 };
+// Region ids (e.g. ["bom1"]); an entry that is not one reads as "invalid"
+// (never provider text), so it can never pass for Mumbai (D49).
+const regionsOf = (list) =>
+  (Array.isArray(list) ? list : [])
+    .slice(0, 20)
+    .map((r) =>
+      typeof r === "string" && REGION_ID_RE.test(r) ? r : "invalid",
+    );
+// The project's default Function Region(s) for new deployments (D49):
+// resourceConfig.functionDefaultRegions, else the older single
+// serverlessFunctionRegion; [] = not set (Vercel then uses iad1).
+const defaultRegionsOf = (json) => {
+  const list = regionsOf(json?.resourceConfig?.functionDefaultRegions);
+  if (list.length || !json?.serverlessFunctionRegion) return list;
+  return regionsOf([json.serverlessFunctionRegion]);
+};
 // Go-live codes (shared/deploy-errors.js, section 9), not provider-http codes.
 const PROJECT_TAKEN = "project-name-taken";
 const DOMAIN_TAKEN = "domain-taken";
 const ENV_FAILED = "env-upsert-failed";
-const FUNCTION_REGION = "bom1";
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]{0,99}$/;
 const ENV_TYPES = new Set(["plain", "encrypted", "sensitive"]);
 const ENV_TARGETS = new Set(["production", "preview", "development"]);
@@ -74,6 +90,7 @@ const projectOf = (json) => {
     outputDirectory:
       json?.outputDirectory == null ? null : text(json.outputDirectory, 300),
     serverlessFunctionRegion: text(json?.serverlessFunctionRegion, 20) || null,
+    functionRegions: defaultRegionsOf(json),
     productionDeploymentId: text(json?.targets?.production?.id, 100) || null,
     lastAliasRequest:
       last && typeof last === "object"
@@ -115,6 +132,8 @@ const deploymentOf = (d) => ({
     typeof d?.isRollbackCandidate === "boolean" ? d.isRollbackCandidate : null,
   createdAt: time(d?.createdAt ?? d?.created),
   meta: metaOf(d?.meta),
+  // "The regions the deployment exists in" (its functions' regions).
+  regions: regionsOf(d?.regions),
 });
 export function createVercel({
   token,
@@ -193,7 +212,8 @@ export function createVercel({
       );
       return projectOf(json);
     },
-    // node 22.x and sourceFilesOutsideRootDirectory from BUILD_SETTINGS.
+    // node 22.x and sourceFilesOutsideRootDirectory from BUILD_SETTINGS, and
+    // the Function Region bom1 (D49) for a project that was adopted.
     async patchProject(projectId, { signal } = {}) {
       const { json } = await call(`/v9/projects/${id(projectId)}`, {
         method: "PATCH",
@@ -202,7 +222,19 @@ export function createVercel({
           nodeVersion: BUILD_SETTINGS.nodeVersion,
           sourceFilesOutsideRootDirectory:
             BUILD_SETTINGS.sourceFilesOutsideRootDirectory,
+          serverlessFunctionRegion: FUNCTION_REGION,
         },
+        signal,
+      });
+      return projectOf(json);
+    },
+    // Only the Function Region bom1 (D49): a deploy sets it on a live project
+    // too. Vercel applies it to new deployments; the live one keeps its own.
+    async setFunctionRegion(projectId, { signal } = {}) {
+      const { json } = await call(`/v9/projects/${id(projectId)}`, {
+        method: "PATCH",
+        idempotent: true,
+        body: { serverlessFunctionRegion: FUNCTION_REGION },
         signal,
       });
       return projectOf(json);

@@ -32,6 +32,7 @@ import {
   pct,
   tokenState,
 } from "../components/usage/format";
+import { FUNCTION_REGION, FUNCTION_REGION_LABEL } from "../../../shared/deploy";
 // One POS client's usage (docs/PHASE2-PLAN.md §9): the current status only,
 // checked when the owner asks. No history and no charts over time.
 const active = (data) => isChecking(data?.check?.status);
@@ -315,6 +316,16 @@ function SitePanel({ site }) {
         <div>
           <dt>Probes</dt>
           <dd>{site.probes ?? "—"}</dd>
+        </div>
+        <div>
+          <dt>Function region</dt>
+          <dd>
+            {!site.region
+              ? "—"
+              : site.region === FUNCTION_REGION
+                ? FUNCTION_REGION_LABEL
+                : `${site.region} (not Mumbai)`}
+          </dd>
         </div>
       </dl>
       {site.code !== "ok" && <CodeNote code={site.code} />}

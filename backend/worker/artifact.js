@@ -23,6 +23,7 @@ import zlib from "node:zlib";
 import { createWriteStream } from "node:fs";
 import { ProviderError } from "../lib/provider-http.js";
 import { knownCode } from "../../shared/deploy-errors.js";
+import { inMumbai } from "../../shared/deploy.js";
 import { parseBuilderJson } from "../lib/build-inputs.js";
 
 export class AcceptError extends Error {
@@ -227,6 +228,9 @@ const emptyCounts = () => ({
   badConfig: 0,
   // A function whose runtime is not the builder's Node.js major (or "edge").
   runtimeMismatch: 0,
+  // A function pinned to a region other than Mumbai, or with failover
+  // regions (D49).
+  regionMismatch: 0,
 });
 const BAD_KEYS = [
   "hardlinks",
@@ -242,6 +246,7 @@ const BAD_KEYS = [
   "filePathMap",
   "badConfig",
   "runtimeMismatch",
+  "regionMismatch",
 ];
 const FINDING_KEYS = [
   "maps",
@@ -538,6 +543,11 @@ function refOk(entries, value, base = "") {
     resolveInArchive(entries, target) === target
   );
 }
+// A .vc-config.json region list that sets nothing.
+const unsetList = (list) =>
+  list === undefined ||
+  list === null ||
+  (Array.isArray(list) && list.length === 0);
 function archiveChecks(v, entries, configs, overflow = 0, nodeMajor = null) {
   // More configs than we inspect: the rest is unchecked, so refuse.
   v.badConfig += overflow;
@@ -583,6 +593,21 @@ function archiveChecks(v, entries, configs, overflow = 0, nodeMajor = null) {
       if (!(runtime === "edge" || runtime === `nodejs${nodeMajor}.x`))
         v.runtimeMismatch++;
     }
+    // A function's own `regions` override the deployment's and the project's
+    // (vercel.com/docs/functions/configuring-functions/region), so they must
+    // be unset or Mumbai only (D49); an edge function (regions may be a
+    // single string there) may also stay global. The deploy's vercel step
+    // still checks where the deployment really runs.
+    if (
+      !(
+        unsetList(parsed.regions) ||
+        inMumbai(parsed.regions) ||
+        (parsed.runtime === "edge" &&
+          (parsed.regions === "all" || inMumbai([parsed.regions])))
+      ) ||
+      !unsetList(parsed.functionFailoverRegions)
+    )
+      v.regionMismatch++;
     const map = parsed.filePathMap;
     if (map === undefined || map === null) continue;
     if (typeof map !== "object" || Array.isArray(map)) {
@@ -656,7 +681,9 @@ export const tarProblemCode = (v) =>
     ? "artifact-filepathmap"
     : v.runtimeMismatch
       ? "artifact-runtime"
-      : "tar-invalid";
+      : v.regionMismatch
+        ? "artifact-region"
+        : "tar-invalid";
 export const nodeMajorOf = (version) =>
   /^(\d+)/.exec(String(version ?? ""))?.[1] ?? null;
 

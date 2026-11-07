@@ -3,6 +3,8 @@
 // check runs only when the owner triggers it and stores only the current
 // result, so nothing here deals with history. Pure: no network, database or
 // clock (callers pass `now`).
+import { FUNCTION_REGION, FUNCTION_REGION_LABEL } from "./deploy.js";
+
 export const MIB = 1024 * 1024;
 export const MONGO_LIMIT_BYTES = 512 * MIB; // Atlas M0: dataSize + indexSize
 export const WORKER_FREE_REQUESTS = 100000; // Workers Free: per account per UTC day
@@ -30,6 +32,7 @@ export const ALERT_TYPES = [
   "workers",
   "site-down",
   "site-paused",
+  "site-region",
   "credential",
 ];
 export const ALERT_TITLES = Object.freeze({
@@ -37,6 +40,7 @@ export const ALERT_TITLES = Object.freeze({
   workers: "Cloudflare Worker requests",
   "site-down": "POS site down",
   "site-paused": "POS site paused by Vercel",
+  "site-region": "POS not running in Mumbai",
   credential: "Token expiry",
 });
 // Reference only: Vercel offers no usage numbers on Hobby, so nothing is
@@ -144,6 +148,19 @@ export function evaluateAlerts(last, now) {
       level: "critical",
       value: null,
       detail: "Vercel answered 503 DEPLOYMENT_PAUSED",
+    };
+  // D49: the live site's functions answered from another region.
+  if (
+    site?.state === "up" &&
+    typeof site.region === "string" &&
+    site.region !== FUNCTION_REGION
+  )
+    alerts["site-region"] = {
+      level: "warning",
+      value: null,
+      detail: cut(
+        `Functions answered from ${site.region}, not ${FUNCTION_REGION_LABEL}`,
+      ),
     };
   const tokens = [
     ["Vercel", last?.credentials?.vercel],

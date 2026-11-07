@@ -185,6 +185,7 @@ const flag = (value) =>
 const SETTING_NAMES = [
   "framework",
   "rootDirectory",
+  "functionRegion",
   "nodeVersion",
   "sourceFilesOutsideRootDirectory",
 ];

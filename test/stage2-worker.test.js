@@ -149,7 +149,7 @@ async function makeEnv({ cache = true } = {}) {
   const cli = createFakeCli({
     onRun: async (call) => {
       const meta = call.args[call.args.indexOf("--meta") + 1].split("=")[1];
-      vercel.createFromCli({ sandbeeRequest: meta });
+      vercel.createFromCli({ sandbeeRequest: meta }, call.args);
     },
   });
   const workDir = await mkdtemp(path.join(tmpdir(), "worker-test-"));
@@ -1426,8 +1426,8 @@ describe("health, automatic rollback and the Hobby limit", () => {
     const id = await seedInstallation(env);
     env.cli.next({ before: async () => undefined });
     const original = env.vercel.createFromCli;
-    env.vercel.createFromCli = (meta) => {
-      const d = original(meta);
+    env.vercel.createFromCli = (meta, args) => {
+      const d = original(meta, args);
       d.readyState = "ERROR";
       return d;
     };
@@ -3745,6 +3745,298 @@ describe("Vercel project Node.js version is a warning, not a blocker", () => {
       ]).tgz;
     const deploy = await deployOnce(env, w, id, { sha: SHA1 });
     assert.equal(deploy.current.error.code, "artifact-runtime");
+    assert.equal(env.cli.calls.length, 0);
+    assert.equal(env.s3fake.liveKeys().length, 0);
+  });
+});
+
+describe("D49: every POS deployment runs in Mumbai (bom1)", () => {
+  async function twoDeploys(env, w, id) {
+    await deployOnce(env, w, id, { sha: SHA1 });
+    await deployOnce(env, w, id, { sha: SHA2 });
+    return deployOf(env, id);
+  }
+  it("a deploy asks Vercel for bom1 and goes live there", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+    assert.equal(deploy.current, null);
+    const args = env.cli.calls[0].args;
+    assert.equal(args.filter((a) => a.startsWith("--regions")).length, 1);
+    assert.ok(args.includes("--regions=bom1"));
+    const live = await env.vercel.deployment(deploy.last.vercelDeploymentId);
+    assert.deepEqual(live.regions, ["bom1"]);
+    assert.equal(env.vercel.state.production, live.id);
+  });
+  it("a deployment Vercel did not place in Mumbai alone is never promoted", async () => {
+    // [] = Vercel reports no regions: the project's regions at that moment
+    // decide (here moved to iad1 after the preflight).
+    for (const regions of [["iad1"], ["bom1", "iad1"], []]) {
+      const env = await makeEnv();
+      const w = await makeWorker(env);
+      const id = await seedInstallation(env);
+      const original = env.vercel.createFromCli;
+      env.vercel.createFromCli = (meta, args) => {
+        const d = original(meta, args);
+        d.regions = [...regions];
+        if (!regions.length)
+          env.vercel.state.project.functionRegions = ["iad1"];
+        return d;
+      };
+      const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+      assert.deepEqual(
+        [deploy.current.error.step, deploy.current.error.code],
+        ["vercel", "deploy-region"],
+        String(regions),
+      );
+      assert.match(deploy.current.error.message, /Mumbai \(bom1\)/);
+      assert.equal(env.vercel.calledWith("promote").length, 0);
+      assert.equal(env.vercel.state.production, "dpl_live");
+      assert.equal(deploy.last, null, "nothing was recorded as live");
+    }
+    // No regions reported, the project in Mumbai: it goes live.
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    const original = env.vercel.createFromCli;
+    env.vercel.createFromCli = (meta, args) => {
+      const d = original(meta, args);
+      d.regions = [];
+      return d;
+    };
+    const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+    assert.equal(deploy.current, null);
+    assert.equal(env.vercel.state.production, deploy.last.vercelDeploymentId);
+  });
+  it("a rollback is not stopped by the project's Function Region (it reuses a build)", async () => {
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    const before = await twoDeploys(env, w, id);
+    env.vercel.state.project.functionRegions = ["iad1"];
+    await enqueue(env, id, {
+      kind: "rollback",
+      sha: SHA1,
+      vercelDeploymentId: before.previous.vercelDeploymentId,
+    });
+    await w.loop.drain();
+    const after = await deployOf(env, id);
+    assert.equal(after.current, null);
+    assert.equal(after.last.status, "rolled-back-to");
+    assert.equal(
+      env.vercel.state.production,
+      before.previous.vercelDeploymentId,
+    );
+  });
+  it("the 402 cache fallback: an owner's rollback is never made live outside Mumbai; the automatic one is, and logged", async () => {
+    const outside = (env) => {
+      const original = env.vercel.createFromCli;
+      env.vercel.createFromCli = (meta, args) => {
+        const d = original(meta, args);
+        if (meta.sandbeeRequest.endsWith("-rb")) d.regions = ["iad1"];
+        return d;
+      };
+    };
+    // The owner's rollback: refused before promote, production unchanged.
+    let env = await makeEnv();
+    let w = await makeWorker(env);
+    let id = await seedInstallation(env);
+    const before = await twoDeploys(env, w, id);
+    env.vercel.state.rollbackError = new ProviderError("vercel", "rejected", {
+      status: 402,
+    });
+    outside(env);
+    await enqueue(env, id, {
+      kind: "rollback",
+      sha: SHA1,
+      vercelDeploymentId: before.previous.vercelDeploymentId,
+    });
+    await w.loop.drain();
+    const refused = await deployOf(env, id);
+    assert.equal(refused.current.error.code, "deploy-region");
+    assert.equal(env.vercel.state.production, before.last.vercelDeploymentId);
+    assert.equal(
+      refused.last.vercelDeploymentId,
+      before.last.vercelDeploymentId,
+    );
+    // The automatic rollback after a failed health check: a working site
+    // first, so it goes live and the worker logs it.
+    env = await makeEnv();
+    w = await makeWorker(env);
+    id = await seedInstallation(env);
+    await deployOnce(env, w, id, { sha: SHA1 });
+    await deployOnce(env, w, id, { sha: SHA2 });
+    env.vercel.state.rollbackError = new ProviderError("vercel", "rejected", {
+      status: 402,
+    });
+    outside(env);
+    env.health.bad.add("dpl_3");
+    const deploy = await deployOnce(env, w, id, { sha: "3".repeat(40) });
+    assert.equal(deploy.current.status, "rolled-back");
+    assert.equal(deploy.last.vercelDeploymentId, env.vercel.state.production);
+    assert.equal(deploy.last.sha, SHA2);
+    assert.ok(
+      env.logs.some(
+        (l) =>
+          l.event === "rollback-outside-mumbai" &&
+          JSON.stringify(l).includes("iad1"),
+      ),
+      JSON.stringify(env.logs.slice(-5)),
+    );
+  });
+  it("Verify and a deploy set a project's Function Region to Mumbai with the stored token", async () => {
+    const setCalls = (env) =>
+      env.vercel.calledWith("setFunctionRegion").map((c) => c.args);
+    const logged = (env, from) =>
+      env.logs.some(
+        (l) =>
+          l.event === "function-region" &&
+          l.result === "set" &&
+          l.from === from,
+      );
+    for (const [regions, from] of [
+      [["iad1"], "iad1"],
+      [["bom1", "sin1"], "bom1, sin1"],
+      [[], "-"],
+    ]) {
+      // Verify sets it: no problem left, and the deploy writes nothing more.
+      const env = await makeEnv();
+      const w = await makeWorker(env);
+      const id = await seedInstallation(env);
+      env.vercel.state.project.functionRegions = regions;
+      await enqueueTask(env, id, "verify");
+      await w.loop.drain();
+      const { verify } = (await rowOf(env, id)).pos;
+      assert.equal(verify.project, "ok", String(regions));
+      assert.deepEqual(verify.problems, []);
+      assert.deepEqual(setCalls(env), [["prj_1"]]);
+      assert.deepEqual(env.vercel.state.project.functionRegions, ["bom1"]);
+      assert.ok(logged(env, from), JSON.stringify(env.logs.slice(-5)));
+      const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+      assert.equal(deploy.current, null);
+      assert.equal(setCalls(env).length, 1);
+      assert.equal(env.vercel.state.production, deploy.last.vercelDeploymentId);
+    }
+    // A deploy without a Verify first sets it in its preflight.
+    let env = await makeEnv();
+    let w = await makeWorker(env);
+    let id = await seedInstallation(env);
+    env.vercel.state.project.functionRegions = ["iad1"];
+    const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+    assert.equal(deploy.current, null);
+    assert.deepEqual(setCalls(env), [["prj_1"]]);
+    assert.ok(logged(env, "iad1"));
+    // A project already in Mumbai is never written.
+    env = await makeEnv();
+    w = await makeWorker(env);
+    id = await seedInstallation(env);
+    await enqueueTask(env, id, "verify");
+    await w.loop.drain();
+    await deployOnce(env, w, id, { sha: SHA1 });
+    assert.equal(setCalls(env).length, 0);
+  });
+  it("a Function Region admin cannot set: Verify reports it and the preflight stops the deploy", async () => {
+    for (const [how, result] of [
+      ["refused", "forbidden"],
+      ["kept", "kept"],
+    ]) {
+      const env = await makeEnv();
+      const w = await makeWorker(env);
+      const id = await seedInstallation(env);
+      env.vercel.state.project.functionRegions = ["iad1"];
+      if (how === "refused")
+        env.vercel.state.regionSetError = new ProviderError(
+          "vercel",
+          "forbidden",
+          { status: 403 },
+        );
+      else env.vercel.state.ignoreRegionSet = true;
+      await enqueueTask(env, id, "verify");
+      await w.loop.drain();
+      const { verify } = (await rowOf(env, id)).pos;
+      assert.equal(verify.project, "settings", how);
+      assert.deepEqual(verify.problems, [
+        { name: "functionRegion", actual: "iad1", expected: "bom1" },
+      ]);
+      assert.equal(verifyStateOf(verify), "failed");
+      assert.deepEqual(verifyView(verify).problems, verify.problems);
+      const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+      assert.equal(deploy.current.error.code, "project-settings", how);
+      assert.ok(
+        deploy.current.error.message.includes(
+          "Function Region is 'iad1', expected Mumbai 'bom1' (admin could not set it).",
+        ),
+        deploy.current.error.message,
+      );
+      assert.equal(env.cli.calls.length, 0);
+      assert.equal(env.vercel.state.production, "dpl_live");
+      assert.equal(
+        env.logs.filter(
+          (l) => l.event === "function-region" && l.result === result,
+        ).length,
+        2,
+        how,
+      );
+    }
+  });
+  it("a build whose functions pin another region is refused before sealing or uploading", async () => {
+    const cfg = (body, name = "a") => ({
+      name: `.vercel/output/functions/${name}.func/.vc-config.json`,
+      data: JSON.stringify({ runtime: "nodejs22.x", ...body }),
+    });
+    const dir = await mkdtemp(path.join(tmpdir(), "region-"));
+    try {
+      const run = async (entries) => {
+        const file = path.join(dir, `${randomUUID()}.tgz`);
+        await writeFile(file, validOutput(SHA1, entries).tgz);
+        return inspectTgz(file, { nodeMajor: "22" });
+      };
+      for (const ok of [
+        {},
+        { regions: null },
+        { regions: [] },
+        { regions: ["bom1"] },
+        { regions: ["bom1"], functionFailoverRegions: [] },
+      ])
+        assert.equal(
+          (await run([cfg(ok)])).regionMismatch,
+          0,
+          JSON.stringify(ok),
+        );
+      for (const regions of ["all", "bom1", ["bom1"]])
+        assert.equal(
+          (await run([cfg({ runtime: "edge", regions }, "m")])).regionMismatch,
+          0,
+          `edge ${regions}`,
+        );
+      for (const bad of [
+        { regions: ["iad1"] },
+        { regions: ["bom1", "iad1"] },
+        { regions: "all" },
+        { regions: "bom1" },
+        { functionFailoverRegions: ["sin1"] },
+        { runtime: "edge", regions: ["iad1"] },
+        { runtime: "edge", regions: "iad1" },
+      ])
+        assert.ok(
+          (await run([cfg(bad)])).regionMismatch > 0,
+          JSON.stringify(bad),
+        );
+      assert.equal(
+        tarProblemCode(await run([cfg({ regions: ["iad1"] })])),
+        "artifact-region",
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+    const env = await makeEnv();
+    const w = await makeWorker(env);
+    const id = await seedInstallation(env);
+    env.gh.state.tweak.tgz = () =>
+      validOutput(SHA1, [cfg({ regions: ["iad1"] })]).tgz;
+    const deploy = await deployOnce(env, w, id, { sha: SHA1 });
+    assert.equal(deploy.current.error.code, "artifact-region");
     assert.equal(env.cli.calls.length, 0);
     assert.equal(env.s3fake.liveKeys().length, 0);
   });

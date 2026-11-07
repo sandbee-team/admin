@@ -391,6 +391,8 @@ export async function measure(ctx, installationId, signal) {
       httpStatus: probe.httpStatus,
       latencyMs: probe.latencyMs,
       probes: probe.probes,
+      // The function region that answered (D49); null when unknown.
+      region: probe.region ?? null,
       deployActive,
     },
     // Out of budget: no further client calls (the result is discarded).

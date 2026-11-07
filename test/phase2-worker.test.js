@@ -317,6 +317,7 @@ describe("one check", () => {
         httpStatus: 200,
         latencyMs: "number",
         probes: 1,
+        region: null,
         deployActive: false,
       },
     );

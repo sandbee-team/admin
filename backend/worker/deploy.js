@@ -17,9 +17,11 @@ import { transaction } from "../db.js";
 import { newBuildRow } from "../lib/deploy-job.js";
 import {
   CANCELLABLE_STEPS,
+  FUNCTION_REGION,
   JOB_STEPS,
   MAX_ATTEMPTS,
   buildRowId,
+  inMumbai,
   sha7,
 } from "../../shared/deploy.js";
 import {
@@ -211,7 +213,9 @@ export async function preflight(jr) {
   const ins = await inspectProject(jr.vercel, target, {
     signal: jr.signal,
     expectedNode: await expectedNodeOf(ctx),
+    fixRegion: jr.job.kind !== "rollback",
   });
+  if (ins.regionFix) ctx.log("function-region", ins.regionFix);
   if (ins.vercel !== "ok")
     throw fail(
       `vercel-${ins.vercel}`.slice(0, 40),
@@ -219,6 +223,13 @@ export async function preflight(jr) {
         `Vercel could not be reached (${ins.vercel}).`,
       "preflight",
     );
+  // D49: a rollback reuses an existing build and keeps its region (its cache
+  // fallback asks for bom1 itself), so the project's Function Region never
+  // stops one (and it is not set for one).
+  if (jr.job.kind === "rollback" && ins.project === "settings") {
+    ins.problems = ins.problems.filter((p) => p.name !== "functionRegion");
+    if (!ins.problems.length) ins.project = "ok";
+  }
   if (ins.project !== "ok")
     throw fail(
       ins.project === "settings"
@@ -230,7 +241,7 @@ export async function preflight(jr) {
               .map((p) => describeProjectIssue(p))
               .join(" ")
               .replace(
-                /: change it in Vercel, Settings, Build and Deployment./g,
+                /: change it in Vercel, Settings, (Build and Deployment|Functions)\./g,
                 ".",
               )
           : (providerMessage[ins.project] ??
@@ -590,7 +601,11 @@ export async function uploadDeployment(jr, { tgzPath, metaValue }) {
   } catch (error) {
     if (error instanceof AcceptError)
       throw fail(
-        ["artifact-filepathmap", "artifact-runtime"].includes(error.code)
+        [
+          "artifact-filepathmap",
+          "artifact-runtime",
+          "artifact-region",
+        ].includes(error.code)
           ? error.code
           : "tar-invalid",
         "The build output failed validation.",
@@ -603,12 +618,15 @@ export async function uploadDeployment(jr, { tgzPath, metaValue }) {
     orgId: target.orgId,
     projectId: target.projectId,
   });
+  // D49: the deployment asks for Mumbai itself (the CLI sends --regions in
+  // the create request); the vercel step checks what Vercel made of it.
   const args = [
     "deploy",
     "--prebuilt",
     "--prod",
     "--skip-domain",
     "--archive=tgz",
+    `--regions=${FUNCTION_REGION}`,
     "--yes",
     "--non-interactive",
     "--meta",
@@ -793,14 +811,27 @@ export async function awaitAlias(jr, deploymentId, { substate = true } = {}) {
     await wait(ctx, ctx.t.vercelPollMs, jr.signal);
   }
 }
+// D49: where a new deployment runs. The regions Vercel reports for it; when
+// it reports none, the project's default regions it was created under (the
+// project as read just now).
+const regionsOfNew = (ready, project) =>
+  ready.regions?.length ? ready.regions : project.functionRegions;
+const notInMumbai = () =>
+  fail(
+    "deploy-region",
+    "The new deployment does not run in Mumbai (bom1), so it was not made live; production was not changed.",
+    "vercel",
+  );
 async function vercelStep(jr, deployment) {
   await jr.begin("vercel");
-  await waitReady(jr, deployment.id);
+  const ready = await waitReady(jr, deployment.id);
   const project = await jr.vercel.project(jr.target.projectId, {
     signal: jr.signal,
   });
   const production = productionOf(project);
   if (!isProduction(project, deployment.id)) {
+    // D49: only a deployment whose functions run in Mumbai goes live.
+    if (!inMumbai(regionsOfNew(ready, project))) throw notInMumbai();
     const baseline = jr.job.baseline?.vercelDeploymentId ?? null;
     if (production !== baseline)
       throw fail(
@@ -884,10 +915,18 @@ export async function restore(jr, targetId, version) {
   });
   let dep = await findUploaded(jr, metaValue);
   if (!dep) dep = await uploadDeployment(jr, { tgzPath: got.path, metaValue });
-  await waitReady(jr, dep.id);
+  const ready = await waitReady(jr, dep.id);
   const project = await jr.vercel.project(target.projectId, {
     signal: jr.signal,
   });
+  // D49: a rollback the owner asked for never makes a deployment outside
+  // Mumbai live. The automatic one after a failed health check does (a
+  // working site first: production is already unhealthy) and logs it.
+  const regions = regionsOfNew(ready, project);
+  if (!isProduction(project, dep.id) && !inMumbai(regions)) {
+    if (jr.job.kind === "rollback") throw notInMumbai();
+    ctx.log("rollback-outside-mumbai", { regions: regions.join(",") || "-" });
+  }
   if (!isProduction(project, dep.id))
     await jr.vercel
       .promote(target.projectId, dep.id, { signal: jr.signal })

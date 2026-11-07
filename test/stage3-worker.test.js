@@ -199,7 +199,7 @@ async function makeEnv({ db = null, cf = {}, vercel = null } = {}) {
     onRun: async (call) => {
       env.uploads++;
       const meta = call.args[call.args.indexOf("--meta") + 1].split("=")[1];
-      env.vercel.createFromCli({ sandbeeRequest: meta });
+      env.vercel.createFromCli({ sandbeeRequest: meta }, call.args);
     },
   });
   env.workDir = await mkdtemp(path.join(tmpdir(), "golive-test-"));
@@ -1084,6 +1084,21 @@ const CASES = [
     {
       setup: (env) =>
         env.vercel.http.addProject({ name: LABEL, production: true }),
+    },
+  ],
+  [
+    "an adopted project whose Function Region Vercel does not take",
+    "project-region",
+    "project",
+    {
+      setup: (env) => {
+        const pid = env.vercel.http.addProject({ name: LABEL });
+        env.vercel.http.rule(
+          (m, p) => m === "PATCH" && p === `/v9/projects/${pid}`,
+          () => json(200, env.vercel.http.state.projects.get(pid)),
+          { times: -1 },
+        );
+      },
     },
   ],
   [

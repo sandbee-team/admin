@@ -105,7 +105,7 @@ add(
   "project-settings",
   "preflight",
   "Project settings differ",
-  "The Vercel project settings are not the expected Next.js, apps/cafe, Node 22 setup.",
+  "The Vercel project settings are not the expected Next.js, apps/cafe, Node 22, Mumbai (bom1) setup.",
   "Fix the project settings in Vercel, then verify again.",
 );
 add(
@@ -390,6 +390,13 @@ add(
   "Vercel too slow",
   "Vercel took too long to make the deployment ready.",
   RETRY,
+);
+add(
+  "deploy-region",
+  "vercel",
+  "Not in Mumbai",
+  "The new deployment does not run in Mumbai (bom1), so it was not made live; production was not changed.",
+  "In Vercel set Settings, Functions, Function Region to Mumbai (bom1), verify, then deploy again.",
 );
 add(
   "promote-failed",
@@ -785,14 +792,23 @@ add(
   "A function in the build output does not use the builder's Node.js version.",
   "Tell support; do not deploy this build.",
 );
+add(
+  "artifact-region",
+  "build",
+  "Region not Mumbai",
+  "A function in the build output is pinned to a region other than Mumbai (bom1).",
+  "Remove the function's own region setting in the POS code; do not deploy this build.",
+);
 // ---- Vercel project setting checks (verify and preflight) --------------------------
-// Non-secret project settings only. Blocking: framework, rootDirectory. A Node.js
-// version that differs from the builder's is only a warning: admin deploys take
-// their function runtime from the prebuilt output (.vc-config.json), not from the
-// Vercel project's setting.
+// Non-secret project settings only. Blocking: framework, rootDirectory and the
+// Function Region (D49: Mumbai only, so a deploy made from Vercel itself runs
+// there too). A Node.js version that differs from the builder's is only a
+// warning: admin deploys take their function runtime from the prebuilt output
+// (.vc-config.json), not from the Vercel project's setting.
 export const SETTING_LABELS = {
   framework: "Framework",
   rootDirectory: "Root Directory",
+  functionRegion: "Function Region",
   nodeVersion: "Node.js version",
   sourceFilesOutsideRootDirectory:
     "Include source files outside of the Root Directory",
@@ -807,6 +823,8 @@ export function describeProjectIssue(issue, level = "error") {
     const major = /^(\d+)/.exec(String(issue.expected ?? ""))?.[1] ?? "22";
     return `Node.js version is ${show(issue.actual)} on Vercel; admin deploys run on Node ${major} from the build (only local-console builds use the project setting).`;
   }
+  if (issue?.name === "functionRegion")
+    return `Function Region is '${show(issue.actual)}', expected Mumbai '${show(issue.expected)}' (admin could not set it): change it in Vercel, Settings, Functions.`;
   return `${label} is '${show(issue?.actual)}', expected '${show(issue?.expected)}': change it in Vercel, Settings, Build and Deployment.`;
 }
 add(
@@ -1036,6 +1054,13 @@ for (const [code, step, title, msg, action] of [
     "Project already live",
     "This Vercel project already has a production deployment, so admin does not change it.",
     "Treat it as an existing client: Verify and Unlock on the Deploy tab.",
+  ],
+  [
+    "project-region",
+    "project",
+    "Region not Mumbai",
+    "The Vercel project's Function Region is still not Mumbai (bom1) after admin set it.",
+    "In Vercel set Settings, Functions, Function Region to Mumbai (bom1), then start again.",
   ],
   [
     "project-name-taken",

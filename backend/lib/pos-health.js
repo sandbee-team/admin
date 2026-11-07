@@ -10,6 +10,7 @@ import {
   MAX_CLUSTERS,
   MONGO_LIMIT_BYTES,
 } from "../../shared/usage.js";
+import { REGION_ID_RE } from "../../shared/deploy.js";
 
 const TENANT_LABEL = /^[A-Za-z0-9_-]{1,64}$/;
 // What a host reports about itself is not trusted text: only a short label
@@ -177,11 +178,25 @@ export function parseStats(body) {
   if (!clusters.length) return none("stats-bad-body");
   return { code: "ok", bootstrap: body.bootstrap === true, clusters };
 }
+// The region a function answered from (D49), from the x-vercel-id header:
+// "a list of Vercel regions your request hit, as well as the region the
+// function was executed in" (vercel.com/docs/headers/response-headers), the
+// function's last, e.g. "bom1::bom1::<request id>". One region = the edge
+// answered alone -> null. Only a region id is ever returned.
+export function functionRegionOf(headers) {
+  const raw = headers?.["x-vercel-id"];
+  const regions = String((Array.isArray(raw) ? raw[0] : raw) ?? "")
+    .slice(0, 200)
+    .split("::")
+    .filter((part) => REGION_ID_RE.test(part));
+  return regions.length >= 2 ? regions[regions.length - 1] : null;
+}
 const SITE_ERRORS = new Set(["timeout", "blocked", "too-large", "aborted"]);
 const siteErrorCode = (error) =>
   SITE_ERRORS.has(error?.code) ? error.code : "no-response";
 // One usage probe of GET /api/health (optionally ?stats=1 with the stats
-// token) -> {state: up|down|paused, code, httpStatus, latencyMs, stats?}.
+// token) -> {state: up|down|paused, code, httpStatus, latencyMs, region?,
+// stats?}; `region` (the function's, see functionRegionOf) when up and known.
 // Never throws; never returns anything the host said beyond fixed codes and
 // the parsed stats. `stats` is present whenever stats were asked for.
 export async function probeSite({
@@ -260,12 +275,20 @@ export async function probeSite({
       latencyMs,
       ...statsOf(unavailable),
     };
-  if (!stats) return { state: "up", code: "ok", httpStatus, latencyMs };
+  const region = functionRegionOf(res.headers);
+  const up = {
+    state: "up",
+    code: "ok",
+    httpStatus,
+    latencyMs,
+    ...(region ? { region } : {}),
+  };
+  if (!stats) return up;
   let parsed = parseStats(body);
   // Without a stored token "denied" means the POS requires one we do not have.
   if (parsed.code === "stats-denied" && !statsToken)
     parsed = { ...parsed, code: "stats-not-set" };
-  return { state: "up", code: "ok", httpStatus, latencyMs, stats: parsed };
+  return { ...up, stats: parsed };
 }
 
 const sleepReal = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

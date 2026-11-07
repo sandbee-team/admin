@@ -476,6 +476,7 @@ const siteUp = (latencyMs) => ({
   httpStatus: 200,
   latencyMs,
   probes: 1,
+  region: "bom1",
   deployActive: false,
 });
 const USAGE_RESULTS = {

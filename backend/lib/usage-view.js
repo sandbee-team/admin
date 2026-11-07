@@ -6,7 +6,7 @@
 // capped and stripped of control and bidi characters.
 import { cleanText } from "./deploy-view.js";
 import { isUsageCode } from "../../shared/usage-codes.js";
-import { QUEUED_EXPIRY_MS } from "../../shared/deploy.js";
+import { QUEUED_EXPIRY_MS, REGION_ID_RE } from "../../shared/deploy.js";
 import {
   ALERT_TITLES,
   ALERT_TYPES,
@@ -130,6 +130,10 @@ export function lastView(last) {
       httpStatus: num(site.httpStatus),
       latencyMs: num(site.latencyMs),
       probes: num(site.probes),
+      region:
+        typeof site.region === "string" && REGION_ID_RE.test(site.region)
+          ? site.region
+          : null,
       deployActive: isActive(site.deployActive),
     },
     mongo: {

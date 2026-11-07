@@ -198,6 +198,18 @@ P5 lets the owner take a NEW POS client live from admin (docs/P5-STAGE3-PLAN.md,
 
 Operating notes: a go-live run that cannot continue stops with a code, a message and an action in the Go live tab (for example `project-live`: the project already serves production, so admin treats it as an existing client — Verify and Unlock on the Deploy tab). While a run is queued or running, POS setup, deploys and tasks of that installation answer "busy"; a run waiting for DNS or for the deploy holds nothing. After go-live, use **Sync env…** after a setup change and **Update realtime Worker…** after a realtime source change. `docker compose -f compose.production.yaml logs worker` shows go-live lines with an 8-character id and codes only.
 
+## Mumbai region release checklist (D49)
+
+D49 makes every POS deployment run in Mumbai (Vercel `bom1`): deploys ask for `bom1`, a new deployment outside Mumbai is never made live (`deploy-region`), Verify and the deploy preflight set a Vercel project's Function Region to Mumbai with the stored token (and block only when Vercel refuses or keeps another region), builds whose functions pin another region are refused (`artifact-region`), and the Usage tab shows the region the site answered from (warning `site-region`). No new dependency, no data migration.
+
+1. **Linux suite on the server** (before merging): `bash scripts/test-linux.sh` must end with 0 failures.
+2. **Build and start:** as in the P5 checklist step 2 (`git pull`, `docker compose -f compose.production.yaml up -d --build`, both healthy, `/ready` ok).
+3. **Verify each client** (demo, Lucifer, every other client): admin → the installation → Deploy → **Verify**. It sets the Vercel project's Function Region to Mumbai (bom1) itself; no Vercel login needed. Only if Verify still shows a `Function Region ... (admin could not set it)` problem: Vercel → the project → Settings → Functions → **Function Region = Mumbai, India (bom1)** only → Save, then Verify again.
+4. **Redeploy** each live client once from admin (Deploy → Redeploy): the new deployment runs in Mumbai. A rollback returns to the old build and its old region, so redeploy again after any rollback.
+5. **Check:** Usage → Check now → Site shows **Function region Mumbai (bom1)**. Or `curl -sI https://<host>/api/health | grep -i x-vercel-id`: the region just before the request id must be `bom1`.
+6. **Outside Vercel:** a new client's Atlas cluster is created in AWS **Mumbai (ap-south-1)**; for an existing cluster the Atlas cluster page shows its region (one elsewhere needs a new cluster in Mumbai and a data move). Cloudflare R2 has no India location (choose the APAC hint when creating a bucket) and Durable Objects cannot be pinned to a city.
+7. **Release rollback:** `git checkout b46718f && docker compose -f compose.production.yaml up -d --build`. Nothing is stored that older code cannot read (`pos.usage.last.site.region` is ignored).
+
 ## Reverse proxy (Caddy)
 
 Production terminates TLS in Caddy (`/opt/edge/Caddyfile`) and proxies to Admin on a separate local port, which keeps the other live applications untouched:

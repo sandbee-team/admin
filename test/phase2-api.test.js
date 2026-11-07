@@ -490,6 +490,7 @@ describe("GET usage view", () => {
             httpStatus: 200,
             latencyMs: -5,
             probes: 1,
+            region: "<b>bom1</b>",
             deployActive: "yes",
             body: "provider body text",
           },
@@ -604,6 +605,7 @@ describe("GET usage view", () => {
             httpStatus: 200,
             latencyMs: null,
             probes: 1,
+            region: null,
             deployActive: false,
           },
           mongo: {
