@@ -210,6 +210,8 @@ D49 makes every POS deployment run in Mumbai (Vercel `bom1`): deploys ask for `b
 6. **Outside Vercel:** a new client's Atlas cluster is created in AWS **Mumbai (ap-south-1)**; for an existing cluster the Atlas cluster page shows its region (one elsewhere needs a new cluster in Mumbai and a data move). Cloudflare R2 has no India location (choose the APAC hint when creating a bucket) and Durable Objects cannot be pinned to a city.
 7. **Release rollback:** `git checkout b46718f && docker compose -f compose.production.yaml up -d --build`. Nothing is stored that older code cannot read (`pos.usage.last.site.region` is ignored).
 
+D49 went live on 2026-11-07 (commit `5152b1b`, previous live commit `b46718f`): deployed with one gated command (`git pull --ff-only && bash scripts/test-linux.sh && ... up -d --build && docker image prune -f && curl ... /ready`), which builds only after the Linux suite exits 0 (its counts were not kept; the local suite: 1091 tests, 1085 pass, 0 fail, 6 skipped). The owner then ran several client deploys and all went live; the vercel step promotes only a deployment Vercel reports as exactly `bom1`, so Vercel honours `--regions=bom1` for prebuilt deploys. Checked 2026-11-08: `https://admin.sandbee.in/ready` 200; `posdemo.sandbee.in/api/health` answers `x-vercel-id: bom1::bom1::...` (the function runs in Mumbai).
+
 ## Reverse proxy (Caddy)
 
 Production terminates TLS in Caddy (`/opt/edge/Caddyfile`) and proxies to Admin on a separate local port, which keeps the other live applications untouched:
