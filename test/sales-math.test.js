@@ -523,7 +523,7 @@ describe("schemas", () => {
       );
       assert.equal(/SAMPLE/.test(text), false, key);
     }
-    assert.ok(DEFAULT_TEMPLATES.agreementBody.length <= 20000);
+    assert.ok(DEFAULT_TEMPLATES.agreementBody.length <= 40000);
     assert.ok(DEFAULT_TEMPLATES.quotationTerms.length <= 4000);
     assert.ok(DEFAULT_TEMPLATES.invoiceTerms.length <= 4000);
   });

@@ -358,7 +358,7 @@ function ProfileForm({
                         overrides: { ...form.overrides, [key]: e.target.value },
                       })
                     }
-                    maxLength={key === "agreementBody" ? 20000 : 4000}
+                    maxLength={key === "agreementBody" ? 40000 : 4000}
                   />
                 </Field>
               )}

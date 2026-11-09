@@ -95,7 +95,7 @@ Files: S3 only ever receives ciphertext (`SBF1` + IV + AES-256-GCM + tag, additi
 
 ## Availability and load
 
-JSON requests are bounded at 32 KB (the two POS import routes and the three sales text PUTs, settings, client profile and deal, allow 128 KB). Lists are paginated at 30 items; option pickers are capped at 100 with search. Field lengths, lifecycle values, identifiers and extra properties are validated with shared strict schemas. Connection pools are capped; common summary data uses a local LRU with five-second TTL and invalidation on local writes. Authorization never uses this cache. Another replica may show a summary up to five seconds old.
+JSON requests are bounded at 32 KB (the two POS import routes allow 128 KB; the three sales text PUTs, settings, client profile and deal, allow 256 KB for an agreement of up to 40,000 characters, D60). Lists are paginated at 30 items; option pickers are capped at 100 with search. Field lengths, lifecycle values, identifiers and extra properties are validated with shared strict schemas. Connection pools are capped; common summary data uses a local LRU with five-second TTL and invalidation on local writes. Authorization never uses this cache. Another replica may show a summary up to five seconds old.
 
 Mongo fixed-window rate counters are shared across replicas. API: 400/IP/minute. Login: 20/IP and 6/email/15 minutes. Recovery: 10/IP and 3/email/15 minutes. Verification: 40/IP/15 minutes, plus five attempts/challenge. A process admits up to eight concurrent authentication requests. Window boundaries can allow short bursts; put an edge/WAF limit in front of the admin origin. TRUST_PROXY_HOPS must exactly match the trusted reverse-proxy topology; never enable arbitrary proxy trust.
 

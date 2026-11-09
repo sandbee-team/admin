@@ -29,7 +29,7 @@ import {
 
 const TEXTS = [
   ["quotationTerms", "Quotation terms", 4000],
-  ["agreementBody", "Agreement text", 20000],
+  ["agreementBody", "Agreement text", 40000],
   ["invoiceTerms", "Invoice terms", 4000],
 ];
 const editable = (s) => ({

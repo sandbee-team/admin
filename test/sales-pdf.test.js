@@ -1182,6 +1182,23 @@ describe("sales documents", () => {
       }),
       {},
     );
+  it("a 40,000-character agreement (D60) renders in time on many pages", () => {
+    const clause = (n) =>
+      `${n}.1 The Provider will deliver the Services described in Schedule A with reasonable skill and care, and will keep the Client informed of progress, delays and any change that affects the Fees or the timeline.`;
+    const lines = [];
+    for (let n = 1; lines.join("\n").length < 40000; n++)
+      lines.push(`${n}. SECTION ${n}`, clause(n), "");
+    const body = lines.join("\n").slice(0, 40000);
+    const started = performance.now(),
+      pdf = agreementWith(body),
+      took = performance.now() - started;
+    assert.ok(took < 5000, `took ${took} ms`);
+    assertClean(pdf, "40,000 characters");
+    const pages = Number(
+      /\/Count (\d+)/.exec(Buffer.from(pdf).toString("latin1"))[1],
+    );
+    assert.ok(pages >= 10, `${pages} pages`);
+  });
   it("numbered-line parsing has no catastrophic backtracking", () => {
     for (const line of [
       `1.${"1".repeat(60)}x`,

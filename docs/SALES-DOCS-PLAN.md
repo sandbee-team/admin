@@ -260,7 +260,8 @@ Built as planned (§2-§10, D52). Differences and details:
   `frontend/src/styles/sales.css`, `test/sales-{math,pdf,api}.test.js`, `test/sales-fixtures.js`,
   `test/ui/sales.spec.js`. Changed as listed in §9; `files.js`' download now calls
   `file-store.js` `openSealed` (same checks, same order, same audit); `app.js` also gives the three
-  sales text PUTs (settings, client profile, deal) the 128 KB JSON limit.
+  sales text PUTs (settings, client profile, deal) the 128 KB JSON limit (256 KB since D60, when the
+  agreement text went from 20,000 to 40,000 characters).
 - **Unit price** is capped at Rs. 1 crore per unit (not Rs. 10 crore as §4 said); quantity at
   1,00,000; a line description at 300 characters and 8 lines.
 - **Deal lifecycle.** `draft` (editable; quotations may be issued) → `final` (locked; agreement and

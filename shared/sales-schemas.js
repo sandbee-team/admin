@@ -108,7 +108,7 @@ const template = (max) =>
   );
 const MAX_TEXT = {
   quotationTerms: 4000,
-  agreementBody: 20000,
+  agreementBody: 40000, // D60 (was 20,000)
   invoiceTerms: 4000,
 };
 

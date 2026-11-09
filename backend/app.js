@@ -30,13 +30,13 @@ const UPLOAD_PATH =
 const IMPORT_PATH = /^\/pos\/import\/(preview|confirm)\/?$/i;
 // Sales logo/signature images are the other raw body (PUT, at most 512 KB).
 const IMAGE_PATH = /^\/sales\/settings\/images\/(logo|signature)\/?$/;
-// Sales texts (agreement up to 20,000 characters) and 50-line deals also get
-// the larger JSON limit.
+// Sales texts (agreement up to 40,000 characters, D60: 120 KB of JSON when
+// every character takes 3 bytes) and 50-line deals get the largest limit.
 const SALES_TEXT_PATH =
   /^\/(sales\/settings|sales\/deals\/[0-9a-f-]{36}|customers\/[0-9a-f-]{36}\/sales\/profile)\/?$/i;
-const isLarge = (req) =>
-  IMPORT_PATH.test(req.path) ||
-  (req.method === "PUT" && SALES_TEXT_PATH.test(req.path));
+const isLarge = (req) => IMPORT_PATH.test(req.path);
+const isSalesText = (req) =>
+  req.method === "PUT" && SALES_TEXT_PATH.test(req.path);
 const isUpload = (req) =>
   (req.method === "POST" && UPLOAD_PATH.test(req.path)) ||
   (req.method === "PUT" && IMAGE_PATH.test(req.path));
@@ -100,8 +100,14 @@ export function createApp(deps) {
     },
     (() => {
       const small = express.json({ limit: "32kb" }),
-        large = express.json({ limit: "128kb" });
-      return (req, res, next) => (isLarge(req) ? large : small)(req, res, next);
+        large = express.json({ limit: "128kb" }),
+        salesText = express.json({ limit: "256kb" });
+      return (req, res, next) =>
+        (isSalesText(req) ? salesText : isLarge(req) ? large : small)(
+          req,
+          res,
+          next,
+        );
     })(),
     cookieParser(),
     async (req, _res, next) => {

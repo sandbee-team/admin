@@ -1169,18 +1169,35 @@ describe("sales: lifecycle edges", () => {
     assert.ok(
       await ctx.db.collection("sales_assets").findOne({ _id: logoSha }),
     );
-    // 19,000 em dashes are 57 KB of JSON: above the general 32 KB limit.
+    // D60: a 40,000-character agreement and both 4,000-character terms in em
+    // dashes are 144 KB of JSON: above the 128 KB import limit, within 256 KB.
     const s = gone.data;
+    const full = (agreementLength) => ({
+      quotationTerms: "\u2014".repeat(4000),
+      agreementBody: "\u2014".repeat(agreementLength),
+      invoiceTerms: "\u2014".repeat(4000),
+    });
     const big = await req("/sales/settings", {
       method: "PUT",
       session: owner,
-      body: {
-        rev: s.rev,
-        ...SETTINGS,
-        templates: { ...s.templates, agreementBody: "\u2014".repeat(19000) },
-      },
+      body: { rev: s.rev, ...SETTINGS, templates: full(40000) },
     });
     assert.equal(big.status, 200, JSON.stringify(big.data).slice(0, 200));
+    assert.equal(big.data.templates.agreementBody.length, 40000);
+    const over = await req("/sales/settings", {
+      method: "PUT",
+      session: owner,
+      body: { rev: big.data.rev, ...SETTINGS, templates: full(40001) },
+    });
+    assert.equal(over.status, 400);
+    assert.match(over.data.error, /at most 40000 characters/);
+    // Above 256 KB of JSON the request itself is refused.
+    const huge = await req("/sales/settings", {
+      method: "PUT",
+      session: owner,
+      body: { rev: big.data.rev, ...SETTINGS, templates: full(90000) },
+    });
+    assert.equal(huge.status, 413);
   });
 });
 
